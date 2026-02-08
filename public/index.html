@@ -139,6 +139,33 @@
       display: block;
     }
 
+    /* ─── Audio Level Meter ──────────────────────────────────────────── */
+    .audio-level {
+      display: none;
+      width: 80px;
+      height: 10px;
+      background: var(--color-border);
+      border-radius: 5px;
+      overflow: hidden;
+      flex-shrink: 0;
+    }
+
+    .audio-level.visible {
+      display: block;
+    }
+
+    .audio-level-bar {
+      height: 100%;
+      width: 0%;
+      background: var(--color-success);
+      border-radius: 5px;
+      transition: width 0.05s linear, background 0.15s ease;
+    }
+
+    .audio-level-bar.hot {
+      background: var(--color-danger);
+    }
+
     /* ─── Controls ───────────────────────────────────────────────────── */
     .controls {
       display: flex;
@@ -522,6 +549,9 @@
       <div id="status-indicator" class="status-indicator idle"></div>
       <span id="status-text" class="status-text">Ready — click "Start Speech" to begin</span>
       <span id="elapsed-time" class="elapsed-time">00:00</span>
+      <div id="audio-level" class="audio-level" aria-label="Audio input level">
+        <div id="audio-level-bar" class="audio-level-bar"></div>
+      </div>
     </div>
 
     <!-- Controls -->
@@ -658,6 +688,8 @@
       savedConfirmation: document.getElementById("saved-confirmation"),
       savedMessage: document.getElementById("saved-message"),
       connectionStatus: document.getElementById("connection-status"),
+      audioLevel: document.getElementById("audio-level"),
+      audioLevelBar: document.getElementById("audio-level-bar"),
     };
 
     // ─── Status Text Map ──────────────────────────────────────────────
@@ -704,6 +736,7 @@
         hide(dom.speakingIndicator);
         hide(dom.processingIndicator);
         hideElapsedTime();
+        hide(dom.audioLevel);
 
         return;
       }
@@ -720,6 +753,7 @@
         hide(dom.speakingIndicator);
         hide(dom.processingIndicator);
         showElapsedTime();
+        show(dom.audioLevel);
 
         // Show transcript panel for live captions
         show(dom.transcriptPanel);
@@ -739,6 +773,7 @@
         hide(dom.speakingIndicator);
         show(dom.processingIndicator);
         hideElapsedTime();
+        hide(dom.audioLevel);
 
         // Keep transcript visible
         show(dom.transcriptPanel);
@@ -758,6 +793,7 @@
         show(dom.speakingIndicator);
         hide(dom.processingIndicator);
         hideElapsedTime();
+        hide(dom.audioLevel);
 
         // Show evaluation panel for fallback reading
         show(dom.evaluationPanel);
@@ -765,6 +801,25 @@
         show(dom.transcriptPanel);
 
         return;
+      }
+    }
+
+    // ─── UI Update: Audio Level Meter ────────────────────────────────
+    /**
+     * Updates the audio level indicator bar.
+     * RMS value is 0..1 but typical speech is 0.01-0.15 range,
+     * so we scale it to make the bar more responsive.
+     * @param {number} rms - RMS audio level (0..1)
+     */
+    function updateAudioLevel(rms) {
+      // Scale: multiply by ~5 and clamp to 100% for visual responsiveness
+      const pct = Math.min(100, rms * 500);
+      dom.audioLevelBar.style.width = pct + "%";
+      // Turn red when clipping (RMS > 0.3 is very loud)
+      if (rms > 0.3) {
+        dom.audioLevelBar.classList.add("hot");
+      } else {
+        dom.audioLevelBar.classList.remove("hot");
       }
     }
 
@@ -1236,6 +1291,10 @@
         // Listen for audio chunks from the worklet
         workletNode.port.onmessage = function (event) {
           if (event.data && event.data.type === "audio_chunk") {
+            // Update audio level meter
+            if (typeof event.data.level === "number") {
+              updateAudioLevel(event.data.level);
+            }
             // Send audio chunk as binary WebSocket frame
             if (ws && ws.readyState === WebSocket.OPEN && currentState === SessionState.RECORDING) {
               ws.send(event.data.samples);

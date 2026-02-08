@@ -46,6 +46,10 @@ class AudioCaptureProcessor extends AudioWorkletProcessor {
     this._outputBuffer = new Int16Array(CHUNK_SAMPLES);
     this._outputBufferIndex = 0;
 
+    // RMS accumulator for audio level metering
+    this._rmsSum = 0;
+    this._rmsSampleCount = 0;
+
     // Flag to stop processing when told to
     this._active = true;
 
@@ -128,15 +132,29 @@ class AudioCaptureProcessor extends AudioWorkletProcessor {
         this._outputBuffer[this._outputBufferIndex] = int16Sample;
         this._outputBufferIndex += 1;
 
+        // Accumulate for RMS level metering
+        this._rmsSum += filtered * filtered;
+        this._rmsSampleCount += 1;
+
         // When we have a full 50ms chunk, send it to the main thread
         if (this._outputBufferIndex >= CHUNK_SAMPLES) {
+          // Compute RMS level (0..1 range)
+          const rms = this._rmsSampleCount > 0
+            ? Math.sqrt(this._rmsSum / this._rmsSampleCount)
+            : 0;
+
           // Copy the buffer and send it (transferable for zero-copy)
           const chunk = new Int16Array(this._outputBuffer);
-          this.port.postMessage({ type: "audio_chunk", samples: chunk.buffer }, [chunk.buffer]);
+          this.port.postMessage(
+            { type: "audio_chunk", samples: chunk.buffer, level: rms },
+            [chunk.buffer]
+          );
 
-          // Reset output buffer (need a new one since we transferred ownership)
+          // Reset output buffer and RMS accumulator
           this._outputBuffer = new Int16Array(CHUNK_SAMPLES);
           this._outputBufferIndex = 0;
+          this._rmsSum = 0;
+          this._rmsSampleCount = 0;
         }
       }
     }

@@ -3,10 +3,10 @@
   "version": "0.1.0",
   "description": "AI Toastmasters Evaluator MVP - captures live speech, transcribes, computes metrics, generates evaluation, and delivers via TTS",
   "type": "module",
-  "main": "dist/server.js",
+  "main": "dist/index.js",
   "scripts": {
     "build": "tsc",
-    "start": "node dist/server.js",
+    "start": "node dist/index.js",
     "dev": "tsc --watch",
     "test": "vitest run",
     "test:watch": "vitest"
