@@ -93,7 +93,7 @@ export interface EvaluationConfig {
 }
 
 export interface TTSConfig {
-  voice: string; // default: "cedar", extensibility hook (Req 8.3)
+  voice: string; // default: "nova", extensibility hook (Req 8.3)
   maxDurationSeconds: number; // default: 210 (3m30s), hard cap
   calibratedWPM: number; // default: 150, calibrated per voice
 }

@@ -14,7 +14,7 @@ import type { TTSConfig } from "./types.js";
 // ─── Defaults ───────────────────────────────────────────────────────────────────
 
 const DEFAULT_TTS_CONFIG: TTSConfig = {
-  voice: "cedar",
+  voice: "nova",
   maxDurationSeconds: 210, // 3m30s hard cap
   calibratedWPM: 150,
 };
@@ -84,7 +84,7 @@ export class TTSEngine {
    * Uses: word count / calibratedWPM * 60
    *
    * @param text  The script text to estimate.
-   * @param wpm   Words per minute rate. Defaults to 150 (calibrated for "cedar" voice).
+   * @param wpm   Words per minute rate. Defaults to 150 (calibrated for "nova" voice).
    * @returns Estimated duration in seconds.
    */
   estimateDuration(text: string, wpm: number = DEFAULT_TTS_CONFIG.calibratedWPM): number {

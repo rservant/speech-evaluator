@@ -56,6 +56,10 @@ export class SessionManager {
   private sessions: Map<string, Session> = new Map();
   private readonly deps: SessionManagerDeps;
 
+  private log(level: string, msg: string): void {
+    console.log(`[${level}] [SessionManager] ${msg}`);
+  }
+
   constructor(deps: SessionManagerDeps = {}) {
     this.deps = deps;
   }
@@ -131,6 +135,7 @@ export class SessionManager {
 
     // Start live transcription if engine is available
     if (this.deps.transcriptionEngine) {
+      this.log("INFO", `Starting Deepgram live transcription for session ${sessionId}`);
       const capturedRunId = session.runId;
       this.deps.transcriptionEngine.startLive((segment: TranscriptSegment) => {
         // Only commit live transcript if runId still matches (not cancelled)
@@ -138,8 +143,38 @@ export class SessionManager {
           session.liveTranscript.push(segment);
         }
       });
+      this.log("INFO", `Deepgram live connection opened for session ${sessionId}`);
+    } else {
+      this.log("WARN", `No TranscriptionEngine configured — live transcription disabled`);
     }
   }
+
+  /**
+   * Forwards an audio chunk to the live transcription engine (Deepgram).
+   * Also buffers the chunk in the session for post-speech transcription.
+   *
+   * This should be called for every binary audio frame received during RECORDING.
+   * Privacy: audio chunks are in-memory only, never written to disk.
+   *
+   * @throws Error if the session does not exist.
+   */
+  feedAudio(sessionId: string, chunk: Buffer): void {
+    const session = this.getSession(sessionId);
+
+    // Buffer for post-speech transcription
+    session.audioChunks.push(Buffer.from(chunk));
+
+    // Forward to Deepgram live transcription if available
+    if (this.deps.transcriptionEngine) {
+      try {
+        this.deps.transcriptionEngine.feedAudio(chunk);
+      } catch (err) {
+        const errMsg = err instanceof Error ? err.message : String(err);
+        this.log("WARN", `feedAudio failed for session ${sessionId}: ${errMsg}`);
+      }
+    }
+  }
+
 
   /**
    * Transitions the session from RECORDING to PROCESSING.
@@ -186,10 +221,12 @@ export class SessionManager {
 
       // Stop live transcription
       if (this.deps.transcriptionEngine) {
+        this.log("INFO", `Stopping Deepgram live transcription for session ${sessionId}`);
         this.deps.transcriptionEngine.stopLive();
 
         // Propagate transcription quality warning (e.g., Deepgram connection drop)
         if (this.deps.transcriptionEngine.qualityWarning) {
+          this.log("WARN", `Deepgram quality warning flagged for session ${sessionId}`);
           session.qualityWarning = true;
         }
       }
@@ -198,6 +235,7 @@ export class SessionManager {
       // Privacy: this buffer is in-memory only, never written to disk
       if (this.deps.transcriptionEngine && session.audioChunks.length > 0) {
         const fullAudio = Buffer.concat(session.audioChunks);
+        this.log("INFO", `Post-speech transcription: sending ${fullAudio.length} bytes (${session.audioChunks.length} chunks) to OpenAI for session ${sessionId}`);
 
         try {
           // Run post-speech transcription (OpenAI gpt-4o-transcribe)
@@ -205,20 +243,31 @@ export class SessionManager {
 
           // Check runId before committing — panic mute or new recording may have happened
           if (session.runId !== capturedRunId) {
+            this.log("WARN", `RunId changed during post-speech transcription for session ${sessionId}, discarding result`);
             return;
           }
 
+          this.log("INFO", `Post-speech transcription complete: ${finalTranscript.length} segments for session ${sessionId}`);
           session.transcript = finalTranscript;
-        } catch {
+        } catch (err) {
           // Post-pass failure: fall back to Deepgram live segments with quality warning (Req 7.1)
+          const errMsg = err instanceof Error ? err.message : String(err);
+          this.log("ERROR", `Post-speech transcription failed for session ${sessionId}: ${errMsg}`);
+
           if (session.runId !== capturedRunId) {
             return;
           }
 
           // Use only finalized live transcript segments as fallback
-          session.transcript = session.liveTranscript.filter((s) => s.isFinal);
+          const fallbackSegments = session.liveTranscript.filter((s) => s.isFinal);
+          this.log("WARN", `Falling back to ${fallbackSegments.length} Deepgram live segments for session ${sessionId}`);
+          session.transcript = fallbackSegments;
           session.qualityWarning = true;
         }
+      } else if (!this.deps.transcriptionEngine) {
+        this.log("WARN", `No TranscriptionEngine configured — no transcription performed`);
+      } else {
+        this.log("WARN", `No audio chunks captured for session ${sessionId}`);
       }
 
       // Check runId again before metrics extraction
@@ -228,6 +277,7 @@ export class SessionManager {
 
       // Extract metrics from the final transcript
       if (this.deps.metricsExtractor && session.transcript.length > 0) {
+        this.log("INFO", `Extracting delivery metrics from ${session.transcript.length} segments for session ${sessionId}`);
         const metrics = this.deps.metricsExtractor.extract(session.transcript);
 
         // Check runId before committing metrics
@@ -235,7 +285,10 @@ export class SessionManager {
           return;
         }
 
+        this.log("INFO", `Metrics: ${metrics.totalWords} words, ${Math.round(metrics.wordsPerMinute)} WPM, ${metrics.durationFormatted} duration, ${metrics.fillerWordCount} fillers, ${metrics.pauseCount} pauses`);
         session.metrics = metrics;
+      } else if (!this.deps.metricsExtractor) {
+        this.log("WARN", `No MetricsExtractor configured — metrics extraction skipped`);
       }
 
       // Assess transcript quality
@@ -286,82 +339,100 @@ export class SessionManager {
      * @returns The synthesized TTS audio buffer, or undefined if no TTS engine or TTS failure.
      */
     async generateEvaluation(sessionId: string): Promise<Buffer | undefined> {
-      const session = this.getSession(sessionId);
-      this.assertTransition(session, SessionState.DELIVERING, "generateEvaluation");
+          const session = this.getSession(sessionId);
+          this.assertTransition(session, SessionState.DELIVERING, "generateEvaluation");
 
-      session.state = SessionState.DELIVERING;
+          session.state = SessionState.DELIVERING;
 
-      const capturedRunId = session.runId;
+          const capturedRunId = session.runId;
 
-      // Generate evaluation if generator is available
-      if (this.deps.evaluationGenerator && session.transcript.length > 0 && session.metrics) {
-        let evaluation: StructuredEvaluation;
+          // Generate evaluation if generator is available
+          if (this.deps.evaluationGenerator && session.transcript.length > 0 && session.metrics) {
+            let evaluation: StructuredEvaluation;
 
-        try {
-          evaluation = await this.deps.evaluationGenerator.generate(
-            session.transcript,
-            session.metrics,
-          );
-        } catch (err) {
-          // LLM failure: transition back to PROCESSING so operator can retry (Req 7.3)
-          if (session.runId === capturedRunId) {
-            session.state = SessionState.PROCESSING;
-          }
-          throw err;
-        }
+            try {
+              this.log("INFO", `Generating evaluation via GPT-4o for session ${sessionId} (${session.transcript.length} segments, ${session.metrics.totalWords} words)`);
+              evaluation = await this.deps.evaluationGenerator.generate(
+                session.transcript,
+                session.metrics,
+              );
+              this.log("INFO", `Evaluation generated: ${evaluation.items.length} items (${evaluation.items.filter(i => i.type === "commendation").length} commendations, ${evaluation.items.filter(i => i.type === "recommendation").length} recommendations)`);
+            } catch (err) {
+              const errMsg = err instanceof Error ? err.message : String(err);
+              this.log("ERROR", `Evaluation generation failed for session ${sessionId}: ${errMsg}`);
+              // LLM failure: transition back to PROCESSING so operator can retry (Req 7.3)
+              if (session.runId === capturedRunId) {
+                session.state = SessionState.PROCESSING;
+              }
+              throw err;
+            }
 
-        // Check runId before committing
-        if (session.runId !== capturedRunId) {
-          return undefined;
-        }
+            // Check runId before committing
+            if (session.runId !== capturedRunId) {
+              this.log("WARN", `RunId changed during evaluation generation for session ${sessionId}, discarding`);
+              return undefined;
+            }
 
-        session.evaluation = evaluation;
+            session.evaluation = evaluation;
 
-        // Render script with redaction (validate first, redact second per privacy rules)
-        const script = this.deps.evaluationGenerator.renderScript(
-          evaluation,
-          session.speakerName,
-        );
+            // Render script with redaction (validate first, redact second per privacy rules)
+            this.log("INFO", `Rendering evaluation script for session ${sessionId}`);
+            const script = this.deps.evaluationGenerator.renderScript(
+              evaluation,
+              session.speakerName,
+            );
 
-        // Check runId before committing
-        if (session.runId !== capturedRunId) {
-          return undefined;
-        }
-
-        session.evaluationScript = script;
-
-        // Trim and synthesize via TTS engine
-        if (this.deps.ttsEngine) {
-          const trimmedScript = this.deps.ttsEngine.trimToFit(script, 210);
-
-          // Check runId before synthesis
-          if (session.runId !== capturedRunId) {
-            return undefined;
-          }
-
-          // Update script to the trimmed version
-          session.evaluationScript = trimmedScript;
-
-          try {
-            const audioBuffer = await this.deps.ttsEngine.synthesize(trimmedScript);
-
-            // Check runId before committing audio
+            // Check runId before committing
             if (session.runId !== capturedRunId) {
               return undefined;
             }
 
-            return audioBuffer;
-          } catch {
-            // TTS failure: evaluation and script are already stored in session (Req 7.4)
-            // Return undefined (no audio) — server will send evaluation_ready with script text
-            // so the client can display the written evaluation as fallback
-            return undefined;
-          }
-        }
-      }
+            session.evaluationScript = script;
 
-      return undefined;
-    }
+            // Trim and synthesize via TTS engine
+            if (this.deps.ttsEngine) {
+              const trimmedScript = this.deps.ttsEngine.trimToFit(script, 210);
+
+              // Check runId before synthesis
+              if (session.runId !== capturedRunId) {
+                return undefined;
+              }
+
+              // Update script to the trimmed version
+              session.evaluationScript = trimmedScript;
+
+              try {
+                this.log("INFO", `Synthesizing TTS audio for session ${sessionId} (${trimmedScript.split(/\s+/).length} words)`);
+                const audioBuffer = await this.deps.ttsEngine.synthesize(trimmedScript);
+
+                // Check runId before committing audio
+                if (session.runId !== capturedRunId) {
+                  return undefined;
+                }
+
+                this.log("INFO", `TTS synthesis complete: ${audioBuffer.length} bytes for session ${sessionId}`);
+                return audioBuffer;
+              } catch (err) {
+                const errMsg = err instanceof Error ? err.message : String(err);
+                this.log("ERROR", `TTS synthesis failed for session ${sessionId}: ${errMsg}. Falling back to written evaluation.`);
+                // TTS failure: evaluation and script are already stored in session (Req 7.4)
+                // Return undefined (no audio) — server will send evaluation_ready with script text
+                // so the client can display the written evaluation as fallback
+                return undefined;
+              }
+            } else {
+              this.log("WARN", `No TTSEngine configured — TTS synthesis skipped`);
+            }
+          } else if (!this.deps.evaluationGenerator) {
+            this.log("WARN", `No EvaluationGenerator configured — evaluation generation skipped`);
+          } else if (session.transcript.length === 0) {
+            this.log("WARN", `No transcript available for session ${sessionId} — cannot generate evaluation`);
+          } else if (!session.metrics) {
+            this.log("WARN", `No metrics available for session ${sessionId} — cannot generate evaluation`);
+          }
+
+          return undefined;
+        }
 
 
   /**

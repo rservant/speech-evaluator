@@ -225,9 +225,32 @@ export class TranscriptionEngine {
       return [];
     }
 
-    // Convert Buffer to a File object for the OpenAI API.
-    // The audio is mono LINEAR16 16kHz PCM — we wrap it as a .wav-like file.
-    const audioFile = new File([new Uint8Array(fullAudio.buffer as ArrayBuffer, fullAudio.byteOffset, fullAudio.byteLength)], "speech.wav", {
+    // Convert raw PCM to a proper WAV file for the OpenAI API.
+    // The audio is mono LINEAR16 16kHz PCM — we prepend a 44-byte WAV header
+    // so the API can identify the format correctly.
+    const sampleRate = 16000;
+    const numChannels = 1;
+    const bitsPerSample = 16;
+    const byteRate = sampleRate * numChannels * (bitsPerSample / 8);
+    const blockAlign = numChannels * (bitsPerSample / 8);
+    const dataSize = fullAudio.byteLength;
+    const wavHeader = Buffer.alloc(44);
+    wavHeader.write("RIFF", 0);                          // ChunkID
+    wavHeader.writeUInt32LE(36 + dataSize, 4);            // ChunkSize
+    wavHeader.write("WAVE", 8);                           // Format
+    wavHeader.write("fmt ", 12);                          // Subchunk1ID
+    wavHeader.writeUInt32LE(16, 16);                      // Subchunk1Size (PCM)
+    wavHeader.writeUInt16LE(1, 20);                       // AudioFormat (1 = PCM)
+    wavHeader.writeUInt16LE(numChannels, 22);             // NumChannels
+    wavHeader.writeUInt32LE(sampleRate, 24);              // SampleRate
+    wavHeader.writeUInt32LE(byteRate, 28);                // ByteRate
+    wavHeader.writeUInt16LE(blockAlign, 32);              // BlockAlign
+    wavHeader.writeUInt16LE(bitsPerSample, 34);           // BitsPerSample
+    wavHeader.write("data", 36);                          // Subchunk2ID
+    wavHeader.writeUInt32LE(dataSize, 40);                // Subchunk2Size
+
+    const wavBuffer = Buffer.concat([wavHeader, fullAudio]);
+    const audioFile = new File([new Uint8Array(wavBuffer.buffer as ArrayBuffer, wavBuffer.byteOffset, wavBuffer.byteLength)], "speech.wav", {
       type: "audio/wav",
     });
 

@@ -259,9 +259,9 @@ function handleBinaryMessage(
   }
   connState.lastChunkTimestamp = now;
 
-  // Buffer audio chunk in session for post-speech transcription
+  // Buffer audio chunk and forward to Deepgram live transcription
   // Privacy: audio chunks are in-memory only, never written to disk
-  session.audioChunks.push(Buffer.from(data));
+  sessionManager.feedAudio(connState.sessionId, Buffer.from(data));
 }
 
 // ─── JSON Client Message Handler ────────────────────────────────────────────────

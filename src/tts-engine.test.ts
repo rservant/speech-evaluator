@@ -126,11 +126,11 @@ describe("TTSEngine.synthesize", () => {
     const mockClient = createMockClient();
     const engine = new TTSEngine(mockClient);
 
-    await engine.synthesize("Hello world.", { voice: "cedar", maxDurationSeconds: 210, calibratedWPM: 150 });
+    await engine.synthesize("Hello world.", { voice: "nova", maxDurationSeconds: 210, calibratedWPM: 150 });
 
     expect(mockClient.audio.speech.create).toHaveBeenCalledWith({
       model: "tts-1",
-      voice: "cedar",
+      voice: "nova",
       input: "Hello world.",
     });
   });
@@ -153,7 +153,7 @@ describe("TTSEngine.synthesize", () => {
 
     expect(mockClient.audio.speech.create).toHaveBeenCalledWith({
       model: "tts-1",
-      voice: "cedar",
+      voice: "nova",
       input: "Hello world.",
     });
   });
@@ -165,7 +165,7 @@ describe("TTSEngine.synthesize", () => {
     // Build a long text that exceeds 2 seconds at 150 WPM
     const text = "First sentence. Second sentence. Third sentence. Fourth sentence. Fifth sentence. Sixth sentence. Seventh sentence. Eighth sentence. Ninth sentence. Tenth sentence.";
     
-    await engine.synthesize(text, { voice: "cedar", maxDurationSeconds: 2, calibratedWPM: 150 });
+    await engine.synthesize(text, { voice: "nova", maxDurationSeconds: 2, calibratedWPM: 150 });
 
     // The input passed to the API should be trimmed
     const callArgs = (mockClient.audio.speech.create as ReturnType<typeof vi.fn>).mock.calls[0][0];
