@@ -227,7 +227,7 @@ export class TranscriptionEngine {
 
     // Convert Buffer to a File object for the OpenAI API.
     // The audio is mono LINEAR16 16kHz PCM — we wrap it as a .wav-like file.
-    const audioFile = new File([fullAudio], "speech.wav", {
+    const audioFile = new File([new Uint8Array(fullAudio.buffer as ArrayBuffer, fullAudio.byteOffset, fullAudio.byteLength)], "speech.wav", {
       type: "audio/wav",
     });
 
