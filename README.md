@@ -1,53 +1,37 @@
-# Speech Evaluator
+# AI Toastmasters Evaluator
 
-An AI-powered Toastmasters speech evaluator that listens to live speeches, generates evidence-based evaluations, and delivers them aloud.
+An AI-powered speech evaluator for Toastmasters meetings. It listens to a live speech, transcribes it, computes delivery metrics, generates an evidence-based evaluation, and speaks it aloud — all from a browser-based control panel.
 
-## What It Does
+## How It Works
 
-- Captures speech audio via microphone during a Toastmasters meeting
-- Transcribes in real time with live captions
-- Computes delivery metrics (WPM, filler words, pauses, duration)
-- Generates a structured, evidence-grounded evaluation using an LLM
-- Speaks the evaluation aloud via text-to-speech
-- Saves transcript, metrics, and evaluation to files (opt-in)
+1. The operator opens the web UI and clicks **Start Speech** when the speaker begins
+2. Audio streams from the browser mic to the server via WebSocket
+3. Deepgram provides live captions during the speech
+4. When the speaker finishes, the operator clicks **Stop Speech**
+5. OpenAI produces a high-quality final transcript with word-level timestamps
+6. Delivery metrics are computed (WPM, filler words, pauses, duration)
+7. GPT-4o generates a structured evaluation with evidence quotes from the transcript
+8. The operator clicks **Deliver Evaluation** and the evaluation is spoken aloud via TTS
+9. Optionally, click **Save Outputs** to persist transcript, metrics, and evaluation to disk
 
-The system is operated via a web-based UI with manual controls: Start Speech → Stop Speech → Deliver Evaluation.
-
-## Project Status
-
-**Phase 1 (MVP)** — in development. See the [full PRD](docs/PRD-AI-Toastmasters-Evaluator.md) for the 9-phase roadmap.
-
-## Tech Stack
-
-- Node.js + TypeScript
-- Express.js + WebSocket (`ws`)
-- Deepgram API (live captions)
-- OpenAI gpt-4o-transcribe (final transcript)
-- OpenAI GPT-4o (evaluation generation)
-- OpenAI TTS API (spoken delivery)
-- Vitest + fast-check (testing)
+A **Panic Mute** button is always available to immediately stop all audio and TTS.
 
 ## Prerequisites
 
 - Node.js 20+
-- A Deepgram API key
-- An OpenAI API key
-- A USB or boundary microphone
-- A separate speaker (for echo prevention)
+- A [Deepgram API key](https://console.deepgram.com/signup) (free tier includes $200 credit)
+- An [OpenAI API key](https://platform.openai.com/api-keys) (requires billing setup)
+- A microphone (USB or boundary mic recommended for meeting use)
+- A separate speaker for TTS playback (to avoid echo feedback)
 
 ## Getting Started
 
 ```bash
-# Clone the repo
-git clone https://github.com/rservant/speech-evaluator.git
-cd speech-evaluator
-
 # Install dependencies
 npm install
 
-# Copy environment config
+# Copy environment config and add your API keys
 cp .env.example .env
-# Edit .env with your API keys
 
 # Build
 npm run build
@@ -56,11 +40,11 @@ npm run build
 npm start
 ```
 
-Then open `http://localhost:3000` in your browser.
+Open `http://localhost:3000` in your browser. That's it.
 
 ## Configuration
 
-Copy `.env.example` to `.env` and fill in:
+Edit `.env`:
 
 ```
 DEEPGRAM_API_KEY=your_deepgram_key
@@ -68,50 +52,68 @@ OPENAI_API_KEY=your_openai_key
 PORT=3000
 ```
 
+## Using It in a Meeting
+
+1. Open the UI on a laptop connected to the room mic and speaker
+2. Confirm speaker consent before recording
+3. Click **Start Speech** — live captions appear as the speaker talks
+4. Click **Stop Speech** when the speech ends — wait for processing
+5. Click **Deliver Evaluation** — the AI evaluation plays through the speaker
+6. If anything goes wrong, hit **Panic Mute** to kill all audio immediately
+7. Click **Save Outputs** if you want to keep the transcript, metrics, and evaluation
+
+The evaluation is evidence-grounded: every commendation and recommendation includes a direct quote from the speaker's actual words with a timestamp reference.
+
 ## Development
 
 ```bash
-# Run in development mode
-npm run dev
-
-# Run tests
+# Run tests (339 tests across 17 files)
 npm test
 
-# Type check
-npm run typecheck
+# Watch mode for tests
+npm run test:watch
 
-# Lint
-npm run lint
+# TypeScript watch mode
+npm run dev
 ```
 
 ## Project Structure
 
 ```
-src/                    # Server-side TypeScript source
-  types.ts              # Shared interfaces and types
-  session-manager.ts    # Session state machine
-  metrics-extractor.ts  # Delivery metrics computation
-  evaluation-generator.ts # LLM evaluation + evidence validation
-  evidence-validator.ts # Evidence quote validation
-  tts-engine.ts         # Text-to-speech with time enforcement
-  transcription-engine.ts # Deepgram + OpenAI transcription
-  file-persistence.ts   # Opt-in output saving
-  server.ts             # Express + WebSocket server
-public/                 # Browser client (vanilla HTML/CSS/JS)
-  index.html            # Operator control panel
-  audio-worklet.js      # Audio capture + downsampling
-docs/                   # Project documentation
-  PRD-AI-Toastmasters-Evaluator.md
-output/                 # Saved session outputs (git-ignored)
+src/
+  types.ts                # Shared interfaces and types
+  session-manager.ts      # Session state machine + pipeline orchestration
+  transcription-engine.ts # Deepgram live + OpenAI post-speech transcription
+  metrics-extractor.ts    # WPM, filler words, pauses, duration
+  evaluation-generator.ts # GPT-4o evaluation + evidence validation
+  evidence-validator.ts   # Evidence quote matching against transcript
+  tts-engine.ts           # OpenAI TTS with duration enforcement
+  file-persistence.ts     # Opt-in output saving
+  server.ts               # Express + WebSocket server
+  index.ts                # Entry point
+public/
+  index.html              # Operator control panel (vanilla HTML/CSS/JS)
+  audio-worklet.js        # Browser audio capture + downsampling to 16kHz
+docs/
+  PRD-AI-Toastmasters-Evaluator.md  # Full product requirements
 ```
 
 ## Privacy
 
-- Audio is never written to disk
-- Session data is held in memory only and auto-purged after 10 minutes
-- File persistence is opt-in (operator must explicitly click "Save Outputs")
-- Speaker consent is confirmed before every recording
+- Audio is never written to disk — in-memory only
+- Session data auto-purges 10 minutes after evaluation delivery
+- File persistence is opt-in (operator must click "Save Outputs")
+- Speaker opt-out immediately and irrecoverably purges all session data
+- Third-party names mentioned in the speech are redacted in TTS delivery
 - See the [PRD](docs/PRD-AI-Toastmasters-Evaluator.md) for full privacy details
+
+## Tech Stack
+
+- Node.js + TypeScript (ESM)
+- Express + WebSocket (`ws`)
+- Deepgram SDK (live transcription)
+- OpenAI API (transcription, evaluation, TTS)
+- Vitest + fast-check (unit + property-based testing)
 
 ## License
 

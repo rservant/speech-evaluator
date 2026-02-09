@@ -1,0 +1,38 @@
+{
+  "name": "ai-toastmasters-evaluator",
+  "version": "0.1.0",
+  "description": "AI Toastmasters Evaluator MVP - captures live speech, transcribes, computes metrics, generates evaluation, and delivers via TTS",
+  "type": "module",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "dev": "tsc --watch",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "keywords": [
+    "toastmasters",
+    "speech-evaluation",
+    "ai",
+    "transcription",
+    "tts"
+  ],
+  "license": "MIT",
+  "dependencies": {
+    "@deepgram/sdk": "^4.11.3",
+    "dotenv": "^17.2.4",
+    "express": "^5.2.1",
+    "openai": "^6.18.0",
+    "typescript": "^5.9.3",
+    "uuid": "^13.0.0",
+    "ws": "^8.19.0"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.6",
+    "@types/uuid": "^10.0.0",
+    "@types/ws": "^8.18.1",
+    "fast-check": "^4.5.3",
+    "vitest": "^4.0.18"
+  }
+}

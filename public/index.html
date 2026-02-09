@@ -1,0 +1,1574 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AI Toastmasters Evaluator</title>
+  <link rel="icon" href="data:,">
+  <style>
+    /* ─── CSS Custom Properties ──────────────────────────────────────── */
+    :root {
+      --color-bg: #1a1a2e;
+      --color-surface: #16213e;
+      --color-surface-alt: #0f3460;
+      --color-text: #e8e8e8;
+      --color-text-muted: #a0a0b0;
+      --color-primary: #4a90d9;
+      --color-primary-hover: #5ba0e9;
+      --color-success: #27ae60;
+      --color-success-hover: #2ecc71;
+      --color-danger: #e74c3c;
+      --color-danger-hover: #ff5544;
+      --color-warning: #f39c12;
+      --color-warning-hover: #f1c40f;
+      --color-info: #3498db;
+      --color-border: #2a2a4a;
+      --color-recording: #e74c3c;
+      --color-processing: #f39c12;
+      --color-delivering: #3498db;
+      --font-main: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+      --font-mono: "SF Mono", "Fira Code", "Fira Mono", monospace;
+      --radius: 8px;
+      --radius-lg: 12px;
+      --shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+      --transition: 0.2s ease;
+    }
+
+    /* ─── Reset & Base ───────────────────────────────────────────────── */
+    *, *::before, *::after {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    html {
+      font-size: 18px;
+    }
+
+    body {
+      font-family: var(--font-main);
+      background: var(--color-bg);
+      color: var(--color-text);
+      min-height: 100vh;
+      line-height: 1.5;
+    }
+
+    /* ─── Layout ─────────────────────────────────────────────────────── */
+    .app {
+      max-width: 960px;
+      margin: 0 auto;
+      padding: 1.5rem 1rem;
+      display: flex;
+      flex-direction: column;
+      gap: 1.25rem;
+      min-height: 100vh;
+    }
+
+    /* ─── Header ─────────────────────────────────────────────────────── */
+    .header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding-bottom: 0.75rem;
+      border-bottom: 1px solid var(--color-border);
+    }
+
+    .header h1 {
+      font-size: 1.4rem;
+      font-weight: 600;
+      letter-spacing: -0.02em;
+    }
+
+    .header h1 span {
+      color: var(--color-primary);
+    }
+
+    /* ─── Status Bar ─────────────────────────────────────────────────── */
+    .status-bar {
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+      padding: 0.6rem 1rem;
+      background: var(--color-surface);
+      border-radius: var(--radius);
+      border: 1px solid var(--color-border);
+      font-size: 0.95rem;
+    }
+
+    .status-indicator {
+      width: 12px;
+      height: 12px;
+      border-radius: 50%;
+      background: var(--color-text-muted);
+      flex-shrink: 0;
+      transition: background var(--transition);
+    }
+
+    .status-indicator.idle { background: var(--color-text-muted); }
+    .status-indicator.recording {
+      background: var(--color-recording);
+      animation: pulse 1.2s ease-in-out infinite;
+    }
+    .status-indicator.processing {
+      background: var(--color-processing);
+      animation: pulse 1.5s ease-in-out infinite;
+    }
+    .status-indicator.delivering {
+      background: var(--color-delivering);
+      animation: pulse 1s ease-in-out infinite;
+    }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.4; }
+    }
+
+    .status-text {
+      flex: 1;
+      font-weight: 500;
+    }
+
+    .elapsed-time {
+      font-family: var(--font-mono);
+      font-size: 1.3rem;
+      font-weight: 700;
+      color: var(--color-recording);
+      display: none;
+    }
+
+    .elapsed-time.visible {
+      display: block;
+    }
+
+    /* ─── Audio Level Meter ──────────────────────────────────────────── */
+    .audio-level {
+      display: none;
+      width: 80px;
+      height: 10px;
+      background: var(--color-border);
+      border-radius: 5px;
+      overflow: hidden;
+      flex-shrink: 0;
+    }
+
+    .audio-level.visible {
+      display: block;
+    }
+
+    .audio-level-bar {
+      height: 100%;
+      width: 0%;
+      background: var(--color-success);
+      border-radius: 5px;
+      transition: width 0.05s linear, background 0.15s ease;
+    }
+
+    .audio-level-bar.hot {
+      background: var(--color-danger);
+    }
+
+    /* ─── Controls ───────────────────────────────────────────────────── */
+    .controls {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.75rem;
+      align-items: center;
+    }
+
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.5rem;
+      padding: 0.65rem 1.25rem;
+      border: none;
+      border-radius: var(--radius);
+      font-family: var(--font-main);
+      font-size: 1rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: background var(--transition), opacity var(--transition), transform 0.1s ease;
+      white-space: nowrap;
+    }
+
+    .btn:active:not(:disabled) {
+      transform: scale(0.97);
+    }
+
+    .btn:disabled {
+      opacity: 0.4;
+      cursor: not-allowed;
+    }
+
+    .btn-primary {
+      background: var(--color-primary);
+      color: #fff;
+    }
+    .btn-primary:hover:not(:disabled) {
+      background: var(--color-primary-hover);
+    }
+
+    .btn-success {
+      background: var(--color-success);
+      color: #fff;
+    }
+    .btn-success:hover:not(:disabled) {
+      background: var(--color-success-hover);
+    }
+
+    .btn-danger {
+      background: var(--color-danger);
+      color: #fff;
+    }
+    .btn-danger:hover:not(:disabled) {
+      background: var(--color-danger-hover);
+    }
+
+    .btn-warning {
+      background: var(--color-warning);
+      color: #1a1a2e;
+    }
+    .btn-warning:hover:not(:disabled) {
+      background: var(--color-warning-hover);
+    }
+
+    .btn-save {
+      background: var(--color-surface-alt);
+      color: var(--color-text);
+      border: 1px solid var(--color-border);
+    }
+    .btn-save:hover:not(:disabled) {
+      background: var(--color-primary);
+      border-color: var(--color-primary);
+    }
+
+    /* Panic mute is always visible and visually distinct */
+    .btn-panic {
+      background: var(--color-danger);
+      color: #fff;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      border: 2px solid var(--color-danger-hover);
+      margin-left: auto;
+    }
+    .btn-panic:hover:not(:disabled) {
+      background: var(--color-danger-hover);
+      border-color: #ff7766;
+    }
+
+    .hidden {
+      display: none !important;
+    }
+
+    /* ─── Speaking Indicator ─────────────────────────────────────────── */
+    .speaking-indicator {
+      display: none;
+      align-items: center;
+      justify-content: center;
+      gap: 0.75rem;
+      padding: 1rem;
+      background: var(--color-surface);
+      border: 1px solid var(--color-delivering);
+      border-radius: var(--radius);
+      font-size: 1.15rem;
+      font-weight: 600;
+      color: var(--color-delivering);
+    }
+
+    .speaking-indicator.visible {
+      display: flex;
+    }
+
+    .speaking-dots {
+      display: flex;
+      gap: 4px;
+    }
+
+    .speaking-dots span {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--color-delivering);
+      animation: speakingBounce 1.4s ease-in-out infinite;
+    }
+    .speaking-dots span:nth-child(2) { animation-delay: 0.2s; }
+    .speaking-dots span:nth-child(3) { animation-delay: 0.4s; }
+
+    @keyframes speakingBounce {
+      0%, 80%, 100% { transform: translateY(0); opacity: 0.4; }
+      40% { transform: translateY(-6px); opacity: 1; }
+    }
+
+    /* ─── Processing Indicator ───────────────────────────────────────── */
+    .processing-indicator {
+      display: none;
+      align-items: center;
+      justify-content: center;
+      gap: 0.75rem;
+      padding: 1rem;
+      background: var(--color-surface);
+      border: 1px solid var(--color-processing);
+      border-radius: var(--radius);
+      font-size: 1rem;
+      color: var(--color-processing);
+    }
+
+    .processing-indicator.visible {
+      display: flex;
+    }
+
+    .spinner {
+      width: 20px;
+      height: 20px;
+      border: 3px solid var(--color-border);
+      border-top-color: var(--color-processing);
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+    }
+
+    @keyframes spin {
+      to { transform: rotate(360deg); }
+    }
+
+    /* ─── Content Panels ─────────────────────────────────────────────── */
+    .panel {
+      background: var(--color-surface);
+      border: 1px solid var(--color-border);
+      border-radius: var(--radius-lg);
+      overflow: hidden;
+    }
+
+    .panel-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0.6rem 1rem;
+      background: rgba(255, 255, 255, 0.03);
+      border-bottom: 1px solid var(--color-border);
+      font-size: 0.85rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      color: var(--color-text-muted);
+    }
+
+    .panel-body {
+      padding: 1rem;
+      min-height: 120px;
+      max-height: 400px;
+      overflow-y: auto;
+    }
+
+    /* ─── Transcript Area ────────────────────────────────────────────── */
+    #transcript-panel {
+      display: none;
+    }
+
+    #transcript-panel.visible {
+      display: block;
+    }
+
+    .transcript-content {
+      font-size: 1.05rem;
+      line-height: 1.7;
+      white-space: pre-wrap;
+      word-wrap: break-word;
+    }
+
+    .transcript-content .segment {
+      margin-bottom: 0.5rem;
+    }
+
+    .transcript-content .segment-time {
+      color: var(--color-text-muted);
+      font-family: var(--font-mono);
+      font-size: 0.8rem;
+      margin-right: 0.5rem;
+    }
+
+    .transcript-content .interim {
+      color: var(--color-text-muted);
+      font-style: italic;
+    }
+
+    .transcript-empty {
+      color: var(--color-text-muted);
+      font-style: italic;
+      text-align: center;
+      padding: 2rem 0;
+    }
+
+    /* ─── Evaluation Area ────────────────────────────────────────────── */
+    #evaluation-panel {
+      display: none;
+    }
+
+    #evaluation-panel.visible {
+      display: block;
+    }
+
+    .evaluation-content {
+      font-size: 1.05rem;
+      line-height: 1.7;
+      white-space: pre-wrap;
+      word-wrap: break-word;
+    }
+
+    .evaluation-empty {
+      color: var(--color-text-muted);
+      font-style: italic;
+      text-align: center;
+      padding: 2rem 0;
+    }
+
+    /* ─── Error Banner ───────────────────────────────────────────────── */
+    .error-banner {
+      display: none;
+      padding: 0.75rem 1rem;
+      border-radius: var(--radius);
+      font-size: 0.95rem;
+      line-height: 1.4;
+    }
+
+    .error-banner.visible {
+      display: flex;
+      align-items: flex-start;
+      gap: 0.75rem;
+    }
+
+    .error-banner.recoverable {
+      background: rgba(243, 156, 18, 0.15);
+      border: 1px solid var(--color-warning);
+      color: var(--color-warning);
+    }
+
+    .error-banner.non-recoverable {
+      background: rgba(231, 76, 60, 0.15);
+      border: 1px solid var(--color-danger);
+      color: var(--color-danger);
+    }
+
+    .error-banner .error-icon {
+      font-size: 1.2rem;
+      flex-shrink: 0;
+      line-height: 1;
+    }
+
+    .error-banner .error-message {
+      flex: 1;
+    }
+
+    .error-banner .error-dismiss {
+      background: none;
+      border: none;
+      color: inherit;
+      cursor: pointer;
+      font-size: 1.2rem;
+      padding: 0;
+      line-height: 1;
+      opacity: 0.7;
+    }
+
+    .error-banner .error-dismiss:hover {
+      opacity: 1;
+    }
+
+    /* ─── Interruption Banner ────────────────────────────────────────── */
+    .interruption-banner {
+      display: none;
+      padding: 0.6rem 1rem;
+      background: rgba(231, 76, 60, 0.1);
+      border: 1px solid var(--color-danger);
+      border-radius: var(--radius);
+      color: var(--color-danger);
+      font-size: 0.9rem;
+      align-items: center;
+      gap: 0.5rem;
+    }
+
+    .interruption-banner.visible {
+      display: flex;
+    }
+
+    /* ─── Saved Confirmation ─────────────────────────────────────────── */
+    .saved-confirmation {
+      display: none;
+      padding: 0.6rem 1rem;
+      background: rgba(39, 174, 96, 0.15);
+      border: 1px solid var(--color-success);
+      border-radius: var(--radius);
+      color: var(--color-success);
+      font-size: 0.9rem;
+      align-items: center;
+      gap: 0.5rem;
+    }
+
+    .saved-confirmation.visible {
+      display: flex;
+    }
+
+    /* ─── Footer ─────────────────────────────────────────────────────── */
+    .footer {
+      margin-top: auto;
+      padding-top: 0.75rem;
+      border-top: 1px solid var(--color-border);
+      font-size: 0.75rem;
+      color: var(--color-text-muted);
+      text-align: center;
+    }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <!-- Header -->
+    <header class="header">
+      <h1><span>AI</span> Toastmasters Evaluator</h1>
+      <span id="connection-status" style="font-size: 0.8rem; color: var(--color-text-muted);">Disconnected</span>
+    </header>
+
+    <!-- Error Banner -->
+    <div id="error-banner" class="error-banner" role="alert" aria-live="assertive">
+      <span class="error-icon">⚠</span>
+      <span id="error-message" class="error-message"></span>
+      <button class="error-dismiss" onclick="dismissError()" aria-label="Dismiss error">&times;</button>
+    </div>
+
+    <!-- Interruption Banner (shown after panic mute) -->
+    <div id="interruption-banner" class="interruption-banner" role="status">
+      <span>⚡</span>
+      <span>Session interrupted. You can start a new recording or attempt evaluation from captured data.</span>
+    </div>
+
+    <!-- Saved Confirmation -->
+    <div id="saved-confirmation" class="saved-confirmation" role="status">
+      <span>✓</span>
+      <span id="saved-message">Outputs saved successfully.</span>
+    </div>
+
+    <!-- Status Bar -->
+    <div class="status-bar">
+      <div id="status-indicator" class="status-indicator idle"></div>
+      <span id="status-text" class="status-text">Ready — click "Start Speech" to begin</span>
+      <span id="elapsed-time" class="elapsed-time">00:00</span>
+      <div id="audio-level" class="audio-level" aria-label="Audio input level">
+        <div id="audio-level-bar" class="audio-level-bar"></div>
+      </div>
+    </div>
+
+    <!-- Controls -->
+    <div class="controls">
+      <button id="btn-start" class="btn btn-success" onclick="onStartSpeech()">
+        ● Start Speech
+      </button>
+      <button id="btn-stop" class="btn btn-primary hidden" onclick="onStopSpeech()">
+        ■ Stop Speech
+      </button>
+      <button id="btn-deliver" class="btn btn-warning hidden" onclick="onDeliverEvaluation()">
+        ▶ Deliver Evaluation
+      </button>
+      <button id="btn-replay" class="btn btn-primary hidden" onclick="onReplayEvaluation()">
+        🔁 Replay Evaluation
+      </button>
+      <button id="btn-save" class="btn btn-save hidden" onclick="onSaveOutputs()">
+        💾 Save Outputs
+      </button>
+      <button id="btn-panic" class="btn btn-panic" onclick="onPanicMute()">
+        🔇 Panic Mute
+      </button>
+    </div>
+
+    <!-- Speaking Indicator -->
+    <div id="speaking-indicator" class="speaking-indicator" role="status" aria-live="polite">
+      <div class="speaking-dots">
+        <span></span><span></span><span></span>
+      </div>
+      Speaking...
+    </div>
+
+    <!-- Processing Indicator -->
+    <div id="processing-indicator" class="processing-indicator" role="status" aria-live="polite">
+      <div class="spinner"></div>
+      <span>Processing transcript and generating evaluation...</span>
+    </div>
+
+    <!-- Transcript Panel -->
+    <section id="transcript-panel" class="panel" aria-label="Live Transcript">
+      <div class="panel-header">
+        <span>Live Transcript</span>
+        <span id="transcript-word-count"></span>
+      </div>
+      <div class="panel-body">
+        <div id="transcript-content" class="transcript-content">
+          <div class="transcript-empty">Transcript will appear here during recording...</div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Evaluation Panel -->
+    <section id="evaluation-panel" class="panel" aria-label="Evaluation">
+      <div class="panel-header">
+        <span>Evaluation</span>
+      </div>
+      <div class="panel-body">
+        <div id="evaluation-content" class="evaluation-content">
+          <div class="evaluation-empty">Evaluation will appear here after delivery...</div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Footer -->
+    <footer class="footer">
+      AI Toastmasters Evaluator &mdash; Phase 1 MVP
+    </footer>
+  </div>
+
+  <script>
+    // ─── Session State Constants ──────────────────────────────────────
+    const SessionState = Object.freeze({
+      IDLE: "idle",
+      RECORDING: "recording",
+      PROCESSING: "processing",
+      DELIVERING: "delivering",
+    });
+
+    // ─── Application State ────────────────────────────────────────────
+    let currentState = SessionState.IDLE;
+    let hasEvaluationData = false;
+    let hasTTSAudio = false;
+    let outputsSaved = false;
+    let segments = []; // local transcript segment array
+
+    // ─── TTS Audio Playback State ─────────────────────────────────────
+    /** @type {HTMLAudioElement|null} Audio element for TTS playback */
+    let ttsAudioElement = null;
+    /** @type {string|null} Current Blob URL for TTS audio */
+    let ttsBlobUrl = null;
+    /** Whether TTS playback is currently active */
+    let ttsPlaying = false;
+    /** Whether the server has signaled TTS delivery is complete */
+    let ttsDeliveryComplete = false;
+    /** The last evaluation script text, used as fallback on TTS error */
+    let lastEvaluationScript = "";
+
+    // ─── Audio Capture State ──────────────────────────────────────────
+    /** @type {WebSocket|null} */
+    let ws = null;
+    /** @type {AudioContext|null} */
+    let audioContext = null;
+    /** @type {AudioWorkletNode|null} */
+    let workletNode = null;
+    /** @type {MediaStream|null} */
+    let mediaStream = null;
+    /** @type {MediaStreamAudioSourceNode|null} */
+    let sourceNode = null;
+    /** Whether the audio_format handshake has been sent for this connection */
+    let audioFormatSent = false;
+    /** Whether we are in the post-TTS cooldown period */
+    let inCooldown = false;
+    /** Cooldown timer ID */
+    let cooldownTimer = null;
+    /** Cooldown duration in ms (2.5 seconds — midpoint of 2-3 second range) */
+    const COOLDOWN_MS = 2500;
+
+    // ─── DOM References ───────────────────────────────────────────────
+    const dom = {
+      statusIndicator: document.getElementById("status-indicator"),
+      statusText: document.getElementById("status-text"),
+      elapsedTime: document.getElementById("elapsed-time"),
+      btnStart: document.getElementById("btn-start"),
+      btnStop: document.getElementById("btn-stop"),
+      btnDeliver: document.getElementById("btn-deliver"),
+      btnReplay: document.getElementById("btn-replay"),
+      btnSave: document.getElementById("btn-save"),
+      btnPanic: document.getElementById("btn-panic"),
+      speakingIndicator: document.getElementById("speaking-indicator"),
+      processingIndicator: document.getElementById("processing-indicator"),
+      transcriptPanel: document.getElementById("transcript-panel"),
+      transcriptContent: document.getElementById("transcript-content"),
+      transcriptWordCount: document.getElementById("transcript-word-count"),
+      evaluationPanel: document.getElementById("evaluation-panel"),
+      evaluationContent: document.getElementById("evaluation-content"),
+      errorBanner: document.getElementById("error-banner"),
+      errorMessage: document.getElementById("error-message"),
+      interruptionBanner: document.getElementById("interruption-banner"),
+      savedConfirmation: document.getElementById("saved-confirmation"),
+      savedMessage: document.getElementById("saved-message"),
+      connectionStatus: document.getElementById("connection-status"),
+      audioLevel: document.getElementById("audio-level"),
+      audioLevelBar: document.getElementById("audio-level-bar"),
+    };
+
+    // ─── Status Text Map ──────────────────────────────────────────────
+    const STATUS_TEXT = {
+      [SessionState.IDLE]: "Ready — click \"Start Speech\" to begin",
+      [SessionState.RECORDING]: "Recording speech...",
+      [SessionState.PROCESSING]: "Processing transcript and generating evaluation...",
+      [SessionState.DELIVERING]: "Delivering evaluation...",
+    };
+
+    // ─── UI Update: Main State Machine ────────────────────────────────
+    /**
+     * Updates the entire UI based on the current session state.
+     * Shows/hides buttons, indicators, and panels according to the
+     * state machine defined in the design document.
+     *
+     * @param {string} state - One of SessionState values
+     */
+    function updateUI(state) {
+      currentState = state;
+
+      // Update status indicator
+      dom.statusIndicator.className = "status-indicator " + state;
+      dom.statusText.textContent = STATUS_TEXT[state] || "Unknown state";
+
+      // Hide all transient banners on state change (except errors)
+      hide(dom.interruptionBanner);
+      hide(dom.savedConfirmation);
+
+      // ── IDLE ──
+      if (state === SessionState.IDLE) {
+        show(dom.btnStart);
+        hide(dom.btnStop);
+        hide(dom.btnDeliver);
+        // Show Save Outputs only if evaluation data exists and not already saved
+        if (hasEvaluationData && !outputsSaved) {
+          show(dom.btnSave);
+        } else {
+          hide(dom.btnSave);
+        }
+        // Show Replay button if TTS audio was received and evaluation data exists
+        if (hasTTSAudio && hasEvaluationData) {
+          show(dom.btnReplay);
+        } else {
+          hide(dom.btnReplay);
+        }
+        // Disable replay during cooldown
+        if (inCooldown) {
+          disable(dom.btnReplay);
+        } else {
+          enable(dom.btnReplay);
+        }
+        enable(dom.btnStart);
+        enable(dom.btnPanic);
+
+        hide(dom.speakingIndicator);
+        hide(dom.processingIndicator);
+        hideElapsedTime();
+        hide(dom.audioLevel);
+
+        return;
+      }
+
+      // ── RECORDING ──
+      if (state === SessionState.RECORDING) {
+        hide(dom.btnStart);
+        show(dom.btnStop);
+        hide(dom.btnDeliver);
+        hide(dom.btnSave);
+        hide(dom.btnReplay);
+        enable(dom.btnStop);
+        enable(dom.btnPanic);
+
+        hide(dom.speakingIndicator);
+        hide(dom.processingIndicator);
+        showElapsedTime();
+        show(dom.audioLevel);
+
+        // Show transcript panel for live captions
+        show(dom.transcriptPanel);
+
+        return;
+      }
+
+      // ── PROCESSING ──
+      if (state === SessionState.PROCESSING) {
+        hide(dom.btnStart);
+        hide(dom.btnStop);
+        show(dom.btnDeliver);
+        hide(dom.btnSave);
+        hide(dom.btnReplay);
+        enable(dom.btnDeliver);
+        enable(dom.btnPanic);
+
+        hide(dom.speakingIndicator);
+        show(dom.processingIndicator);
+        hideElapsedTime();
+        hide(dom.audioLevel);
+
+        // Keep transcript visible
+        show(dom.transcriptPanel);
+
+        return;
+      }
+
+      // ── DELIVERING ──
+      if (state === SessionState.DELIVERING) {
+        hide(dom.btnStart);
+        hide(dom.btnStop);
+        hide(dom.btnDeliver);
+        hide(dom.btnSave);
+        hide(dom.btnReplay);
+        // Disable all actions except Panic Mute during delivery
+        enable(dom.btnPanic);
+
+        show(dom.speakingIndicator);
+        hide(dom.processingIndicator);
+        hideElapsedTime();
+        hide(dom.audioLevel);
+
+        // Show evaluation panel for fallback reading
+        show(dom.evaluationPanel);
+        // Keep transcript visible
+        show(dom.transcriptPanel);
+
+        return;
+      }
+    }
+
+    // ─── UI Update: Audio Level Meter ────────────────────────────────
+    /**
+     * Updates the audio level indicator bar.
+     * RMS value is 0..1 but typical speech is 0.01-0.15 range,
+     * so we scale it to make the bar more responsive.
+     * @param {number} rms - RMS audio level (0..1)
+     */
+    function updateAudioLevel(rms) {
+      // Scale: multiply by ~5 and clamp to 100% for visual responsiveness
+      const pct = Math.min(100, rms * 500);
+      dom.audioLevelBar.style.width = pct + "%";
+      // Turn red when clipping (RMS > 0.3 is very loud)
+      if (rms > 0.3) {
+        dom.audioLevelBar.classList.add("hot");
+      } else {
+        dom.audioLevelBar.classList.remove("hot");
+      }
+    }
+
+    // ─── UI Update: Elapsed Time ──────────────────────────────────────
+    /**
+     * Updates the elapsed time display during recording.
+     * @param {number} seconds - Elapsed seconds since recording started
+     */
+    function updateElapsedTime(seconds) {
+      const mins = Math.floor(seconds / 60);
+      const secs = seconds % 60;
+      const formatted = String(mins).padStart(2, "0") + ":" + String(secs).padStart(2, "0");
+      dom.elapsedTime.textContent = formatted;
+    }
+
+    // ─── UI Update: Transcript ────────────────────────────────────────
+    /**
+     * Updates the transcript display using replaceFromIndex splice semantics.
+     * The client maintains a local segment array and splices from
+     * replaceFromIndex onward with the new segments.
+     *
+     * @param {Array} newSegments - Replacement suffix segments
+     * @param {number} replaceFromIndex - Index to splice from
+     */
+    function updateTranscript(newSegments, replaceFromIndex) {
+      // Splice local segment array
+      segments.splice(replaceFromIndex, segments.length - replaceFromIndex, ...newSegments);
+
+      // Render segments
+      renderTranscript();
+    }
+
+    /**
+     * Renders the current segments array into the transcript panel.
+     */
+    function renderTranscript() {
+      if (segments.length === 0) {
+        dom.transcriptContent.innerHTML =
+          '<div class="transcript-empty">Transcript will appear here during recording...</div>';
+        dom.transcriptWordCount.textContent = "";
+        return;
+      }
+
+      let html = "";
+      let totalWords = 0;
+
+      for (const seg of segments) {
+        const timeStr = formatTimestamp(seg.startTime);
+        const cssClass = seg.isFinal ? "" : " interim";
+        const words = seg.text.trim().split(/\s+/).filter(Boolean);
+        totalWords += words.length;
+
+        html += '<div class="segment' + cssClass + '">';
+        html += '<span class="segment-time">[' + timeStr + ']</span>';
+        html += escapeHtml(seg.text);
+        html += "</div>";
+      }
+
+      dom.transcriptContent.innerHTML = html;
+      dom.transcriptWordCount.textContent = totalWords + " words";
+
+      // Auto-scroll to bottom
+      const panelBody = dom.transcriptContent.parentElement;
+      panelBody.scrollTop = panelBody.scrollHeight;
+    }
+
+    // ─── UI Update: Evaluation ────────────────────────────────────────
+    /**
+     * Displays the evaluation text in the evaluation panel.
+     * Used both for normal display and as TTS fallback.
+     *
+     * @param {string} text - The evaluation script text
+     */
+    function showEvaluation(text) {
+      hasEvaluationData = true;
+
+      if (!text || text.trim().length === 0) {
+        dom.evaluationContent.innerHTML =
+          '<div class="evaluation-empty">Evaluation will appear here after delivery...</div>';
+        return;
+      }
+
+      dom.evaluationContent.innerHTML = '<div>' + escapeHtml(text) + '</div>';
+      show(dom.evaluationPanel);
+    }
+
+    // ─── UI Update: Error Display ─────────────────────────────────────
+    /**
+     * Displays an error message to the operator.
+     *
+     * @param {string} message - Error description
+     * @param {boolean} recoverable - Whether the operator can retry
+     */
+    function showError(message, recoverable) {
+      dom.errorMessage.textContent = message;
+      dom.errorBanner.className = "error-banner visible " +
+        (recoverable ? "recoverable" : "non-recoverable");
+    }
+
+    /**
+     * Dismisses the error banner.
+     */
+    function dismissError() {
+      hide(dom.errorBanner);
+      dom.errorBanner.className = "error-banner";
+    }
+
+    // ─── UI Update: Saved Confirmation ────────────────────────────────
+    /**
+     * Shows a confirmation that outputs were saved.
+     * @param {string[]} paths - File paths that were saved
+     */
+    function showSavedConfirmation(paths) {
+      outputsSaved = true;
+      const msg = "Outputs saved: " + paths.join(", ");
+      dom.savedMessage.textContent = msg;
+      show(dom.savedConfirmation);
+      // Hide save button after successful save
+      hide(dom.btnSave);
+    }
+
+    // ─── UI Update: Interruption Banner ───────────────────────────────
+    /**
+     * Shows the interruption banner after a panic mute.
+     */
+    function showInterruptionBanner() {
+      show(dom.interruptionBanner);
+    }
+
+    // ─── WebSocket Connection ─────────────────────────────────────────
+
+    /**
+     * Establishes a WebSocket connection to the server.
+     * Handles connection lifecycle, reconnection display, and message routing.
+     */
+    function connectWebSocket() {
+      if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) {
+        return; // Already connected or connecting
+      }
+
+      const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+      const url = protocol + "//" + window.location.host;
+
+      ws = new WebSocket(url);
+      audioFormatSent = false;
+
+      ws.binaryType = "arraybuffer"; // For receiving TTS audio
+
+      ws.onopen = function () {
+        dom.connectionStatus.textContent = "Connected";
+        dom.connectionStatus.style.color = "var(--color-success)";
+        // Send audio format handshake immediately on connection
+        sendAudioFormatHandshake();
+      };
+
+      ws.onmessage = function (event) {
+        if (event.data instanceof ArrayBuffer) {
+          // Binary message — TTS audio chunk
+          console.log("[WS] Received binary frame:", event.data.byteLength, "bytes");
+          handleTTSAudio(event.data);
+          return;
+        }
+        try {
+          const message = JSON.parse(event.data);
+          handleServerMessage(message);
+        } catch (err) {
+          console.error("Failed to parse server message:", err);
+        }
+      };
+
+      ws.onclose = function () {
+        dom.connectionStatus.textContent = "Disconnected";
+        dom.connectionStatus.style.color = "var(--color-text-muted)";
+
+        // Fail-safe: if WebSocket drops during TTS delivery, stop playback
+        // and show written evaluation as fallback (meeting-safety-controls.md)
+        if (currentState === SessionState.DELIVERING) {
+          triggerTTSFailSafe();
+        }
+
+        ws = null;
+        audioFormatSent = false;
+      };
+
+      ws.onerror = function (err) {
+        console.error("WebSocket error:", err);
+        dom.connectionStatus.textContent = "Connection Error";
+        dom.connectionStatus.style.color = "var(--color-danger)";
+      };
+    }
+
+    /**
+     * Sends a JSON message to the server via WebSocket.
+     * @param {Object} message - The message object to send
+     */
+    function wsSend(message) {
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify(message));
+      } else {
+        showError("Not connected to server. Please refresh the page.", false);
+      }
+    }
+
+    /**
+     * Sends the audio_format handshake message.
+     * Must be sent before start_recording per the protocol contract.
+     */
+    function sendAudioFormatHandshake() {
+      wsSend({
+        type: "audio_format",
+        channels: 1,
+        sampleRate: 16000,
+        encoding: "LINEAR16",
+      });
+      audioFormatSent = true;
+    }
+
+    // ─── Server Message Handler ───────────────────────────────────────
+
+    /**
+     * Routes incoming server messages to the appropriate handler.
+     * @param {Object} message - Parsed ServerMessage
+     */
+    function handleServerMessage(message) {
+      switch (message.type) {
+        case "state_change":
+          handleStateChange(message.state);
+          break;
+        case "transcript_update":
+          updateTranscript(message.segments, message.replaceFromIndex);
+          break;
+        case "elapsed_time":
+          updateElapsedTime(message.seconds);
+          break;
+        case "evaluation_ready":
+          lastEvaluationScript = message.script || "";
+          showEvaluation(message.script);
+          break;
+        case "tts_complete":
+          handleTTSComplete();
+          break;
+        case "outputs_saved":
+          showSavedConfirmation(message.paths);
+          break;
+        case "error":
+          // Fail-safe silent mode: if error occurs during TTS delivery,
+          // stop playback and show written evaluation as fallback (Req 7.4)
+          if (currentState === SessionState.DELIVERING) {
+            triggerTTSFailSafe();
+          } else {
+            showError(message.message, message.recoverable);
+          }
+          break;
+        case "audio_format_error":
+          // Audio format errors are always non-recoverable; stop capture
+          if (currentState === SessionState.DELIVERING) {
+            triggerTTSFailSafe();
+          } else {
+            showError("Audio format error: " + message.message, false);
+            stopAudioCapture();
+          }
+          break;
+        default:
+          console.warn("Unknown server message type:", message.type);
+      }
+    }
+
+    /**
+     * Handles state_change messages from the server.
+     * Updates UI and manages audio capture lifecycle based on state transitions.
+     * @param {string} newState - The new SessionState
+     */
+    function handleStateChange(newState) {
+      const previousState = currentState;
+
+      // Echo prevention: hard-stop mic when entering DELIVERING state
+      if (newState === SessionState.DELIVERING) {
+        hardStopMic();
+      }
+
+      // If leaving DELIVERING due to panic mute (going to IDLE without tts_complete),
+      // force-stop playback. But if tts_complete was received, let audio play naturally.
+      if (previousState === SessionState.DELIVERING && newState !== SessionState.DELIVERING) {
+        if (!ttsDeliveryComplete) {
+          // Panic mute or error — force stop
+          console.log("[TTS] Forced stop: leaving DELIVERING without tts_complete");
+          stopTTSPlayback();
+        }
+        // If ttsDeliveryComplete is true, audio is playing or finished — don't interrupt
+      }
+
+      // When transitioning from DELIVERING to IDLE, start cooldown
+      if (previousState === SessionState.DELIVERING && newState === SessionState.IDLE) {
+        startCooldown();
+      }
+
+      updateUI(newState);
+    }
+
+    /**
+     * Handles incoming TTS audio data (binary WebSocket frames).
+     * Creates a Blob URL and plays via HTMLAudioElement for cross-browser
+     * compatibility (Safari has issues with Web Audio API decodeAudioData
+     * on certain MP3 encodings).
+     * @param {ArrayBuffer} audioData - Raw audio bytes from TTS
+     */
+    function handleTTSAudio(audioData) {
+      hasTTSAudio = true;
+      ttsDeliveryComplete = false;
+      if (!audioData || audioData.byteLength === 0) {
+        console.warn("[TTS] Received empty audio data, ignoring");
+        return;
+      }
+
+      console.log("[TTS] Received audio chunk:", audioData.byteLength, "bytes");
+
+      // Clean up any previous playback
+      cleanupTTSAudio();
+
+      // Create a Blob URL from the audio data and play via <audio> element
+      const blob = new Blob([audioData], { type: "audio/mpeg" });
+      ttsBlobUrl = URL.createObjectURL(blob);
+
+      ttsAudioElement = new Audio(ttsBlobUrl);
+      ttsAudioElement.preload = "auto";
+      ttsPlaying = true;
+
+      ttsAudioElement.onplay = function () {
+        console.log("[TTS] Audio playback started");
+      };
+
+      ttsAudioElement.onended = function () {
+        console.log("[TTS] Audio playback ended naturally");
+        ttsPlaying = false;
+        cleanupTTSAudio();
+      };
+
+      ttsAudioElement.onerror = function (e) {
+        console.error("[TTS] Audio element error:", ttsAudioElement.error);
+        triggerTTSFailSafe();
+      };
+
+      ttsAudioElement.play().then(function () {
+        console.log("[TTS] play() promise resolved, audio is playing");
+      }).catch(function (err) {
+        console.error("[TTS] play() promise rejected:", err);
+        triggerTTSFailSafe();
+      });
+    }
+
+    /**
+     * Cleans up TTS audio resources (element and Blob URL).
+     */
+    function cleanupTTSAudio() {
+      if (ttsAudioElement) {
+        ttsAudioElement.onplay = null;
+        ttsAudioElement.onended = null;
+        ttsAudioElement.onerror = null;
+        ttsAudioElement.pause();
+        ttsAudioElement.src = "";
+        ttsAudioElement = null;
+      }
+      if (ttsBlobUrl) {
+        URL.revokeObjectURL(ttsBlobUrl);
+        ttsBlobUrl = null;
+      }
+    }
+
+    /**
+     * Stops all TTS audio playback and cleans up resources.
+     */
+    function stopTTSPlayback() {
+      cleanupTTSAudio();
+      ttsPlaying = false;
+      ttsDeliveryComplete = false;
+    }
+
+    /**
+     * Fail-safe silent mode: stops TTS playback, shows written evaluation
+     * as fallback, and transitions UI to IDLE. No automatic retry.
+     * Per meeting-safety-controls.md: if any critical error occurs during
+     * TTS delivery, playback stops immediately and the written evaluation
+     * is displayed as fallback.
+     */
+    function triggerTTSFailSafe() {
+      stopTTSPlayback();
+
+      // Show the written evaluation as fallback (Requirement 7.4)
+      if (lastEvaluationScript) {
+        showEvaluation(lastEvaluationScript);
+      }
+      show(dom.evaluationPanel);
+
+      // Show a non-recoverable error explaining the fallback
+      showError("Audio playback failed. The written evaluation is displayed below.", false);
+
+      // Transition UI to IDLE
+      updateUI(SessionState.IDLE);
+    }
+
+    /**
+     * Handles tts_complete message — TTS delivery finished on the server side.
+     * Does NOT stop playback — the audio may still be playing.
+     * Sets a flag so the client knows no more chunks are coming.
+     */
+    function handleTTSComplete() {
+      console.log("[TTS] Server signaled tts_complete, audio may still be playing");
+      ttsDeliveryComplete = true;
+    }
+
+    // ─── Audio Capture: Mic + AudioWorklet ────────────────────────────
+
+    /**
+     * Requests microphone permission and checks for available audio input devices.
+     * @returns {Promise<boolean>} true if mic is available and permission granted
+     */
+    async function checkMicPermission() {
+      try {
+        // Check for available audio input devices
+        const devices = await navigator.mediaDevices.enumerateDevices();
+        const audioInputs = devices.filter(function (d) { return d.kind === "audioinput"; });
+        if (audioInputs.length === 0) {
+          showError("No microphone detected. Please connect a microphone and refresh.", false);
+          disable(dom.btnStart);
+          return false;
+        }
+        return true;
+      } catch (err) {
+        showError("Cannot access media devices: " + err.message, false);
+        disable(dom.btnStart);
+        return false;
+      }
+    }
+
+    /**
+     * Starts audio capture: requests mic, creates AudioContext + AudioWorklet,
+     * and begins streaming audio chunks to the server via WebSocket.
+     * @returns {Promise<boolean>} true if audio capture started successfully
+     */
+    async function startAudioCapture() {
+      try {
+        // Request mic permission
+        mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+
+        // Create AudioContext (or reuse if already created)
+        if (!audioContext || audioContext.state === "closed") {
+          audioContext = new AudioContext();
+        }
+        // Resume if suspended (browsers require user gesture)
+        if (audioContext.state === "suspended") {
+          await audioContext.resume();
+        }
+
+        // Load the AudioWorklet processor module
+        await audioContext.audioWorklet.addModule("audio-worklet.js");
+
+        // Create source node from mic stream
+        sourceNode = audioContext.createMediaStreamSource(mediaStream);
+
+        // Create AudioWorklet node
+        workletNode = new AudioWorkletNode(audioContext, "audio-capture-processor");
+
+        // Listen for audio chunks from the worklet
+        workletNode.port.onmessage = function (event) {
+          if (event.data && event.data.type === "audio_chunk") {
+            // Update audio level meter
+            if (typeof event.data.level === "number") {
+              updateAudioLevel(event.data.level);
+            }
+            // Send audio chunk as binary WebSocket frame
+            if (ws && ws.readyState === WebSocket.OPEN && currentState === SessionState.RECORDING) {
+              ws.send(event.data.samples);
+            }
+          }
+        };
+
+        // Connect the pipeline: mic → worklet (worklet doesn't output to speakers)
+        sourceNode.connect(workletNode);
+        // Connect worklet to destination to keep the audio graph alive
+        // (AudioWorklet needs to be connected to process)
+        workletNode.connect(audioContext.destination);
+
+        return true;
+      } catch (err) {
+        if (err.name === "NotAllowedError" || err.name === "PermissionDeniedError") {
+          showError("Microphone permission denied. Please allow microphone access and try again.", false);
+        } else if (err.name === "NotFoundError") {
+          showError("No microphone found. Please connect a microphone and try again.", false);
+        } else {
+          showError("Failed to start audio capture: " + err.message, true);
+        }
+        disable(dom.btnStart);
+        return false;
+      }
+    }
+
+    /**
+     * Stops the AudioWorklet and disconnects the audio graph.
+     * Keeps the MediaStream alive for potential restart.
+     */
+    function stopAudioCapture() {
+      if (workletNode) {
+        // Tell the worklet processor to stop
+        workletNode.port.postMessage({ type: "stop" });
+        workletNode.disconnect();
+        workletNode = null;
+      }
+      if (sourceNode) {
+        sourceNode.disconnect();
+        sourceNode = null;
+      }
+    }
+
+    /**
+     * Hard-stops the MediaStream tracks immediately.
+     * Used for panic mute and echo prevention during DELIVERING state.
+     * After this, a new getUserMedia call is needed to re-arm the mic.
+     */
+    function hardStopMic() {
+      // Stop the AudioWorklet first
+      stopAudioCapture();
+
+      // Hard-stop all MediaStream tracks (not just mute — fully release the mic)
+      if (mediaStream) {
+        mediaStream.getTracks().forEach(function (track) {
+          track.stop();
+        });
+        mediaStream = null;
+      }
+    }
+
+    // ─── Cooldown Logic ───────────────────────────────────────────────
+    // After TTS completes, wait 2-3 seconds before allowing mic re-arm.
+    // This prevents the system from capturing its own TTS echo.
+
+    /**
+     * Starts the post-TTS cooldown period.
+     * During cooldown, the "Start Speech" button is disabled.
+     */
+    function startCooldown() {
+      inCooldown = true;
+      disable(dom.btnStart);
+      dom.statusText.textContent = "Cooldown — mic re-arming shortly...";
+
+      cooldownTimer = setTimeout(function () {
+        inCooldown = false;
+        cooldownTimer = null;
+        enable(dom.btnStart);
+        if (hasTTSAudio && hasEvaluationData) {
+          enable(dom.btnReplay);
+        }
+        dom.statusText.textContent = STATUS_TEXT[SessionState.IDLE];
+      }, COOLDOWN_MS);
+    }
+
+    /**
+     * Cancels any active cooldown (e.g., on panic mute during cooldown).
+     */
+    function clearCooldown() {
+      if (cooldownTimer) {
+        clearTimeout(cooldownTimer);
+        cooldownTimer = null;
+      }
+      inCooldown = false;
+    }
+
+    // ─── Button Click Handlers ────────────────────────────────────────
+
+    async function onStartSpeech() {
+      // Guard: don't start during cooldown
+      if (inCooldown) return;
+
+      // Guard: need WebSocket connection
+      if (!ws || ws.readyState !== WebSocket.OPEN) {
+        showError("Not connected to server. Please wait for connection or refresh.", false);
+        return;
+      }
+
+      // Reset state for new recording
+      segments = [];
+      hasEvaluationData = false;
+      hasTTSAudio = false;
+      outputsSaved = false;
+      lastEvaluationScript = "";
+      stopTTSPlayback();
+      dismissError();
+      hide(dom.interruptionBanner);
+      hide(dom.savedConfirmation);
+      dom.evaluationContent.innerHTML =
+        '<div class="evaluation-empty">Evaluation will appear here after delivery...</div>';
+      hide(dom.evaluationPanel);
+
+      // Ensure audio format handshake was sent
+      if (!audioFormatSent) {
+        sendAudioFormatHandshake();
+      }
+
+      // Start audio capture (mic + AudioWorklet)
+      const captureStarted = await startAudioCapture();
+      if (!captureStarted) {
+        return; // Error already shown by startAudioCapture
+      }
+
+      // Send start_recording command to server
+      wsSend({ type: "start_recording" });
+
+      // Optimistic UI update (server will confirm via state_change)
+      updateUI(SessionState.RECORDING);
+      updateElapsedTime(0);
+    }
+
+    function onStopSpeech() {
+      // Stop the AudioWorklet but keep MediaStream alive for potential restart
+      stopAudioCapture();
+
+      // Send stop_recording command to server
+      wsSend({ type: "stop_recording" });
+
+      // Optimistic UI update
+      updateUI(SessionState.PROCESSING);
+    }
+
+    async function onDeliverEvaluation() {
+      // Echo prevention: hard-stop mic tracks before TTS delivery
+      hardStopMic();
+
+      // Send deliver_evaluation command to server
+      wsSend({ type: "deliver_evaluation" });
+
+      // Optimistic UI update
+      updateUI(SessionState.DELIVERING);
+    }
+
+    async function onReplayEvaluation() {
+      // Guard: don't replay during cooldown
+      if (inCooldown) return;
+
+      // Echo prevention: hard-stop mic before replay (same as initial delivery)
+      hardStopMic();
+
+      // Send replay_tts command to server
+      wsSend({ type: "replay_tts" });
+
+      // Optimistic UI update to DELIVERING state
+      updateUI(SessionState.DELIVERING);
+    }
+
+    function onSaveOutputs() {
+      // Send save_outputs command to server
+      wsSend({ type: "save_outputs" });
+      disable(dom.btnSave);
+    }
+
+    function onPanicMute() {
+      // Panic mute: immediate action, no confirmation dialog
+      // Hard-stop mic immediately
+      hardStopMic();
+      // Stop any TTS audio playback immediately
+      stopTTSPlayback();
+      clearCooldown();
+
+      // Send panic_mute command to server
+      wsSend({ type: "panic_mute" });
+
+      // Optimistic UI update
+      updateUI(SessionState.IDLE);
+      showInterruptionBanner();
+    }
+
+    // ─── Utility Functions ────────────────────────────────────────────
+
+    function show(el) {
+      el.classList.add("visible");
+      el.classList.remove("hidden");
+    }
+
+    function hide(el) {
+      el.classList.remove("visible");
+      el.classList.add("hidden");
+    }
+
+    function enable(el) {
+      el.disabled = false;
+    }
+
+    function disable(el) {
+      el.disabled = true;
+    }
+
+    function showElapsedTime() {
+      dom.elapsedTime.classList.add("visible");
+    }
+
+    function hideElapsedTime() {
+      dom.elapsedTime.classList.remove("visible");
+    }
+
+    /**
+     * Formats seconds into MM:SS timestamp string.
+     * @param {number} totalSeconds
+     * @returns {string}
+     */
+    function formatTimestamp(totalSeconds) {
+      const mins = Math.floor(totalSeconds / 60);
+      const secs = Math.floor(totalSeconds % 60);
+      return String(mins).padStart(2, "0") + ":" + String(secs).padStart(2, "0");
+    }
+
+    /**
+     * Escapes HTML special characters to prevent XSS.
+     * @param {string} text
+     * @returns {string}
+     */
+    function escapeHtml(text) {
+      const div = document.createElement("div");
+      div.textContent = text;
+      return div.innerHTML;
+    }
+
+    // ─── Initialize ───────────────────────────────────────────────────
+    // Set initial UI state and establish WebSocket connection
+    updateUI(SessionState.IDLE);
+
+    // Connect WebSocket on page load
+    connectWebSocket();
+
+    // Check mic availability on load (non-blocking)
+    checkMicPermission();
+  </script>
+</body>
+</html>
