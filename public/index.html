@@ -1389,6 +1389,9 @@
         inCooldown = false;
         cooldownTimer = null;
         enable(dom.btnStart);
+        if (hasTTSAudio && hasEvaluationData) {
+          enable(dom.btnReplay);
+        }
         dom.statusText.textContent = STATUS_TEXT[SessionState.IDLE];
       }, COOLDOWN_MS);
     }
