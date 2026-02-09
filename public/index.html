@@ -565,6 +565,9 @@
       <button id="btn-deliver" class="btn btn-warning hidden" onclick="onDeliverEvaluation()">
         ▶ Deliver Evaluation
       </button>
+      <button id="btn-replay" class="btn btn-primary hidden" onclick="onReplayEvaluation()">
+        🔁 Replay Evaluation
+      </button>
       <button id="btn-save" class="btn btn-save hidden" onclick="onSaveOutputs()">
         💾 Save Outputs
       </button>
@@ -630,6 +633,7 @@
     // ─── Application State ────────────────────────────────────────────
     let currentState = SessionState.IDLE;
     let hasEvaluationData = false;
+    let hasTTSAudio = false;
     let outputsSaved = false;
     let segments = []; // local transcript segment array
 
@@ -673,6 +677,7 @@
       btnStart: document.getElementById("btn-start"),
       btnStop: document.getElementById("btn-stop"),
       btnDeliver: document.getElementById("btn-deliver"),
+      btnReplay: document.getElementById("btn-replay"),
       btnSave: document.getElementById("btn-save"),
       btnPanic: document.getElementById("btn-panic"),
       speakingIndicator: document.getElementById("speaking-indicator"),
@@ -730,6 +735,18 @@
         } else {
           hide(dom.btnSave);
         }
+        // Show Replay button if TTS audio was received and evaluation data exists
+        if (hasTTSAudio && hasEvaluationData) {
+          show(dom.btnReplay);
+        } else {
+          hide(dom.btnReplay);
+        }
+        // Disable replay during cooldown
+        if (inCooldown) {
+          disable(dom.btnReplay);
+        } else {
+          enable(dom.btnReplay);
+        }
         enable(dom.btnStart);
         enable(dom.btnPanic);
 
@@ -747,6 +764,7 @@
         show(dom.btnStop);
         hide(dom.btnDeliver);
         hide(dom.btnSave);
+        hide(dom.btnReplay);
         enable(dom.btnStop);
         enable(dom.btnPanic);
 
@@ -767,6 +785,7 @@
         hide(dom.btnStop);
         show(dom.btnDeliver);
         hide(dom.btnSave);
+        hide(dom.btnReplay);
         enable(dom.btnDeliver);
         enable(dom.btnPanic);
 
@@ -787,6 +806,7 @@
         hide(dom.btnStop);
         hide(dom.btnDeliver);
         hide(dom.btnSave);
+        hide(dom.btnReplay);
         // Disable all actions except Panic Mute during delivery
         enable(dom.btnPanic);
 
@@ -1118,6 +1138,7 @@
      * @param {ArrayBuffer} audioData - Raw audio bytes from TTS
      */
     function handleTTSAudio(audioData) {
+      hasTTSAudio = true;
       if (!audioData || audioData.byteLength === 0) return;
 
       // Queue the chunk
@@ -1404,6 +1425,7 @@
       // Reset state for new recording
       segments = [];
       hasEvaluationData = false;
+      hasTTSAudio = false;
       outputsSaved = false;
       lastEvaluationScript = "";
       stopTTSPlayback();
@@ -1452,6 +1474,20 @@
       wsSend({ type: "deliver_evaluation" });
 
       // Optimistic UI update
+      updateUI(SessionState.DELIVERING);
+    }
+
+    function onReplayEvaluation() {
+      // Guard: don't replay during cooldown
+      if (inCooldown) return;
+
+      // Echo prevention: hard-stop mic before replay (same as initial delivery)
+      hardStopMic();
+
+      // Send replay_tts command to server
+      wsSend({ type: "replay_tts" });
+
+      // Optimistic UI update to DELIVERING state
       updateUI(SessionState.DELIVERING);
     }
 

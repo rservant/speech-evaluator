@@ -720,6 +720,99 @@ describe("Server", () => {
     });
   });
 
+  // ─── Replay TTS (Task 5.2) ────────────────────────────────────────────────
+
+  describe("replay_tts", () => {
+    it("should send full message sequence on successful replay", async () => {
+      const c = track(await createClient(server));
+
+      // Mock generateEvaluation to return audio and set session data (including ttsAudioCache)
+      vi.spyOn(server.sessionManager, "generateEvaluation").mockImplementation(async (sid) => {
+        const session = server.sessionManager.getSession(sid);
+        session.state = SessionState.DELIVERING;
+        session.evaluation = { opening: "Great speech.", items: [], closing: "Well done." };
+        session.evaluationScript = "Great speech. Well done.";
+        session.ttsAudioCache = Buffer.from("fake-tts-audio");
+        return Buffer.from("fake-tts-audio");
+      });
+      vi.spyOn(server.sessionManager, "completeDelivery").mockImplementation((sid) => {
+        const session = server.sessionManager.getSession(sid);
+        session.state = SessionState.IDLE;
+      });
+
+      // Go through full lifecycle: start → stop → deliver → wait for IDLE
+      c.sendJson({ type: "start_recording" });
+      await c.nextMessageOfType("state_change"); // RECORDING
+
+      c.sendJson({ type: "stop_recording" });
+      await c.nextMessageOfType("state_change"); // PROCESSING
+
+      c.sendJson({ type: "deliver_evaluation" });
+      await c.nextMessageOfType("state_change"); // DELIVERING
+      await c.nextMessageOfType("evaluation_ready");
+      await c.nextMessageOfType("tts_audio");
+      await c.nextMessageOfType("tts_complete");
+      await c.nextMessageOfType("state_change"); // IDLE
+
+      // Now send replay_tts — mock replayTTS to return the cached buffer and transition state
+      vi.spyOn(server.sessionManager, "replayTTS").mockImplementation((sid) => {
+        const session = server.sessionManager.getSession(sid);
+        session.state = SessionState.DELIVERING;
+        return session.ttsAudioCache!;
+      });
+
+      c.sendJson({ type: "replay_tts" });
+
+      // Verify message sequence: state_change(delivering) → tts_audio → tts_complete → state_change(idle)
+      const deliveringMsg = await c.nextMessageOfType("state_change");
+      expect(deliveringMsg).toEqual({ type: "state_change", state: SessionState.DELIVERING });
+
+      await c.nextMessageOfType("tts_audio");
+      await c.nextMessageOfType("tts_complete");
+
+      const idleMsg = await c.nextMessageOfType("state_change");
+      expect(idleMsg).toEqual({ type: "state_change", state: SessionState.IDLE });
+    });
+
+    it("should send error when no TTS audio cache exists", async () => {
+      const c = track(await createClient(server));
+
+      // Fresh session — no evaluation done, so no ttsAudioCache
+      // replayTTS returns undefined when no cache
+      vi.spyOn(server.sessionManager, "replayTTS").mockImplementation(() => {
+        return undefined;
+      });
+
+      c.sendJson({ type: "replay_tts" });
+
+      const errorMsg = await c.nextMessageOfType("error");
+      expect((errorMsg as { message: string }).message).toBe("No TTS audio available for replay.");
+      expect((errorMsg as { recoverable: boolean }).recoverable).toBe(true);
+    });
+
+    it("should send error when session is in wrong state", async () => {
+      const c = track(await createClient(server));
+
+      // Start recording to put session in RECORDING state
+      c.sendJson({ type: "start_recording" });
+      await c.nextMessageOfType("state_change"); // RECORDING
+
+      // Manually set ttsAudioCache on the session
+      const sessions = Array.from(
+        (server.sessionManager as unknown as { sessions: Map<string, Session> }).sessions.values(),
+      );
+      const session = sessions[0];
+      session.ttsAudioCache = Buffer.from("fake-audio");
+
+      // Send replay_tts — replayTTS should throw because session is in RECORDING state
+      c.sendJson({ type: "replay_tts" });
+
+      const errorMsg = await c.nextMessageOfType("error");
+      expect((errorMsg as { message: string }).message).toContain("Invalid state transition");
+      expect((errorMsg as { recoverable: boolean }).recoverable).toBe(true);
+    });
+  });
+
   // ─── Unknown Message Type ───────────────────────────────────────────────────
 
   describe("unknown messages", () => {
@@ -775,6 +868,7 @@ describe("purgeSessionData", () => {
       },
       evaluation: { opening: "test", items: [], closing: "test" },
       evaluationScript: "test script",
+      ttsAudioCache: null,
       qualityWarning: false,
       outputsSaved: false,
       runId: 1,

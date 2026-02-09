@@ -24,6 +24,7 @@ export interface Session {
   metrics: DeliveryMetrics | null;
   evaluation: StructuredEvaluation | null;
   evaluationScript: string | null; // rendered spoken script
+  ttsAudioCache: Buffer | null; // cached TTS audio for replay (in-memory only)
   qualityWarning: boolean;
   outputsSaved: boolean; // opt-in persistence flag
   runId: number; // monotonic integer, incremented on each start/panic; async stages check before committing
@@ -113,7 +114,8 @@ export type ClientMessage =
   | { type: "stop_recording" }
   | { type: "deliver_evaluation" }
   | { type: "save_outputs" }
-  | { type: "panic_mute" };
+  | { type: "panic_mute" }
+  | { type: "replay_tts" };
 
 // Server → Client messages
 export type ServerMessage =

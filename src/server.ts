@@ -321,6 +321,10 @@ function handleClientMessage(
       });
       break;
 
+    case "replay_tts":
+      catchAsync(handleReplayTTS(ws, connState, sessionManager, logger));
+      break;
+
     default: {
       const exhaustiveCheck: never = message;
       sendMessage(ws, {
@@ -508,6 +512,58 @@ async function handleDeliverEvaluation(
 }
 
 
+// ─── Replay TTS ─────────────────────────────────────────────────────────────────
+
+async function handleReplayTTS(
+  ws: WebSocket,
+  connState: ConnectionState,
+  sessionManager: SessionManager,
+  logger: ServerLogger,
+): Promise<void> {
+  let audioBuffer: Buffer | undefined;
+
+  try {
+    audioBuffer = sessionManager.replayTTS(connState.sessionId);
+  } catch (err) {
+    const errorMessage = err instanceof Error ? err.message : String(err);
+    logger.error(`Replay TTS failed for session ${connState.sessionId}: ${errorMessage}`);
+    sendMessage(ws, {
+      type: "error",
+      message: errorMessage,
+      recoverable: true,
+    });
+    return;
+  }
+
+  if (!audioBuffer) {
+    sendMessage(ws, {
+      type: "error",
+      message: "No TTS audio available for replay.",
+      recoverable: true,
+    });
+    return;
+  }
+
+  // Send state change to DELIVERING
+  sendMessage(ws, { type: "state_change", state: SessionState.DELIVERING });
+
+  // Stream the cached audio
+  logger.info(`Replaying TTS audio for session ${connState.sessionId} (${audioBuffer.length} bytes)`);
+  const arrayBuffer = new ArrayBuffer(audioBuffer.length);
+  const view = new Uint8Array(arrayBuffer);
+  view.set(audioBuffer);
+  sendMessage(ws, { type: "tts_audio", data: arrayBuffer });
+  sendMessage(ws, { type: "tts_complete" });
+
+  // Transition back to IDLE
+  sessionManager.completeDelivery(connState.sessionId);
+  sendMessage(ws, { type: "state_change", state: SessionState.IDLE });
+
+  // Restart auto-purge timer (privacy: 10-minute retention after delivery)
+  startPurgeTimer(connState, sessionManager, logger);
+}
+
+
 // ─── Save Outputs ───────────────────────────────────────────────────────────────
 
 function handleSaveOutputs(
@@ -678,6 +734,7 @@ export function purgeSessionData(session: Session): void {
   session.metrics = null;
   session.evaluation = null;
   session.evaluationScript = null;
+  session.ttsAudioCache = null;
 }
 
 // ─── Transcript Update Helpers ──────────────────────────────────────────────────

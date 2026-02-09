@@ -176,6 +176,17 @@ export class FilePersistence {
     await writeFile(evaluationPath, evaluationContent, "utf-8");
     savedPaths.push(evaluationPath);
 
+    // Write evaluation_audio.mp3 (if TTS audio was cached)
+    if (session.ttsAudioCache) {
+      try {
+        const audioPath = join(dirPath, "evaluation_audio.mp3");
+        await writeFile(audioPath, session.ttsAudioCache);
+        savedPaths.push(audioPath);
+      } catch (err) {
+        console.warn("Failed to save TTS audio file:", err);
+      }
+    }
+
     // Mark session as saved
     session.outputsSaved = true;
 

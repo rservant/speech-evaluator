@@ -2,7 +2,7 @@
 // Validates: Requirements 6.1, 6.2, 6.3, 6.4
 
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { mkdtemp, rm, readFile, readdir } from "node:fs/promises";
+import { mkdtemp, mkdir, rm, readFile, readdir } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import {
@@ -35,6 +35,7 @@ function makeSession(overrides: Partial<Session> = {}): Session {
     metrics: null,
     evaluation: null,
     evaluationScript: null,
+    ttsAudioCache: null,
     qualityWarning: false,
     outputsSaved: false,
     runId: 1,
@@ -503,6 +504,99 @@ describe("FilePersistence", () => {
       const content = await readFile(paths[2], "utf-8");
 
       expect(content).toContain("Speaker: Bob");
+    });
+
+    // ─── TTS Audio File Persistence (Requirements 4.1, 4.2, 4.4) ─────────
+
+    it("writes evaluation_audio.mp3 with correct content when ttsAudioCache is present", async () => {
+      const audioBuffer = Buffer.from("fake-mp3-audio-data-for-testing");
+      const session = makeSession({
+        transcript: makeSegments(),
+        metrics: makeMetrics(),
+        evaluation: makeEvaluation(),
+        evaluationScript: "Great speech!",
+        ttsAudioCache: audioBuffer,
+      });
+
+      const paths = await persistence.saveSession(session);
+
+      // Should return 4 paths (3 base files + audio)
+      expect(paths).toHaveLength(4);
+      expect(paths[3]).toContain("evaluation_audio.mp3");
+
+      // Audio file content must match the cache buffer
+      const audioContent = await readFile(paths[3], null);
+      expect(Buffer.compare(audioContent, audioBuffer)).toBe(0);
+
+      // Verify the file exists in the directory
+      const entries = await readdir(tempDir);
+      const dirPath = join(tempDir, entries[0]);
+      const files = await readdir(dirPath);
+      expect(files.sort()).toEqual([
+        "evaluation.txt",
+        "evaluation_audio.mp3",
+        "metrics.json",
+        "transcript.txt",
+      ]);
+    });
+
+    it("does not write audio file when ttsAudioCache is null, other files still saved", async () => {
+      const session = makeSession({
+        transcript: makeSegments(),
+        metrics: makeMetrics(),
+        evaluation: makeEvaluation(),
+        evaluationScript: "Great speech!",
+        ttsAudioCache: null,
+      });
+
+      const paths = await persistence.saveSession(session);
+
+      // Should return only 3 paths (no audio)
+      expect(paths).toHaveLength(3);
+      expect(paths.some((p) => p.endsWith("evaluation_audio.mp3"))).toBe(false);
+
+      // Verify only 3 files in directory
+      const entries = await readdir(tempDir);
+      const dirPath = join(tempDir, entries[0]);
+      const files = await readdir(dirPath);
+      expect(files.sort()).toEqual(["evaluation.txt", "metrics.json", "transcript.txt"]);
+    });
+
+    it("continues saving other files when audio write fails, audio path not in returned paths", async () => {
+      const audioBuffer = Buffer.from("fake-mp3-audio-data");
+      const session = makeSession({
+        transcript: makeSegments(),
+        metrics: makeMetrics(),
+        evaluation: makeEvaluation(),
+        evaluationScript: "Great speech!",
+        ttsAudioCache: audioBuffer,
+      });
+
+      // Save once to create the output directory and the audio file
+      await persistence.saveSession(session);
+      session.outputsSaved = false;
+
+      // Get the output directory path
+      const entries = await readdir(tempDir);
+      const dirPath = join(tempDir, entries[0]);
+
+      // Remove the audio file, then create a directory with the same name
+      // so that writeFile will fail (can't write a file where a directory exists)
+      const audioFilePath = join(dirPath, "evaluation_audio.mp3");
+      await rm(audioFilePath);
+      await mkdir(audioFilePath, { recursive: true });
+
+      // Save again — the directory already exists with evaluation_audio.mp3 as a subdirectory
+      const paths = await persistence.saveSession(session);
+
+      // The 3 base files should still be saved (they get overwritten)
+      expect(paths.filter((p) => p.endsWith("transcript.txt"))).toHaveLength(1);
+      expect(paths.filter((p) => p.endsWith("metrics.json"))).toHaveLength(1);
+      expect(paths.filter((p) => p.endsWith("evaluation.txt"))).toHaveLength(1);
+
+      // Audio path should NOT be in the returned paths since write failed
+      expect(paths.filter((p) => p.endsWith("evaluation_audio.mp3"))).toHaveLength(0);
+      expect(paths).toHaveLength(3);
     });
   });
 });

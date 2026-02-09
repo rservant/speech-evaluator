@@ -80,6 +80,7 @@ export class SessionManager {
       metrics: null,
       evaluation: null,
       evaluationScript: null,
+      ttsAudioCache: null,
       qualityWarning: false,
       outputsSaved: false,
       runId: 0,
@@ -131,6 +132,7 @@ export class SessionManager {
     session.evaluationScript = null;
     session.qualityWarning = false;
     session.outputsSaved = false;
+    session.ttsAudioCache = null;
     session.stoppedAt = null;
 
     // Start live transcription if engine is available
@@ -411,6 +413,7 @@ export class SessionManager {
                 }
 
                 this.log("INFO", `TTS synthesis complete: ${audioBuffer.length} bytes for session ${sessionId}`);
+                session.ttsAudioCache = audioBuffer;
                 return audioBuffer;
               } catch (err) {
                 const errMsg = err instanceof Error ? err.message : String(err);
@@ -446,6 +449,32 @@ export class SessionManager {
 
     session.state = SessionState.IDLE;
   }
+
+  /**
+   * Returns the cached TTS audio buffer for replay.
+   * Transitions the session from IDLE to DELIVERING state.
+   * Returns undefined if no cached audio is available.
+   *
+   * Note: IDLE → DELIVERING is not in the standard VALID_TRANSITIONS map
+   * (which only has IDLE → RECORDING). Replay is a special case that reuses
+   * the DELIVERING state for echo prevention and UI consistency, so we
+   * check the state manually instead of using assertTransition().
+   *
+   * @throws Error if the session is not in IDLE state.
+   */
+  replayTTS(sessionId: string): Buffer | undefined {
+    const session = this.getSession(sessionId);
+    if (!session.ttsAudioCache) return undefined;
+    if (session.state !== SessionState.IDLE) {
+      throw new Error(
+        `Invalid state transition: cannot call replayTTS() in "${session.state}" state. ` +
+        `Expected state: "idle". Current state: "${session.state}".`
+      );
+    }
+    session.state = SessionState.DELIVERING;
+    return session.ttsAudioCache;
+  }
+
 
   /**
    * Panic mute: immediately transitions to IDLE from ANY state.

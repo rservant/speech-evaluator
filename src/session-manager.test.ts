@@ -441,3 +441,34 @@ describe("SessionManager", () => {
     });
   });
 });
+
+describe("replayTTS()", () => {
+  let manager: SessionManager;
+
+  beforeEach(() => {
+    manager = new SessionManager();
+  });
+
+  it("returns undefined without state change when ttsAudioCache is null", () => {
+    const session = manager.createSession();
+    expect(session.state).toBe(SessionState.IDLE);
+    expect(session.ttsAudioCache).toBeNull();
+
+    const result = manager.replayTTS(session.id);
+
+    expect(result).toBeUndefined();
+    expect(session.state).toBe(SessionState.IDLE);
+  });
+
+  it("throws error when called in non-IDLE state (RECORDING)", () => {
+    const session = manager.createSession();
+    manager.startRecording(session.id);
+
+    // Set ttsAudioCache so we don't hit the early-return path
+    session.ttsAudioCache = Buffer.from([0x01, 0x02, 0x03]);
+
+    expect(() => manager.replayTTS(session.id)).toThrow(/replayTTS\(\)/);
+    expect(() => manager.replayTTS(session.id)).toThrow(/recording/);
+  });
+});
+

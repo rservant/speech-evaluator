@@ -236,6 +236,7 @@ function arbitraryCompletedSession(): fc.Arbitrary<Session> {
         metrics,
         evaluation,
         evaluationScript,
+        ttsAudioCache: null,
         qualityWarning: false,
         outputsSaved: false,
         runId: 1,
@@ -569,3 +570,87 @@ describe("Feature: ai-toastmasters-evaluator, Property 11: Output Directory Nami
     }
   });
 });
+
+// ─── Property 6 Tests ──────────────────────────────────────────────────────────
+
+/**
+ * Generate a random Buffer of 1–100KB to simulate TTS audio data.
+ */
+function arbitraryAudioBuffer(): fc.Arbitrary<Buffer> {
+  return fc
+    .integer({ min: 1024, max: 102400 })
+    .chain((size) =>
+      fc.uint8Array({ minLength: size, maxLength: size }).map((arr) => Buffer.from(arr))
+    );
+}
+
+/**
+ * Generate a completed session with ttsAudioCache randomly set to either
+ * a non-null Buffer or null, for Property 6 testing.
+ */
+function arbitraryCompletedSessionWithOptionalAudio(): fc.Arbitrary<Session> {
+  return fc
+    .tuple(
+      arbitraryCompletedSession(),
+      fc.option(arbitraryAudioBuffer(), { nil: null })
+    )
+    .map(([session, audioCache]) => {
+      session.ttsAudioCache = audioCache;
+      return session;
+    });
+}
+
+describe("Feature: tts-audio-replay-and-save, Property 6: Audio file persistence if and only if cache exists", () => {
+
+  /**
+   * **Validates: Requirements 4.1, 4.2, 4.3**
+   *
+   * Property 6: Audio file persistence if and only if cache exists
+   *
+   * For any session, calling saveSession() SHALL include evaluation_audio.mp3
+   * in the returned paths array if and only if session.ttsAudioCache is non-null.
+   * When included, the file content SHALL equal the ttsAudioCache buffer.
+   */
+  it("saveSession includes evaluation_audio.mp3 in paths iff ttsAudioCache is non-null, and file content matches cache", async () => {
+    const baseDir = await mkdtemp(join(tmpdir(), "fp-prop6-"));
+
+    try {
+      await fc.assert(
+        fc.asyncProperty(arbitraryCompletedSessionWithOptionalAudio(), async (session) => {
+          const iterDir = await mkdtemp(join(baseDir, "iter-"));
+          const persistence = new FilePersistence(iterDir);
+
+          const paths = await persistence.saveSession(session);
+
+          // Reset outputsSaved for generator reuse
+          session.outputsSaved = false;
+
+          const audioPath = paths.find((p) => p.endsWith("evaluation_audio.mp3"));
+
+          if (session.ttsAudioCache !== null) {
+            // Audio cache exists → audio path MUST be in returned paths
+            expect(audioPath).toBeDefined();
+            expect(paths).toHaveLength(4);
+
+            // File content must equal the ttsAudioCache buffer
+            const fileContent = await readFile(audioPath!, null);
+            expect(Buffer.compare(fileContent, session.ttsAudioCache!)).toBe(0);
+          } else {
+            // No audio cache → audio path MUST NOT be in returned paths
+            expect(audioPath).toBeUndefined();
+            expect(paths).toHaveLength(3);
+          }
+
+          // The three base files are always present regardless of audio cache
+          expect(paths.filter((p) => p.endsWith("transcript.txt"))).toHaveLength(1);
+          expect(paths.filter((p) => p.endsWith("metrics.json"))).toHaveLength(1);
+          expect(paths.filter((p) => p.endsWith("evaluation.txt"))).toHaveLength(1);
+        }),
+        { numRuns: 100 }
+      );
+    } finally {
+      await rm(baseDir, { recursive: true, force: true });
+    }
+  });
+});
+
