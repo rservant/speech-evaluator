@@ -848,6 +848,12 @@
     let estimatedDuration = null;
     let configuredTimeLimit = 120;
 
+    // ─── Eager Pipeline State ─────────────────────────────────────────
+    /** @type {string} Current pipeline stage for UI display and button gating */
+    let pipelineStage = "idle";
+    /** @type {number} RunId for stale-progress filtering; 0 = accept all */
+    let pipelineRunId = 0;
+
     // ─── TTS Audio Playback State ─────────────────────────────────────
     /** @type {HTMLAudioElement|null} Audio element for TTS playback */
     let ttsAudioElement = null;
@@ -1054,7 +1060,14 @@
         show(dom.btnDeliver);
         hide(dom.btnSave);
         hide(dom.btnReplay);
-        enable(dom.btnDeliver);
+        // Deliver button gating based on pipeline stage (Req 4.1-4.4)
+        // Disable during in-progress stages; enable on terminal/actionable stages
+        // Server remains authoritative — UI gating is advisory only (Req 4.4)
+        if (pipelineStage === "processing_speech" || pipelineStage === "generating_evaluation" || pipelineStage === "synthesizing_audio") {
+          disable(dom.btnDeliver);
+        } else {
+          enable(dom.btnDeliver);
+        }
         enable(dom.btnPanic);
 
         // Show Revoke Consent during processing
@@ -1066,6 +1079,10 @@
 
         hide(dom.speakingIndicator);
         show(dom.processingIndicator);
+        // Update processing indicator text to reflect current pipeline stage
+        if (pipelineStage !== "idle") {
+          updateProcessingIndicator(pipelineStage);
+        }
         hideElapsedTime();
         hide(dom.audioLevel);
 
@@ -1169,6 +1186,44 @@
     }
 
     // ─── Consent Form Event Handlers ──────────────────────────────────
+
+    // ─── UI Update: Processing Indicator (Eager Pipeline) ─────────────
+    /**
+     * Updates the processing indicator text based on the current pipeline stage.
+     * Maps PipelineStage values to user-facing status messages.
+     * @param {string} stage - One of the PipelineStage values
+     */
+    function updateProcessingIndicator(stage) {
+      const messages = {
+        processing_speech: "Speech processed \u2014 preparing evaluation...",
+        generating_evaluation: "Generating evaluation...",
+        synthesizing_audio: "Synthesizing audio...",
+        ready: "\u2713 Evaluation ready \u2014 click \"Deliver Evaluation\"",
+        failed: "\u26A0 Evaluation generation failed \u2014 click \"Deliver Evaluation\" to retry",
+        invalidated: "Settings changed \u2014 evaluation will regenerate on delivery",
+      };
+      const span = dom.processingIndicator.querySelector("span");
+      if (span) {
+        span.textContent = messages[stage] || "Processing...";
+      }
+    }
+
+    /**
+     * Updates the Deliver button enabled/disabled state based on pipeline stage.
+     * Disable during in-progress stages; enable on terminal/actionable stages.
+     * Server remains authoritative — UI gating is advisory only (Req 4.4).
+     * @param {string} stage - One of the PipelineStage values
+     */
+    function updateDeliverButtonState(stage) {
+      if (currentState !== SessionState.PROCESSING) return;
+      if (stage === "processing_speech" || stage === "generating_evaluation" || stage === "synthesizing_audio") {
+        disable(dom.btnDeliver);
+      } else if (stage === "ready" || stage === "failed" || stage === "invalidated") {
+        enable(dom.btnDeliver);
+      }
+    }
+
+    // ─── Consent Form Event Handlers (continued) ─────────────────────
     /**
      * Called when the speaker name input or consent checkbox changes.
      * Sends set_consent message to server and updates local state.
@@ -1343,6 +1398,8 @@
 
       ws = new WebSocket(url);
       audioFormatSent = false;
+      // Per Hazard 2: reset pipelineRunId on reconnect to prevent stale filtering
+      pipelineRunId = 0;
 
       ws.binaryType = "arraybuffer"; // For receiving TTS audio
 
@@ -1468,6 +1525,14 @@
           break;
         case "data_purged":
           handleDataPurged(message.reason);
+          break;
+        case "pipeline_progress":
+          // Ignore stale progress from cancelled pipelines (Hazard 2, Hazard 5)
+          if (message.runId < pipelineRunId) break;
+          pipelineRunId = message.runId;
+          pipelineStage = message.stage;
+          updateProcessingIndicator(message.stage);
+          updateDeliverButtonState(message.stage);
           break;
         default:
           console.warn("Unknown server message type:", message.type);
@@ -1712,6 +1777,9 @@
       estimatedDuration = null;
       hide(dom.durationEstimate);
       stopTTSPlayback();
+      // Reset pipeline state on data purge (Req 6.3)
+      pipelineStage = "idle";
+      pipelineRunId = 0;
 
       if (reason === "opt_out") {
         // Permanent purge — disable Save Outputs for this session
@@ -1919,6 +1987,9 @@
       dataPurged = false;
       estimatedDuration = null;
       lastEvaluationScript = "";
+      // Reset pipeline state for new recording (Req 2.5, 6.3)
+      pipelineStage = "idle";
+      pipelineRunId = 0;
       stopTTSPlayback();
       dismissError();
       hide(dom.interruptionBanner);
@@ -2027,6 +2098,9 @@
       // Stop any TTS audio playback immediately
       stopTTSPlayback();
       clearCooldown();
+      // Reset pipeline state on panic mute (Req 6.3)
+      pipelineStage = "idle";
+      pipelineRunId = 0;
 
       // Send panic_mute command to server
       wsSend({ type: "panic_mute" });

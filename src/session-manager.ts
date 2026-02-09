@@ -15,7 +15,10 @@ import type {
   DeliveryMetrics,
   StructuredEvaluation,
   StructuredEvaluationPublic,
+  PipelineStage,
+  EvaluationCache,
 } from "./types.js";
+import { createDeferred } from "./utils/deferred.js";
 import type { TranscriptionEngine } from "./transcription-engine.js";
 import type { MetricsExtractor } from "./metrics-extractor.js";
 import type { EvaluationGenerator } from "./evaluation-generator.js";
@@ -125,6 +128,10 @@ export class SessionManager {
         consent: null,
         timeLimitSeconds: 120,
         evaluationPassRate: null,
+        eagerStatus: "idle",
+        eagerRunId: null,
+        eagerPromise: null,
+        evaluationCache: null,
       };
 
       this.sessions.set(session.id, session);
@@ -214,6 +221,11 @@ export class SessionManager {
       session.runId++;
     }
 
+    // Clear eager pipeline state — runId already incremented above,
+    // so use clearEagerState() (pure reset), not cancelEagerGeneration().
+    // Per privacy-and-retention rule: opt-out purges all session data immediately and irrecoverably.
+    this.clearEagerState(sessionId);
+
     // Stop live transcription if active (similar to panicMute)
     if (session.state === SessionState.RECORDING && this.deps.transcriptionEngine) {
       try {
@@ -277,6 +289,10 @@ export class SessionManager {
       session.outputsSaved = false;
       session.ttsAudioCache = null;
       session.stoppedAt = null;
+
+      // Clear eager pipeline state — runId already incremented above,
+      // so use clearEagerState() (pure reset), not cancelEagerGeneration()
+      this.clearEagerState(sessionId);
 
       // Start live transcription if engine is available
       if (this.deps.transcriptionEngine) {
@@ -692,6 +708,358 @@ export class SessionManager {
     session.state = SessionState.IDLE;
   }
 
+  // ─── Eager Pipeline: Cache Validity ───────────────────────────────────────────
+
+  /**
+   * Returns true only when the evaluation cache is valid and ready for delivery.
+   *
+   * ALL conditions must hold:
+   * - evaluationCache is non-null
+   * - eagerStatus is "ready"
+   * - cache.runId matches session.runId
+   * - cache.timeLimitSeconds matches session.timeLimitSeconds
+   * - cache.voiceConfig matches the resolved voiceConfig (session.voiceConfig ?? "nova")
+   * - cache.ttsAudio is non-empty
+   * - cache.evaluation is non-null
+   * - cache.evaluationScript is non-null
+   * - cache.evaluationPublic is non-null (required for delivery — evaluation_ready message payload)
+   *
+   * Per Implementation Hazard 3: compare against the resolved voiceConfig, not raw undefined.
+   *
+   * Requirements: 6.1, 4.5
+   */
+  isEagerCacheValid(sessionId: string): boolean {
+    const session = this.getSession(sessionId);
+    const cache = session.evaluationCache;
+    return (
+      cache !== null &&
+      session.eagerStatus === "ready" &&
+      cache.runId === session.runId &&
+      cache.timeLimitSeconds === session.timeLimitSeconds &&
+      cache.voiceConfig === (session.voiceConfig ?? "nova") &&
+      cache.ttsAudio.length > 0 &&
+      cache.evaluation !== null &&
+      cache.evaluationScript !== null &&
+      cache.evaluationPublic !== null
+    );
+  }
+
+  // ─── Eager Pipeline: State Management ─────────────────────────────────────────
+
+  /**
+   * Pure field reset — clears all eager pipeline fields without incrementing runId.
+   * Does NOT cancel in-flight work on its own.
+   *
+   * Safe for cleanup-only paths (e.g., purgeSessionData, or after runId is already
+   * incremented by the caller such as startRecording, panicMute, revokeConsent).
+   *
+   * Requirements: 6.2, 6.3, 6.4, 6.5, 6.7
+   */
+  clearEagerState(sessionId: string): void {
+    const session = this.getSession(sessionId);
+    session.eagerStatus = "idle";
+    session.eagerRunId = null;
+    session.eagerPromise = null;
+    session.evaluationCache = null;
+  }
+
+  /**
+   * Cancellation primitive — increments runId to cancel in-flight eager pipeline
+   * via epoch bump, then clears all eager fields.
+   *
+   * Cancels by invalidating results via epoch bump; does NOT abort in-flight
+   * LLM/TTS calls. The in-flight pipeline will detect the runId mismatch at
+   * its next checkpoint and discard results.
+   *
+   * Use this when you need to cancel in-flight work (e.g., invalidateEagerCache).
+   * Use clearEagerState() when runId is already incremented by the caller.
+   *
+   * Requirements: 6.2, 6.3, 6.4, 6.5, 6.7
+   */
+  cancelEagerGeneration(sessionId: string): void {
+    const session = this.getSession(sessionId);
+    session.runId++;
+    this.clearEagerState(sessionId);
+  }
+
+  // ─── Eager Pipeline: Cache Invalidation ─────────────────────────────────────
+
+  /**
+   * Invalidates the eager cache and cancels any in-flight eager pipeline.
+   *
+   * Called when generation parameters change (e.g., time limit, voiceConfig).
+   * Delegates to cancelEagerGeneration() which increments runId (to cancel
+   * in-flight eager via epoch bump) and clears all eager fields atomically.
+   *
+   * This expands the meaning of runId from "recording epoch" to "generation epoch" —
+   * it now also increments on parameter changes that invalidate cached output.
+   *
+   * Requirements: 6.2
+   */
+  invalidateEagerCache(sessionId: string): void {
+    this.cancelEagerGeneration(sessionId);
+  }
+
+
+  // ─── Eager Pipeline: Core Execution ────────────────────────────────────────────
+
+  /**
+   * Runs the eager evaluation pipeline in the background.
+   *
+   * NOT async — returns a deferred promise so that (eagerPromise, eagerRunId, eagerStatus)
+   * are set atomically (synchronously) before any async work begins.
+   *
+   * Pipeline stages (same as generateEvaluation):
+   *   LLM generation → energy profile → script rendering → tone check →
+   *   timing trim → scope acknowledgment → name redaction → TTS synthesis
+   *
+   * Key invariants:
+   * - Never transitions session.state or calls assertTransition()
+   * - Never sends messages or triggers delivery
+   * - Evidence validation runs against raw (unredacted) transcript; redaction applied after
+   * - Promise always resolves, never rejects (never-reject contract)
+   * - safeProgress wraps all onProgress calls in try/catch
+   * - Dual-guard finally for cleanup ownership
+   *
+   * Requirements: 1.1, 1.2, 1.3, 1.4, 1.5, 1.6, 2.2, 8.1, 8.2
+   */
+  runEagerPipeline(
+    sessionId: string,
+    onProgress?: (stage: PipelineStage) => void,
+  ): Promise<void> {
+    const session = this.getSession(sessionId);
+
+    // State precondition guard — MUST be first, before any field reads or mutations
+    if (session.state !== SessionState.PROCESSING) {
+      return Promise.resolve();
+    }
+
+    // Single-flight guard using eagerRunId
+    if (
+      session.eagerRunId === session.runId &&
+      (session.eagerStatus === "generating" || session.eagerStatus === "synthesizing")
+    ) {
+      return session.eagerPromise!;
+    }
+
+    // Capture params — only after guards pass
+    const capturedRunId = session.runId;
+    const capturedTimeLimit = session.timeLimitSeconds;
+    const capturedVoice = session.voiceConfig ?? "nova";
+
+    // Safe progress helper — never throws
+    const safeProgress = (stage: PipelineStage) => {
+      try {
+        onProgress?.(stage);
+      } catch {
+        /* swallow — callback throws must not reject the promise */
+      }
+    };
+
+    // Deferred: create promise BEFORE setting status (all synchronous, no throw possible)
+    const { promise, resolve } = createDeferred<void>();
+    session.eagerPromise = promise;
+    session.eagerRunId = capturedRunId;
+    session.eagerStatus = "generating";
+
+    // Async work — always resolves, never rejects
+    (async () => {
+      try {
+        safeProgress("generating_evaluation");
+
+        // Guard: need generator, transcript, and metrics to proceed
+        if (!this.deps.evaluationGenerator || session.transcript.length === 0 || !session.metrics) {
+          if (!this.deps.evaluationGenerator) {
+            this.log("WARN", `[eager] No EvaluationGenerator configured — eager pipeline skipped`);
+          } else if (session.transcript.length === 0) {
+            this.log("WARN", `[eager] No transcript available for session ${sessionId}`);
+          } else {
+            this.log("WARN", `[eager] No metrics available for session ${sessionId}`);
+          }
+          // Treat missing deps as failure
+          if (capturedRunId === session.runId) {
+            session.eagerStatus = "failed";
+            session.evaluationCache = null;
+            safeProgress("failed");
+          }
+          return;
+        }
+
+        const metrics = session.metrics;
+
+        // ── Stage 1: LLM Generation ──
+        this.log("INFO", `[eager] Generating evaluation for session ${sessionId}`);
+        const generateResult = await this.deps.evaluationGenerator.generate(
+          session.transcript,
+          metrics,
+        );
+
+        // RunId check after LLM generation
+        if (session.runId !== capturedRunId) {
+          this.log("WARN", `[eager] RunId changed during LLM generation for session ${sessionId}, discarding`);
+          return;
+        }
+
+        const evaluation = generateResult.evaluation;
+
+        // ── Stage 2: Compute energy profile from audio chunks ──
+        if (this.deps.metricsExtractor && session.audioChunks.length > 0) {
+          const energyProfile = this.deps.metricsExtractor.computeEnergyProfile(session.audioChunks);
+          metrics.energyProfile = energyProfile;
+          metrics.energyVariationCoefficient = energyProfile.coefficientOfVariation;
+        }
+
+        // ── Stage 3: Script Rendering (with markers, UNREDACTED) ──
+        let script = this.deps.evaluationGenerator.renderScript(
+          evaluation,
+          undefined, // No speakerName — prevents old redaction path; redaction at stage 7
+          metrics,
+        );
+
+        // RunId check after rendering
+        if (session.runId !== capturedRunId) {
+          return;
+        }
+
+        // ── Stage 4: Tone Check + Fix ──
+        if (this.deps.toneChecker) {
+          const toneResult = this.deps.toneChecker.check(script, evaluation, metrics);
+          if (!toneResult.passed) {
+            script = this.deps.toneChecker.stripViolations(script, toneResult.violations);
+          }
+          // Strip markers exactly once at the end of stage 4
+          script = this.deps.toneChecker.stripMarkers(script);
+        } else {
+          // No ToneChecker — strip markers with regex fallback
+          script = script.replace(/\s*\[\[(Q|M):[^\]]+\]\]/g, "").replace(/\s{2,}/g, " ").trim();
+        }
+
+        // RunId check after tone check
+        if (session.runId !== capturedRunId) {
+          return;
+        }
+
+        // ── Stage 5: Timing Trim ──
+        if (this.deps.ttsEngine) {
+          script = this.deps.ttsEngine.trimToFit(script, capturedTimeLimit);
+        }
+
+        // ── Stage 6: Scope Acknowledgment Check ──
+        if (this.deps.toneChecker) {
+          const hasStructureCommentary = !!(
+            evaluation.structure_commentary?.opening_comment ||
+            evaluation.structure_commentary?.body_comment ||
+            evaluation.structure_commentary?.closing_comment
+          );
+          script = this.deps.toneChecker.appendScopeAcknowledgment(
+            script,
+            session.qualityWarning,
+            hasStructureCommentary,
+          );
+        }
+
+        // RunId check before redaction
+        if (session.runId !== capturedRunId) {
+          return;
+        }
+
+        // ── Stage 7: Name Redaction ──
+        // Evidence validation runs against raw (unredacted) transcript; redaction applied after
+        let scriptForTTS = script;
+        let evaluationPublic: StructuredEvaluationPublic | null = null;
+
+        if (session.consent && this.deps.evaluationGenerator) {
+          const redactionResult = this.deps.evaluationGenerator.redact({
+            script,
+            evaluation,
+            consent: session.consent,
+          });
+          scriptForTTS = redactionResult.scriptRedacted;
+          evaluationPublic = redactionResult.evaluationPublic;
+        }
+
+        // RunId check before TTS synthesis
+        if (session.runId !== capturedRunId) {
+          return;
+        }
+
+        // ── Stage 8: TTS Synthesis ──
+        session.eagerStatus = "synthesizing";
+        safeProgress("synthesizing_audio");
+
+        if (this.deps.ttsEngine) {
+          this.log("INFO", `[eager] Synthesizing TTS audio for session ${sessionId}`);
+          const audioBuffer = await this.deps.ttsEngine.synthesize(scriptForTTS);
+
+          // RunId check before committing
+          if (session.runId !== capturedRunId) {
+            this.log("WARN", `[eager] RunId changed during TTS synthesis for session ${sessionId}, discarding`);
+            return;
+          }
+
+          // Build EvaluationCache atomically
+          const cache: EvaluationCache = {
+            runId: capturedRunId,
+            timeLimitSeconds: capturedTimeLimit,
+            voiceConfig: capturedVoice,
+            evaluation,
+            evaluationScript: scriptForTTS,
+            ttsAudio: audioBuffer,
+            evaluationPublic,
+          };
+
+          // Confirm artifact.runId === session.runId before publishing
+          if (cache.runId === session.runId) {
+            session.evaluationCache = cache;
+            session.eagerStatus = "ready";
+            this.log("INFO", `[eager] Pipeline complete for session ${sessionId}: cache published (runId=${capturedRunId})`);
+            safeProgress("ready");
+          }
+        } else {
+          this.log("WARN", `[eager] No TTSEngine configured — eager pipeline cannot complete`);
+          if (capturedRunId === session.runId) {
+            session.eagerStatus = "failed";
+            session.evaluationCache = null;
+            safeProgress("failed");
+          }
+        }
+      } catch (err) {
+        // Encode failure — never rethrow
+        const errMsg = err instanceof Error ? err.message : String(err);
+        this.log("ERROR", `[eager] Pipeline failed for session ${sessionId}: ${errMsg}`);
+        if (capturedRunId === session.runId) {
+          session.eagerStatus = "failed";
+          session.evaluationCache = null;
+          safeProgress("failed");
+        }
+      } finally {
+        // Dual-guard cleanup: only touch fields if this run still owns the session.
+        // Check BOTH eagerRunId and eagerPromise identity — resilient to future refactors
+        // where one field could be reset early while the other still identifies ownership.
+        const isOwner = session.eagerRunId === capturedRunId || session.eagerPromise === promise;
+        if (isOwner) {
+          if (capturedRunId !== session.runId && session.eagerStatus !== "ready") {
+            // Mismatch + not ready: restore coherence — prevent zombie generating/synthesizing.
+            // If eagerStatus is "ready", the cache was successfully published before runId changed;
+            // don't force idle here — clearEagerState/cancelEagerGeneration will handle it.
+            session.eagerStatus = "idle";
+          }
+          session.eagerPromise = null;
+          session.eagerRunId = null;
+        }
+        resolve(); // Always resolve the deferred — never reject
+      }
+    })();
+
+    return promise;
+  }
+
+
+
+
+
+
+
   /**
    * Returns the cached TTS audio buffer for replay.
    * Transitions the session from IDLE to DELIVERING state.
@@ -706,7 +1074,10 @@ export class SessionManager {
    */
   replayTTS(sessionId: string): Buffer | undefined {
     const session = this.getSession(sessionId);
-    if (!session.ttsAudioCache) return undefined;
+    // Check both ttsAudioCache (set by generateEvaluation/fallback path)
+    // and evaluationCache.ttsAudio (set by eager pipeline cache-hit delivery path)
+    const audio = session.ttsAudioCache ?? session.evaluationCache?.ttsAudio ?? undefined;
+    if (!audio) return undefined;
     if (session.state !== SessionState.IDLE) {
       throw new Error(
         `Invalid state transition: cannot call replayTTS() in "${session.state}" state. ` +
@@ -714,7 +1085,7 @@ export class SessionManager {
       );
     }
     session.state = SessionState.DELIVERING;
-    return session.ttsAudioCache;
+    return audio;
   }
 
 
@@ -738,6 +1109,10 @@ export class SessionManager {
 
     session.runId++;
     session.state = SessionState.IDLE;
+
+    // Clear eager pipeline state — runId already incremented above,
+    // so use clearEagerState() (pure reset), not cancelEagerGeneration()
+    this.clearEagerState(sessionId);
 
     // Stop live transcription if active
     if (this.deps.transcriptionEngine) {

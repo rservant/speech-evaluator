@@ -1109,6 +1109,10 @@ describe("purgeSessionData", () => {
       consent: null,
       timeLimitSeconds: 120,
       evaluationPassRate: null,
+      eagerStatus: "idle",
+      eagerRunId: null,
+      eagerPromise: null,
+      evaluationCache: null,
     };
 
     purgeSessionData(session);
@@ -1161,5 +1165,578 @@ describe("sendMessage", () => {
     }).not.toThrow();
 
     expect(mockWs.send).not.toHaveBeenCalled();
+  });
+});
+
+// ─── Eager Evaluation Pipeline: Delivery and Invalidation Edge Cases (Task 5.7) ──
+
+describe("Eager pipeline delivery and invalidation edge cases", () => {
+  let server: AppServer;
+  let silentLogger: ReturnType<typeof createSilentLogger>;
+  let clients: TestClient[];
+
+  beforeEach(async () => {
+    silentLogger = createSilentLogger();
+    server = createAppServer({ logger: silentLogger });
+    await server.listen(TEST_PORT);
+    clients = [];
+  });
+
+  afterEach(async () => {
+    for (const c of clients) c.close();
+    await server.close();
+    vi.restoreAllMocks();
+  });
+
+  function track(client: TestClient): TestClient {
+    clients.push(client);
+    return client;
+  }
+
+  /** Helper: transition a client to PROCESSING state with eager pipeline mocked */
+  async function transitionToProcessing(client: TestClient): Promise<Session> {
+    await setConsentForRecording(client);
+
+    // Mock runEagerPipeline to be a no-op so we control eager state manually
+    vi.spyOn(server.sessionManager, "runEagerPipeline").mockReturnValue(Promise.resolve());
+
+    client.sendJson({ type: "start_recording" });
+    await client.nextMessageOfType("state_change"); // RECORDING
+
+    client.sendJson({ type: "stop_recording" });
+    await client.nextMessageOfType("state_change"); // PROCESSING
+
+    const sessions = Array.from(
+      (server.sessionManager as unknown as { sessions: Map<string, Session> }).sessions.values(),
+    );
+    return sessions[sessions.length - 1];
+  }
+
+  /** Helper: build a valid EvaluationCache for a session */
+  function buildValidCache(session: Session): import("./types.js").EvaluationCache {
+    const evaluation = {
+      opening: "Great speech.",
+      items: [{
+        type: "commendation" as const,
+        summary: "Good opening",
+        evidence_quote: "hello world test speech words here",
+        evidence_timestamp: 1,
+        explanation: "Strong start",
+      }],
+      closing: "Well done.",
+      structure_commentary: { opening_comment: null, body_comment: null, closing_comment: null },
+    };
+    const evaluationPublic = {
+      opening: "Great speech.",
+      items: [{
+        type: "commendation" as const,
+        summary: "Good opening",
+        explanation: "Strong start",
+        evidence_quote: "hello world test speech words here",
+        evidence_timestamp: 1,
+      }],
+      closing: "Well done.",
+      structure_commentary: { opening_comment: null, body_comment: null, closing_comment: null },
+    };
+    return {
+      runId: session.runId,
+      timeLimitSeconds: session.timeLimitSeconds,
+      voiceConfig: session.voiceConfig ?? "nova",
+      evaluation,
+      evaluationScript: "Great speech. Well done.",
+      ttsAudio: Buffer.from("fake-tts-audio-data"),
+      evaluationPublic,
+    };
+  }
+
+  // ─── Await-then-deliver flow (Req 5.2) ──────────────────────────────────────
+
+  describe("await-then-deliver flow (Req 5.2)", () => {
+    it("should await in-flight eager promise then deliver from cache", async () => {
+      const c = track(await createClient(server));
+
+      await setConsentForRecording(c);
+
+      // Control the eager pipeline: capture resolve function
+      let resolveEager: (() => void) | undefined;
+      vi.spyOn(server.sessionManager, "runEagerPipeline").mockImplementation(
+        (sessionId: string, _onProgress?: (stage: import("./types.js").PipelineStage) => void) => {
+          const session = server.sessionManager.getSession(sessionId);
+          session.eagerStatus = "generating";
+          session.eagerRunId = session.runId;
+          const p = new Promise<void>((resolve) => {
+            resolveEager = resolve;
+          });
+          session.eagerPromise = p;
+          return p;
+        },
+      );
+
+      c.sendJson({ type: "start_recording" });
+      await c.nextMessageOfType("state_change"); // RECORDING
+
+      c.sendJson({ type: "stop_recording" });
+      await c.nextMessageOfType("state_change"); // PROCESSING
+
+      const sessions = Array.from(
+        (server.sessionManager as unknown as { sessions: Map<string, Session> }).sessions.values(),
+      );
+      const session = sessions[sessions.length - 1];
+
+      // Mock completeDelivery
+      vi.spyOn(server.sessionManager, "completeDelivery").mockImplementation((sid) => {
+        const s = server.sessionManager.getSession(sid);
+        s.state = SessionState.IDLE;
+      });
+
+      // Send deliver_evaluation while eager is in-flight
+      c.sendJson({ type: "deliver_evaluation" });
+
+      // Give the server a moment to start awaiting the promise
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      // Now simulate eager completing: set cache and resolve
+      const cache = buildValidCache(session);
+      session.evaluationCache = cache;
+      session.eagerStatus = "ready";
+      session.eagerPromise = null;
+      session.eagerRunId = null;
+      resolveEager!();
+
+      // Should get state_change DELIVERING (from cache delivery)
+      const deliveringMsg = await c.nextMessageOfType("state_change");
+      expect(deliveringMsg).toEqual({ type: "state_change", state: SessionState.DELIVERING });
+
+      // Should get evaluation_ready
+      const evalReady = await c.nextMessageOfType("evaluation_ready");
+      expect((evalReady as any).evaluation.opening).toBe("Great speech.");
+
+      // Should get TTS audio
+      await c.nextMessageOfType("tts_audio");
+
+      // Should get tts_complete
+      await c.nextMessageOfType("tts_complete");
+
+      // Should get state_change IDLE
+      const idleMsg = await c.nextMessageOfType("state_change");
+      expect(idleMsg).toEqual({ type: "state_change", state: SessionState.IDLE });
+    });
+
+    it("should not throw when awaiting eager promise (never-reject contract)", async () => {
+      const c = track(await createClient(server));
+
+      await setConsentForRecording(c);
+
+      // Control the eager pipeline: resolve immediately (simulating fast completion)
+      vi.spyOn(server.sessionManager, "runEagerPipeline").mockImplementation(
+        (sessionId: string) => {
+          const session = server.sessionManager.getSession(sessionId);
+          session.eagerStatus = "failed";
+          session.eagerRunId = session.runId;
+          const p = Promise.resolve();
+          session.eagerPromise = p;
+          return p;
+        },
+      );
+
+      c.sendJson({ type: "start_recording" });
+      await c.nextMessageOfType("state_change"); // RECORDING
+
+      c.sendJson({ type: "stop_recording" });
+      await c.nextMessageOfType("state_change"); // PROCESSING
+
+      const sessions = Array.from(
+        (server.sessionManager as unknown as { sessions: Map<string, Session> }).sessions.values(),
+      );
+      const session = sessions[sessions.length - 1];
+
+      // Set eagerStatus to generating so Branch 2 is entered
+      session.eagerStatus = "generating";
+
+      // Mock generateEvaluation for the fallback path
+      vi.spyOn(server.sessionManager, "generateEvaluation").mockImplementation(async (sid) => {
+        const s = server.sessionManager.getSession(sid);
+        s.state = SessionState.DELIVERING;
+        s.evaluation = {
+          opening: "Fallback.",
+          items: [],
+          closing: "Done.",
+          structure_commentary: { opening_comment: null, body_comment: null, closing_comment: null },
+        };
+        s.evaluationScript = "Fallback. Done.";
+        return Buffer.from("fallback-audio");
+      });
+      vi.spyOn(server.sessionManager, "completeDelivery").mockImplementation((sid) => {
+        const s = server.sessionManager.getSession(sid);
+        s.state = SessionState.IDLE;
+      });
+
+      // Send deliver_evaluation — should await the promise (which resolves immediately)
+      // then fall through to fallback since cache is invalid
+      c.sendJson({ type: "deliver_evaluation" });
+
+      // Should eventually get to DELIVERING and then IDLE without errors
+      const deliveringMsg = await c.nextMessageOfType("state_change");
+      expect(deliveringMsg).toEqual({ type: "state_change", state: SessionState.DELIVERING });
+
+      await c.nextMessageOfType("tts_complete");
+
+      const idleMsg = await c.nextMessageOfType("state_change");
+      expect(idleMsg).toEqual({ type: "state_change", state: SessionState.IDLE });
+    });
+
+    it("should fall through to synchronous fallback when runId changes during await", async () => {
+      const c = track(await createClient(server));
+
+      await setConsentForRecording(c);
+
+      // Control the eager pipeline
+      let resolveEager: (() => void) | undefined;
+      vi.spyOn(server.sessionManager, "runEagerPipeline").mockImplementation(
+        (sessionId: string) => {
+          const session = server.sessionManager.getSession(sessionId);
+          session.eagerStatus = "generating";
+          session.eagerRunId = session.runId;
+          const p = new Promise<void>((resolve) => {
+            resolveEager = resolve;
+          });
+          session.eagerPromise = p;
+          return p;
+        },
+      );
+
+      c.sendJson({ type: "start_recording" });
+      await c.nextMessageOfType("state_change"); // RECORDING
+
+      c.sendJson({ type: "stop_recording" });
+      await c.nextMessageOfType("state_change"); // PROCESSING
+
+      const sessions = Array.from(
+        (server.sessionManager as unknown as { sessions: Map<string, Session> }).sessions.values(),
+      );
+      const session = sessions[sessions.length - 1];
+
+      // Mock generateEvaluation for the fallback path
+      vi.spyOn(server.sessionManager, "generateEvaluation").mockImplementation(async (sid) => {
+        const s = server.sessionManager.getSession(sid);
+        s.state = SessionState.DELIVERING;
+        s.evaluation = {
+          opening: "Fallback after invalidation.",
+          items: [],
+          closing: "Done.",
+          structure_commentary: { opening_comment: null, body_comment: null, closing_comment: null },
+        };
+        s.evaluationScript = "Fallback after invalidation. Done.";
+        return Buffer.from("fallback-audio");
+      });
+      vi.spyOn(server.sessionManager, "completeDelivery").mockImplementation((sid) => {
+        const s = server.sessionManager.getSession(sid);
+        s.state = SessionState.IDLE;
+      });
+
+      // Send deliver_evaluation while eager is in-flight
+      c.sendJson({ type: "deliver_evaluation" });
+
+      // Give the server a moment to start awaiting
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      // Simulate runId change (invalidation during await)
+      session.runId++;
+      session.eagerStatus = "idle";
+      session.evaluationCache = null;
+      session.eagerPromise = null;
+      session.eagerRunId = null;
+      resolveEager!();
+
+      // Should fall through to synchronous fallback
+      const deliveringMsg = await c.nextMessageOfType("state_change");
+      expect(deliveringMsg).toEqual({ type: "state_change", state: SessionState.DELIVERING });
+
+      // Verify generateEvaluation was called (fallback path)
+      await c.nextMessageOfType("tts_complete");
+      expect(server.sessionManager.generateEvaluation).toHaveBeenCalled();
+
+      const idleMsg = await c.nextMessageOfType("state_change");
+      expect(idleMsg).toEqual({ type: "state_change", state: SessionState.IDLE });
+    });
+  });
+
+  // ─── Re-entrancy guard (Req 5.6) ───────────────────────────────────────────
+
+  describe("re-entrancy guard (Req 5.6)", () => {
+    it("should ignore deliver_evaluation when already in DELIVERING state", async () => {
+      const c = track(await createClient(server));
+
+      const session = await transitionToProcessing(c);
+
+      // Set up valid cache for first delivery
+      const cache = buildValidCache(session);
+      session.evaluationCache = cache;
+      session.eagerStatus = "ready";
+
+      // Mock completeDelivery to keep session in DELIVERING (don't transition to IDLE)
+      vi.spyOn(server.sessionManager, "completeDelivery").mockImplementation(() => {
+        // No-op: keep session in DELIVERING state
+      });
+
+      // First deliver_evaluation — should succeed
+      c.sendJson({ type: "deliver_evaluation" });
+
+      const deliveringMsg = await c.nextMessageOfType("state_change");
+      expect(deliveringMsg).toEqual({ type: "state_change", state: SessionState.DELIVERING });
+
+      await c.nextMessageOfType("evaluation_ready");
+      await c.nextMessageOfType("tts_audio");
+      await c.nextMessageOfType("tts_complete");
+
+      // deliverFromCache sends state_change: IDLE after completeDelivery even though
+      // completeDelivery is mocked — consume it so it doesn't interfere
+      await c.nextMessageOfType("state_change"); // IDLE message from deliverFromCache
+
+      // Force session back to DELIVERING (since deliverFromCache reads session.state
+      // after completeDelivery, but we need it in DELIVERING for the re-entrancy guard)
+      session.state = SessionState.DELIVERING;
+
+      // Spy on generateEvaluation to verify it's NOT called on second attempt
+      const generateSpy = vi.spyOn(server.sessionManager, "generateEvaluation");
+
+      // Second deliver_evaluation — should be ignored by re-entrancy guard
+      c.sendJson({ type: "deliver_evaluation" });
+
+      // Wait a bit and verify no new state_change or evaluation_ready messages
+      const gotResponse = await c
+        .nextMessageOfType("state_change", 500)
+        .then(() => true)
+        .catch(() => false);
+      expect(gotResponse).toBe(false);
+
+      // generateEvaluation should NOT have been called
+      expect(generateSpy).not.toHaveBeenCalled();
+    });
+  });
+
+  // ─── Message ordering (Req 5.4) ────────────────────────────────────────────
+
+  describe("message ordering (Req 5.4)", () => {
+    it("should send evaluation_ready before TTS audio binary frame on cache-hit delivery", async () => {
+      const c = track(await createClient(server));
+
+      const session = await transitionToProcessing(c);
+
+      // Set up valid cache
+      const cache = buildValidCache(session);
+      session.evaluationCache = cache;
+      session.eagerStatus = "ready";
+
+      vi.spyOn(server.sessionManager, "completeDelivery").mockImplementation((sid) => {
+        const s = server.sessionManager.getSession(sid);
+        s.state = SessionState.IDLE;
+      });
+
+      c.sendJson({ type: "deliver_evaluation" });
+
+      // Collect messages in order
+      const messages: ServerMessage[] = [];
+      // We expect: state_change(DELIVERING), evaluation_ready, tts_audio, tts_complete, state_change(IDLE)
+      for (let i = 0; i < 5; i++) {
+        messages.push(await c.nextMessage(3000));
+      }
+
+      const types = messages.map((m) => m.type);
+
+      // Find indices
+      const evalReadyIdx = types.indexOf("evaluation_ready");
+      const ttsAudioIdx = types.indexOf("tts_audio");
+      const ttsCompleteIdx = types.indexOf("tts_complete");
+
+      // ASSERTION: evaluation_ready comes before tts_audio
+      expect(evalReadyIdx).toBeGreaterThanOrEqual(0);
+      expect(ttsAudioIdx).toBeGreaterThanOrEqual(0);
+      expect(evalReadyIdx).toBeLessThan(ttsAudioIdx);
+
+      // ASSERTION: tts_audio comes before tts_complete
+      expect(ttsCompleteIdx).toBeGreaterThanOrEqual(0);
+      expect(ttsAudioIdx).toBeLessThan(ttsCompleteIdx);
+    });
+
+    it("should send evaluation_ready before TTS audio binary frame on fallback delivery", async () => {
+      const c = track(await createClient(server));
+
+      const session = await transitionToProcessing(c);
+
+      // No cache — fallback path
+      session.eagerStatus = "idle";
+      session.evaluationCache = null;
+
+      vi.spyOn(server.sessionManager, "generateEvaluation").mockImplementation(async (sid) => {
+        const s = server.sessionManager.getSession(sid);
+        s.state = SessionState.DELIVERING;
+        s.evaluation = {
+          opening: "Great speech.",
+          items: [],
+          closing: "Well done.",
+          structure_commentary: { opening_comment: null, body_comment: null, closing_comment: null },
+        };
+        s.evaluationScript = "Great speech. Well done.";
+        return Buffer.from("fallback-audio");
+      });
+      vi.spyOn(server.sessionManager, "completeDelivery").mockImplementation((sid) => {
+        const s = server.sessionManager.getSession(sid);
+        s.state = SessionState.IDLE;
+      });
+
+      c.sendJson({ type: "deliver_evaluation" });
+
+      // Collect messages in order
+      const messages: ServerMessage[] = [];
+      for (let i = 0; i < 5; i++) {
+        messages.push(await c.nextMessage(3000));
+      }
+
+      const types = messages.map((m) => m.type);
+
+      const evalReadyIdx = types.indexOf("evaluation_ready");
+      const ttsAudioIdx = types.indexOf("tts_audio");
+
+      // ASSERTION: evaluation_ready comes before tts_audio
+      expect(evalReadyIdx).toBeGreaterThanOrEqual(0);
+      expect(ttsAudioIdx).toBeGreaterThanOrEqual(0);
+      expect(evalReadyIdx).toBeLessThan(ttsAudioIdx);
+    });
+  });
+
+  // ─── Replay availability with fake timers (Req 5.7, Property 12) ───────────
+
+  describe("replay availability after delivery (Req 5.7, Property 12)", () => {
+    it("should keep evaluationCache available after delivery until auto-purge fires", async () => {
+      vi.useFakeTimers();
+
+      try {
+        const c = track(await createClient(server));
+
+        const session = await transitionToProcessing(c);
+
+        // Set up valid cache
+        const cache = buildValidCache(session);
+        session.evaluationCache = cache;
+        session.eagerStatus = "ready";
+
+        vi.spyOn(server.sessionManager, "completeDelivery").mockImplementation((sid) => {
+          const s = server.sessionManager.getSession(sid);
+          s.state = SessionState.IDLE;
+        });
+
+        c.sendJson({ type: "deliver_evaluation" });
+
+        // Consume all delivery messages
+        await c.nextMessageOfType("state_change"); // DELIVERING
+        await c.nextMessageOfType("evaluation_ready");
+        await c.nextMessageOfType("tts_audio");
+        await c.nextMessageOfType("tts_complete");
+        await c.nextMessageOfType("state_change"); // IDLE
+
+        // (a) Cache non-null immediately after delivery
+        expect(session.evaluationCache).not.toBeNull();
+        expect(session.evaluationCache!.ttsAudio).toBeDefined();
+
+        // (b) Cache non-null before purge timer (advance 9 minutes)
+        await vi.advanceTimersByTimeAsync(9 * 60 * 1000);
+        expect(session.evaluationCache).not.toBeNull();
+
+        // (c) Cache null after purge timer fires (advance past 10 minutes total)
+        await vi.advanceTimersByTimeAsync(2 * 60 * 1000);
+        expect(session.evaluationCache).toBeNull();
+        expect(session.eagerStatus).toBe("idle");
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+  });
+
+  // ─── Invalidated gating (Req 6.2) ──────────────────────────────────────────
+
+  describe("invalidated gating (Req 6.2)", () => {
+    it("should send pipeline_progress: invalidated when time limit changes during PROCESSING with eager in-flight", async () => {
+      const c = track(await createClient(server));
+
+      const session = await transitionToProcessing(c);
+
+      // Set eager status to generating (simulating in-flight eager)
+      session.eagerStatus = "generating";
+      session.eagerRunId = session.runId;
+      session.eagerPromise = new Promise(() => {}); // never resolves
+
+      const runIdBefore = session.runId;
+
+      // Consume pipeline_progress: processing_speech from stop_recording
+      await c.nextMessageOfType("pipeline_progress");
+
+      // Change time limit — should trigger invalidation
+      c.sendJson({ type: "set_time_limit", seconds: 180 });
+
+      // Should get duration_estimate
+      await c.nextMessageOfType("duration_estimate");
+
+      // Should get pipeline_progress: invalidated with NEW runId
+      const invalidatedMsg = await c.nextMessageOfType("pipeline_progress");
+      expect((invalidatedMsg as any).stage).toBe("invalidated");
+      expect((invalidatedMsg as any).runId).toBeGreaterThan(runIdBefore);
+
+      // Verify the stage is "invalidated", NOT "processing_speech"
+      expect((invalidatedMsg as any).stage).not.toBe("processing_speech");
+    });
+
+    it("should fall through to synchronous fallback after invalidation on deliver click", async () => {
+      const c = track(await createClient(server));
+
+      const session = await transitionToProcessing(c);
+
+      // Set up a valid cache that will be invalidated
+      const cache = buildValidCache(session);
+      session.evaluationCache = cache;
+      session.eagerStatus = "ready";
+
+      // Consume pipeline_progress: processing_speech from stop_recording
+      await c.nextMessageOfType("pipeline_progress");
+
+      // Change time limit — invalidates the cache
+      c.sendJson({ type: "set_time_limit", seconds: 180 });
+      await c.nextMessageOfType("duration_estimate");
+      await c.nextMessageOfType("pipeline_progress"); // invalidated
+
+      // Verify cache was cleared
+      expect(session.evaluationCache).toBeNull();
+      expect(session.eagerStatus).toBe("idle");
+
+      // Now deliver — should use synchronous fallback (Branch 3)
+      vi.spyOn(server.sessionManager, "generateEvaluation").mockImplementation(async (sid) => {
+        const s = server.sessionManager.getSession(sid);
+        s.state = SessionState.DELIVERING;
+        s.evaluation = {
+          opening: "New evaluation.",
+          items: [],
+          closing: "Done.",
+          structure_commentary: { opening_comment: null, body_comment: null, closing_comment: null },
+        };
+        s.evaluationScript = "New evaluation. Done.";
+        return Buffer.from("new-audio");
+      });
+      vi.spyOn(server.sessionManager, "completeDelivery").mockImplementation((sid) => {
+        const s = server.sessionManager.getSession(sid);
+        s.state = SessionState.IDLE;
+      });
+
+      c.sendJson({ type: "deliver_evaluation" });
+
+      const deliveringMsg = await c.nextMessageOfType("state_change");
+      expect(deliveringMsg).toEqual({ type: "state_change", state: SessionState.DELIVERING });
+
+      // Verify generateEvaluation was called (fallback path, not cache hit)
+      expect(server.sessionManager.generateEvaluation).toHaveBeenCalled();
+
+      await c.nextMessageOfType("tts_complete");
+      const idleMsg = await c.nextMessageOfType("state_change");
+      expect(idleMsg).toEqual({ type: "state_change", state: SessionState.IDLE });
+    });
   });
 });

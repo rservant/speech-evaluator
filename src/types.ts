@@ -11,6 +11,33 @@ export enum SessionState {
   DELIVERING = "delivering",
 }
 
+// ─── Eager Pipeline Types ───────────────────────────────────────────────────────
+
+export type EagerStatus = "idle" | "generating" | "synthesizing" | "ready" | "failed";
+
+export type PipelineStage =
+  | "processing_speech"
+  | "generating_evaluation"
+  | "synthesizing_audio"
+  | "ready"
+  | "failed"
+  | "invalidated"; // Cache invalidated due to parameter change; never emitted by SessionManager — server/UI hint only
+
+export interface EvaluationCache {
+  runId: number;
+  timeLimitSeconds: number;
+  voiceConfig: string;
+  evaluation: StructuredEvaluation;
+  evaluationScript: string;
+  ttsAudio: Buffer; // exact binary payload for ws.send(), no framing needed
+  evaluationPublic: StructuredEvaluationPublic | null; // nullable in type but required non-null for cache validity
+}
+
+export interface Deferred<T> {
+  promise: Promise<T>;
+  resolve: (value: T) => void;
+}
+
 // ─── Consent Record (Phase 2 — Req 2.2) ────────────────────────────────────────
 
 export interface ConsentRecord {
@@ -43,6 +70,11 @@ export interface Session {
   speakerName?: string; // DEPRECATED — getter from consent (Req 8.4 backward compat)
   evaluationObjectives?: string[]; // extensibility: future project-specific (Req 8.2)
   voiceConfig?: string; // extensibility: future voice selection (Req 8.3)
+  // ─── Eager Pipeline Fields ──────────────────────────────────────────────────
+  eagerStatus: EagerStatus; // default: "idle"
+  eagerRunId: number | null; // runId captured at eager pipeline start; null when idle
+  eagerPromise: Promise<void> | null; // reference to in-flight eager pipeline for await coordination
+  evaluationCache: EvaluationCache | null; // single immutable cache object containing all delivery artifacts
 }
 
 // ─── Transcript ─────────────────────────────────────────────────────────────────
@@ -252,4 +284,5 @@ export type ServerMessage =
       estimatedSeconds: number;
       timeLimitSeconds: number;
     }
-  | { type: "data_purged"; reason: "opt_out" | "auto_purge" };
+  | { type: "data_purged"; reason: "opt_out" | "auto_purge" }
+  | { type: "pipeline_progress"; stage: PipelineStage; runId: number; message?: string };
