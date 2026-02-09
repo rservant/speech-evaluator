@@ -1533,24 +1533,29 @@
      * Primes the TTS audio element during a user gesture so the browser
      * grants playback permission. Called from click handlers before the
      * async WebSocket round-trip that delivers the actual audio data.
-     * A tiny silent MP3 is loaded and played to "unlock" the element.
+     *
+     * Two-pronged unlock:
+     * 1. Resume a shared AudioContext (unlocks Web Audio for the page).
+     * 2. Create the Audio element and call play() with an empty src —
+     *    even though it fails, the element is now "user-activated" and
+     *    subsequent play() calls with real data will succeed.
      */
     function primeTTSAudioElement() {
       cleanupTTSAudio();
 
+      // Unlock the page-level audio policy via AudioContext
+      try {
+        var ctx = new (window.AudioContext || window.webkitAudioContext)();
+        ctx.resume().then(function () {
+          ctx.close();
+        });
+      } catch (e) {
+        // AudioContext not available — rely on element priming alone
+      }
+
+      // Create the element within the user gesture scope
       ttsAudioElement = new Audio();
       ttsAudioElement.preload = "auto";
-
-      // Minimal valid silent MP3 frame (~0.03s of silence).
-      // Playing this during the gesture satisfies the browser autoplay policy.
-      var silentMp3 = "data:audio/mpeg;base64,SUQzBAAAAAAAI1RTU0UAAAAPAAADTGF2ZjU4Ljc2LjEwMAAAAAAAAAAAAAAA//tQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWGluZwAAAA8AAAACAAABhgC7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7//////////////////////////////////////////////////////////////////8AAAAATGF2YzU4LjEzAAAAAAAAAAAAAAAAJAAAAAAAAAAAAYYoRwMHAAAAAAD/+1DEAAAH+ANoUAAABNQJrLoYkAAAAAA0YAAAAAAAANIAAAAASEFJRkZJAAAAAElORk8AAAAJAAAAAAAAAFRTRVQAAAAPAAADTGF2ZjU4Ljc2LjEwMA==";
-      ttsAudioElement.src = silentMp3;
-      ttsAudioElement.play().then(function () {
-        console.log("[TTS] Audio element primed with silent frame");
-      }).catch(function () {
-        // Priming failed — will retry with real audio (may hit autoplay block)
-        console.warn("[TTS] Silent prime failed, will attempt direct play");
-      });
     }
 
     function handleTTSAudio(audioData) {
