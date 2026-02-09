@@ -865,6 +865,29 @@
     let ttsDeliveryComplete = false;
     /** The last evaluation script text, used as fallback on TTS error */
     let lastEvaluationScript = "";
+    /** Monotonic counter for playback instance identification.
+     *  Incremented by handleTTSAudio (new playback) and cancelDeferredIdle (force-stop).
+     *  No other code path may increment it — the latch's +1 progression check depends on this. */
+    let playbackInstanceToken = 0;
+    /** Pending deferred IDLE transition, or null if none.
+     *  Shape: { token: number } | null */
+    let deferredIdleTransition = null;
+    /**
+     * Token-stamped latch for the "IDLE arrives before ttsPlaying=true" ordering edge case.
+     * Shape: { tokenAtLatch: number } | null
+     *
+     * Set when state_change: idle arrives while in any non-IDLE state but ttsPlaying is false
+     * (uses currentState !== IDLE). Stores the current playbackInstanceToken at latch time.
+     * Idempotent: won't re-latch if already set. Does NOT fire on redundant IDLE→IDLE.
+     *
+     * Consumed by handleTTSAudio with token validation: only creates deferral if
+     * latchToken + 1 === currentToken (expected progression); otherwise discards as stale —
+     * prevents a latent latch from attaching to unrelated audio.
+     *
+     * Cleared by: handleTTSAudio (consumed or discarded), forceStopTtsAndCancelDeferral()
+     * (force-stop paths), and transitionToIdle() (normal IDLE application).
+     */
+    let pendingIdleFromServer = null;
 
     // ─── Audio Capture State ──────────────────────────────────────────
     /** @type {WebSocket|null} */
@@ -1429,10 +1452,12 @@
         dom.connectionStatus.textContent = "Disconnected";
         dom.connectionStatus.style.color = "var(--color-text-muted)";
 
-        // Fail-safe: if WebSocket drops during TTS delivery, stop playback
-        // and show written evaluation as fallback (meeting-safety-controls.md)
-        if (currentState === SessionState.DELIVERING) {
-          triggerTTSFailSafe();
+        // Fail-safe: if WS drops during playback, deferred state, pending latch,
+        // or any non-IDLE state, stop everything. The pendingIdleFromServer check
+        // covers the case where the latch is set (e.g., PROCESSING→IDLE with
+        // !ttsPlaying) and the socket drops before handleTTSAudio runs.
+        if (ttsPlaying || deferredIdleTransition !== null || pendingIdleFromServer !== null || currentState !== SessionState.IDLE) {
+          triggerTTSFailSafe(); // Owns force-stop internally: forceStopTtsAndCancelDeferral() + show written eval + transitionToIdle()
         }
 
         ws = null;
@@ -1553,21 +1578,51 @@
       }
 
       // If leaving DELIVERING due to panic mute (going to IDLE without tts_complete),
-      // force-stop playback. But if tts_complete was received, let audio play naturally.
+      // force-stop playback. But if ttsDeliveryComplete is true, let audio play naturally.
       if (previousState === SessionState.DELIVERING && newState !== SessionState.DELIVERING) {
         if (!ttsDeliveryComplete) {
           // Panic mute or error — force stop
           console.log("[TTS] Forced stop: leaving DELIVERING without tts_complete");
-          stopTTSPlayback();
+          forceStopTtsAndCancelDeferral(); // Clears deferral, bumps token, stops audio, clears ttsPlaying
         }
         // If ttsDeliveryComplete is true, audio is playing or finished — don't interrupt
       }
 
-      // When transitioning from DELIVERING to IDLE, start cooldown
-      if (previousState === SessionState.DELIVERING && newState === SessionState.IDLE) {
-        startCooldown();
+      // ── IDLE transition decision chain (explicit else-if to prevent reorder mistakes) ──
+      // Branch A: ttsPlaying is true → defer
+      if (newState === SessionState.IDLE && ttsPlaying) {
+        if (!ttsAudioElement || !ttsAudioElement.src) {
+          console.warn("[TTS] ttsPlaying is true but audio element/src missing — possible bug");
+        }
+        // Idempotent: don't overwrite an existing deferral
+        if (deferredIdleTransition === null) {
+          deferredIdleTransition = { token: playbackInstanceToken };
+        }
+        // Cooldown will start when deferred IDLE is applied
+        return; // Do NOT call updateUI yet
       }
 
+      // Branch B: not playing, non-IDLE state → latch (IDLE arrived before audio)
+      // Token-stamped: store current playbackInstanceToken so handleTTSAudio can
+      // verify the latch is from the expected session phase (new token = latch + 1).
+      // If handleTTSAudio never runs (e.g., server error, no audio sent), the latch
+      // is harmless — transitionToIdle() clears it, and force-stop paths clear it too.
+      else if (newState === SessionState.IDLE && !ttsPlaying && currentState !== SessionState.IDLE) {
+        if (pendingIdleFromServer === null) {
+          pendingIdleFromServer = { tokenAtLatch: playbackInstanceToken };
+        }
+        // Don't transition yet — wait for handleTTSAudio to consume the latch
+        return;
+      }
+
+      // Branch C: not playing, already IDLE or no latch needed → immediate transition
+      // All non-deferred IDLE transitions go through transitionToIdle() — single unified path.
+      else if (newState === SessionState.IDLE) {
+        transitionToIdle();
+        return;
+      }
+
+      // Branch D: non-IDLE state → pass through
       updateUI(newState);
     }
 
@@ -1631,29 +1686,63 @@
         ttsAudioElement.preload = "auto";
       }
 
-      ttsPlaying = true;
+      // ── MUST-NOT-REFACTOR ORDERING INVARIANT ──
+      // The following steps MUST execute in exactly this order. Reordering any
+      // step (especially moving latch consumption after play() or after setting
+      // ttsPlaying) can reintroduce the race condition this fix exists to prevent.
+      //
+      // Explicit ordering: token++ → capture → consume latch → set handlers → ttsPlaying=true → play()
 
+      // 1. Increment token for this new playback instance
+      playbackInstanceToken++;
+      // 2. Capture token for closure
+      const currentToken = playbackInstanceToken;
+
+      // 3. Consume the pendingIdleFromServer latch: if IDLE arrived before this
+      // function ran (ordering edge case), create the deferral now, bound to the
+      // new token. Token validation: only consume if the latch token matches
+      // expected progression (latchToken + 1 === currentToken). This prevents a
+      // stale latch from an earlier session phase from "attaching" to unrelated
+      // audio (e.g., replay triggered much later after other state changes).
+      // If the token doesn't match, the latch is stale — discard it.
+      if (pendingIdleFromServer !== null) {
+        var latchIsRelevant = (pendingIdleFromServer.tokenAtLatch + 1 === currentToken);
+        pendingIdleFromServer = null; // Always clear — consumed or discarded
+        if (latchIsRelevant && deferredIdleTransition === null) {
+          deferredIdleTransition = { token: currentToken };
+        }
+      }
+
+      // 4. Set handlers BEFORE play() so they're ready for immediate events
       ttsAudioElement.onplay = function () {
         console.log("[TTS] Audio playback started");
       };
 
       ttsAudioElement.onended = function () {
         console.log("[TTS] Audio playback ended naturally");
+        // Clean up state FIRST so updateUI sees consistent flags
         ttsPlaying = false;
         cleanupTTSAudio();
+        // Then apply deferred IDLE (which calls updateUI via transitionToIdle)
+        applyDeferredIdle(currentToken);
       };
 
       ttsAudioElement.onerror = function (e) {
-        console.error("[TTS] Audio element error:", ttsAudioElement.error);
+        console.error("[TTS] Audio element error:", ttsAudioElement ? ttsAudioElement.error : e);
+        // onerror: triggerTTSFailSafe owns the force-stop internally
         triggerTTSFailSafe();
       };
 
-      // Swap in the real audio source and play
+      // 5. Set ttsPlaying=true immediately before play() — covers the decode gap
+      ttsPlaying = true;
+
+      // 6. Swap in the real audio source and play
       ttsAudioElement.src = ttsBlobUrl;
       ttsAudioElement.play().then(function () {
         console.log("[TTS] play() promise resolved, audio is playing");
       }).catch(function (err) {
         console.error("[TTS] play() promise rejected:", err);
+        // play() can reject without firing onerror — triggerTTSFailSafe owns the force-stop
         triggerTTSFailSafe();
       });
     }
@@ -1678,11 +1767,111 @@
 
     /**
      * Stops all TTS audio playback and cleans up resources.
+     * Nulls out event handlers BEFORE pausing to prevent lingering handlers
+     * from firing on reused elements and to reduce reentrancy risk.
      */
     function stopTTSPlayback() {
+      // Null out event handlers first — prevents onended/onerror from firing
+      // during pause/cleanup, which could cause reentrancy issues
+      if (ttsAudioElement) {
+        ttsAudioElement.onended = null;
+        ttsAudioElement.onerror = null;
+        ttsAudioElement.onplay = null;
+      }
       cleanupTTSAudio();
       ttsPlaying = false;
       ttsDeliveryComplete = false;
+    }
+
+    /**
+     * Applies a deferred IDLE transition if the token matches.
+     * Called from onended handler after ttsPlaying and cleanup are done.
+     *
+     * No-op cases (both are safe and expected):
+     * - deferredIdleTransition is null (no deferral was pending — e.g., audio ended
+     *   before state_change: idle arrived, or deferral was already cancelled)
+     * - Token mismatch (stale onended from a previous/cancelled playback)
+     *
+     * Clears deferredIdleTransition BEFORE calling transitionToIdle() — this ordering
+     * prevents reentrancy (e.g., duplicate onended) from re-running transitionToIdle().
+     *
+     * @param {number} token - The playback instance token from the onended closure
+     */
+    function applyDeferredIdle(token) {
+      if (deferredIdleTransition === null) return; // No deferral pending — no-op
+      if (deferredIdleTransition.token !== token) return; // Stale event — ignore
+
+      deferredIdleTransition = null;
+      transitionToIdle();
+    }
+
+    /**
+     * Single authoritative function for transitioning to IDLE with cooldown.
+     * ALL code paths that transition to IDLE must go through this function —
+     * including triggerTTSFailSafe(), applyDeferredIdle(), and handleStateChange().
+     * This prevents double-cooldown, missing-cooldown, and micro-hiccup bugs.
+     *
+     * Order: clear pendingIdleFromServer first, then updateUI (pure visual state flip),
+     * then startCooldown (timers/side effects). This prevents micro-hiccups from
+     * cooldown DOM/timer work before the UI state is consistent.
+     *
+     * Idempotency guard: currentState === SessionState.IDLE && cooldownTimer !== null
+     * — precise enough to distinguish "IDLE with cooldown active" (no-op) from
+     * "IDLE without cooldown" (needs cooldown start, e.g., recovery paths).
+     * Using just currentState === IDLE would skip cooldown in legitimate cases.
+     */
+    function transitionToIdle() {
+      // Precise idempotency: skip only if already IDLE AND cooldown is running.
+      // If IDLE but no cooldown (recovery path), we still need to start cooldown.
+      if (currentState === SessionState.IDLE && cooldownTimer !== null) return;
+      pendingIdleFromServer = null; // Clear latch — we're applying IDLE now
+      updateUI(SessionState.IDLE);
+      startCooldown();
+    }
+
+    /**
+     * Cancels any pending deferred IDLE transition and invalidates the current
+     * playback token so that late onended events from a previous playback
+     * cannot apply a future deferral.
+     *
+     * DOES NOT clear ttsPlaying or stop playback — that is the responsibility
+     * of stopTTSPlayback(). DOES NOT clear pendingIdleFromServer — that is
+     * cleared by forceStopTtsAndCancelDeferral() or transitionToIdle().
+     * Use forceStopTtsAndCancelDeferral() for force-stop paths.
+     *
+     * Called internally by forceStopTtsAndCancelDeferral().
+     */
+    function cancelDeferredIdle() {
+      deferredIdleTransition = null;
+      // Monotonic bump: any in-flight onended closure holding the old token
+      // will fail the token match in applyDeferredIdle()
+      playbackInstanceToken++;
+    }
+
+    /**
+     * Composite force-stop: cancels deferral, bumps token, clears latch, stops audio,
+     * clears ttsPlaying.
+     *
+     * Post-conditions hold immediately after the call:
+     * - deferredIdleTransition === null
+     * - pendingIdleFromServer === null
+     * - playbackInstanceToken bumped (late onended events are harmless due to token
+     *   invalidation + handler nulling in stopTTSPlayback)
+     * - ttsPlaying === false
+     * - audio element event handlers nulled
+     *
+     * Note: this is NOT truly atomic against queued browser events — a late onended
+     * CAN still fire after this call returns. That is safe because the token bump +
+     * handler nulling ensures late callbacks are no-ops. Do not assume "no late
+     * callbacks possible"; assume "late callbacks are harmless."
+     *
+     * ALL force-stop paths (panic mute, revoke consent, ws close, onerror, play reject)
+     * MUST call this instead of calling cancelDeferredIdle() and stopTTSPlayback() separately.
+     */
+    function forceStopTtsAndCancelDeferral() {
+      cancelDeferredIdle();          // Clear deferral + bump token
+      pendingIdleFromServer = null;  // Clear latch
+      stopTTSPlayback();             // Stop audio + clear ttsPlaying + null handlers
     }
 
     /**
@@ -1691,9 +1880,14 @@
      * Per meeting-safety-controls.md: if any critical error occurs during
      * TTS delivery, playback stops immediately and the written evaluation
      * is displayed as fallback.
+     *
+     * Contract: calls forceStopTtsAndCancelDeferral() internally (idempotent if
+     * already stopped), shows written evaluation panel, then calls transitionToIdle().
+     * Callers never need to force-stop before calling this — single entry point,
+     * no double-stop/double-cooldown risk.
      */
     function triggerTTSFailSafe() {
-      stopTTSPlayback();
+      forceStopTtsAndCancelDeferral();
 
       // Show the written evaluation as fallback (Requirement 7.4)
       if (lastEvaluationScript) {
@@ -1704,8 +1898,8 @@
       // Show a non-recoverable error explaining the fallback
       showError("Audio playback failed. The written evaluation is displayed below.", false);
 
-      // Transition UI to IDLE
-      updateUI(SessionState.IDLE);
+      // Transition UI to IDLE via single authoritative path
+      transitionToIdle();
     }
 
     /**
@@ -1776,7 +1970,7 @@
       lastEvaluationScript = "";
       estimatedDuration = null;
       hide(dom.durationEstimate);
-      stopTTSPlayback();
+      forceStopTtsAndCancelDeferral();
       // Reset pipeline state on data purge (Req 6.3)
       pipelineStage = "idle";
       pipelineRunId = 0;
@@ -1798,8 +1992,8 @@
         dom.purgeBanner.className = "purge-banner visible auto-purge";
       }
 
-      // Transition to IDLE
-      updateUI(SessionState.IDLE);
+      // Transition to IDLE via single authoritative path
+      transitionToIdle();
     }
 
     // ─── Audio Capture: Mic + AudioWorklet ────────────────────────────
@@ -1990,7 +2184,7 @@
       // Reset pipeline state for new recording (Req 2.5, 6.3)
       pipelineStage = "idle";
       pipelineRunId = 0;
-      stopTTSPlayback();
+      forceStopTtsAndCancelDeferral();
       dismissError();
       hide(dom.interruptionBanner);
       hide(dom.savedConfirmation);
@@ -2081,8 +2275,8 @@
 
       // Hard-stop mic if recording
       hardStopMic();
-      // Stop any TTS playback
-      stopTTSPlayback();
+      // Atomic: cancel deferral + bump token + stop audio + clear ttsPlaying + clear latch
+      forceStopTtsAndCancelDeferral();
       clearCooldown();
 
       // Send revoke_consent command to server
@@ -2095,8 +2289,8 @@
       // Panic mute: immediate action, no confirmation dialog
       // Hard-stop mic immediately
       hardStopMic();
-      // Stop any TTS audio playback immediately
-      stopTTSPlayback();
+      // Atomic: cancel deferral + bump token + stop audio + clear ttsPlaying + clear latch
+      forceStopTtsAndCancelDeferral();
       clearCooldown();
       // Reset pipeline state on panic mute (Req 6.3)
       pipelineStage = "idle";
