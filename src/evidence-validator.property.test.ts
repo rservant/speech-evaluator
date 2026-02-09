@@ -184,8 +184,10 @@ function arbitraryValidEvaluationItem(
       fc.integer({ min: minQuoteLen, max: maxQuoteLen }),
       // Type of evaluation item
       fc.constantFrom("commendation" as const, "recommendation" as const),
-      // Timestamp offset within ±20s (but we'll clamp to non-negative)
-      fc.double({ min: -TIMESTAMP_TOLERANCE, max: TIMESTAMP_TOLERANCE, noNaN: true })
+      // Timestamp offset within ±19s (use 19 instead of 20 to avoid floating-point
+      // boundary issues where firstMatchedWordTime + 20.0 - firstMatchedWordTime > 20
+      // due to IEEE 754 rounding)
+      fc.double({ min: -(TIMESTAMP_TOLERANCE - 1), max: TIMESTAMP_TOLERANCE - 1, noNaN: true })
     )
     .chain(([quoteLen, type, tsOffset]) => {
       // Start index for the quote (must leave room for quoteLen tokens)

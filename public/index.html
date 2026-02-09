@@ -507,6 +507,188 @@
       display: flex;
     }
 
+    /* ─── Consent Form ───────────────────────────────────────────────── */
+    .consent-form {
+      display: none;
+      flex-direction: column;
+      gap: 0.75rem;
+      padding: 1rem;
+      background: var(--color-surface);
+      border: 1px solid var(--color-border);
+      border-radius: var(--radius-lg);
+    }
+
+    .consent-form.visible {
+      display: flex;
+    }
+
+    .consent-form-title {
+      font-size: 0.85rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      color: var(--color-text-muted);
+      margin-bottom: 0.25rem;
+    }
+
+    .consent-form .form-group {
+      display: flex;
+      flex-direction: column;
+      gap: 0.35rem;
+    }
+
+    .consent-form label {
+      font-size: 0.9rem;
+      color: var(--color-text-muted);
+    }
+
+    .consent-form input[type="text"] {
+      padding: 0.5rem 0.75rem;
+      background: var(--color-bg);
+      color: var(--color-text);
+      border: 1px solid var(--color-border);
+      border-radius: var(--radius);
+      font-family: var(--font-main);
+      font-size: 0.95rem;
+      outline: none;
+      transition: border-color var(--transition);
+    }
+
+    .consent-form input[type="text"]:focus {
+      border-color: var(--color-primary);
+    }
+
+    .consent-form .checkbox-group {
+      display: flex;
+      align-items: flex-start;
+      gap: 0.5rem;
+    }
+
+    .consent-form .checkbox-group input[type="checkbox"] {
+      margin-top: 0.25rem;
+      accent-color: var(--color-primary);
+      width: 16px;
+      height: 16px;
+      flex-shrink: 0;
+    }
+
+    .consent-form .checkbox-group label {
+      font-size: 0.9rem;
+      color: var(--color-text);
+      line-height: 1.4;
+      cursor: pointer;
+    }
+
+    /* ─── Consent Status Display ─────────────────────────────────────── */
+    .consent-status {
+      display: none;
+      align-items: center;
+      gap: 0.5rem;
+      padding: 0.4rem 0.75rem;
+      font-size: 0.85rem;
+      color: var(--color-success);
+    }
+
+    .consent-status.visible {
+      display: flex;
+    }
+
+    /* ─── Time Limit Control ─────────────────────────────────────────── */
+    .time-limit-control {
+      display: none;
+      align-items: center;
+      gap: 0.5rem;
+      padding: 0.5rem 0;
+    }
+
+    .time-limit-control.visible {
+      display: flex;
+    }
+
+    .time-limit-control label {
+      font-size: 0.85rem;
+      color: var(--color-text-muted);
+      white-space: nowrap;
+    }
+
+    .time-limit-control input[type="number"] {
+      width: 80px;
+      padding: 0.35rem 0.5rem;
+      background: var(--color-bg);
+      color: var(--color-text);
+      border: 1px solid var(--color-border);
+      border-radius: var(--radius);
+      font-family: var(--font-mono);
+      font-size: 0.9rem;
+      outline: none;
+      transition: border-color var(--transition);
+    }
+
+    .time-limit-control input[type="number"]:focus {
+      border-color: var(--color-primary);
+    }
+
+    .time-limit-control .time-unit {
+      font-size: 0.8rem;
+      color: var(--color-text-muted);
+    }
+
+    /* ─── Duration Estimate Display ──────────────────────────────────── */
+    .duration-estimate {
+      display: none;
+      align-items: center;
+      gap: 0.5rem;
+      padding: 0.4rem 0.75rem;
+      background: rgba(52, 152, 219, 0.1);
+      border: 1px solid var(--color-info);
+      border-radius: var(--radius);
+      font-size: 0.85rem;
+      color: var(--color-info);
+    }
+
+    .duration-estimate.visible {
+      display: flex;
+    }
+
+    /* ─── Revoke Consent Button ──────────────────────────────────────── */
+    .btn-revoke {
+      background: transparent;
+      color: var(--color-danger);
+      border: 1px solid var(--color-danger);
+      font-size: 0.8rem;
+      padding: 0.4rem 0.75rem;
+      font-weight: 600;
+    }
+    .btn-revoke:hover:not(:disabled) {
+      background: rgba(231, 76, 60, 0.15);
+    }
+
+    /* ─── Data Purged Banner ─────────────────────────────────────────── */
+    .purge-banner {
+      display: none;
+      padding: 0.6rem 1rem;
+      border-radius: var(--radius);
+      font-size: 0.9rem;
+      align-items: center;
+      gap: 0.5rem;
+    }
+
+    .purge-banner.visible {
+      display: flex;
+    }
+
+    .purge-banner.opt-out {
+      background: rgba(231, 76, 60, 0.15);
+      border: 1px solid var(--color-danger);
+      color: var(--color-danger);
+    }
+
+    .purge-banner.auto-purge {
+      background: rgba(52, 152, 219, 0.1);
+      border: 1px solid var(--color-info);
+      color: var(--color-info);
+    }
+
     /* ─── Footer ─────────────────────────────────────────────────────── */
     .footer {
       margin-top: auto;
@@ -545,14 +727,47 @@
       <span id="saved-message">Outputs saved successfully.</span>
     </div>
 
+    <!-- Data Purged Banner -->
+    <div id="purge-banner" class="purge-banner" role="alert" aria-live="assertive">
+      <span id="purge-icon">🗑</span>
+      <span id="purge-message"></span>
+    </div>
+
     <!-- Status Bar -->
     <div class="status-bar">
       <div id="status-indicator" class="status-indicator idle"></div>
       <span id="status-text" class="status-text">Ready — click "Start Speech" to begin</span>
+      <span id="consent-status" class="consent-status" role="status" aria-live="polite"></span>
       <span id="elapsed-time" class="elapsed-time">00:00</span>
       <div id="audio-level" class="audio-level" aria-label="Audio input level">
         <div id="audio-level-bar" class="audio-level-bar"></div>
       </div>
+    </div>
+
+    <!-- Consent Form (visible in IDLE state) -->
+    <div id="consent-form" class="consent-form" role="form" aria-label="Speaker consent">
+      <div class="consent-form-title">Speaker Consent</div>
+      <div class="form-group">
+        <label for="speaker-name-input">Speaker's name</label>
+        <input type="text" id="speaker-name-input" placeholder="Speaker's name" required aria-required="true" autocomplete="off">
+      </div>
+      <div class="checkbox-group">
+        <input type="checkbox" id="consent-checkbox" aria-describedby="consent-label">
+        <label id="consent-label" for="consent-checkbox">I confirm the speaker has given verbal consent to be recorded and evaluated</label>
+      </div>
+    </div>
+
+    <!-- Time Limit Control (visible in IDLE and PROCESSING states) -->
+    <div id="time-limit-control" class="time-limit-control" aria-label="Evaluation time limit">
+      <label for="time-limit-input">Evaluation time limit</label>
+      <input type="number" id="time-limit-input" value="120" min="30" max="600" step="10" aria-label="Time limit in seconds">
+      <span class="time-unit">seconds</span>
+    </div>
+
+    <!-- Duration Estimate (visible in PROCESSING state near Deliver button) -->
+    <div id="duration-estimate" class="duration-estimate" role="status" aria-live="polite">
+      <span>⏱</span>
+      <span id="duration-estimate-text">Estimated: --:-- / Limit: 2:00</span>
     </div>
 
     <!-- Controls -->
@@ -571,6 +786,9 @@
       </button>
       <button id="btn-save" class="btn btn-save hidden" onclick="onSaveOutputs()">
         💾 Save Outputs
+      </button>
+      <button id="btn-revoke" class="btn btn-revoke hidden" onclick="onRevokeConsent()" aria-label="Revoke speaker consent and purge data">
+        ✕ Revoke Consent
       </button>
       <button id="btn-panic" class="btn btn-panic" onclick="onPanicMute()">
         🔇 Panic Mute
@@ -618,7 +836,7 @@
 
     <!-- Footer -->
     <footer class="footer">
-      AI Toastmasters Evaluator &mdash; Phase 1 MVP
+      AI Toastmasters Evaluator &mdash; Phase 2
     </footer>
   </div>
 
@@ -637,6 +855,13 @@
     let hasTTSAudio = false;
     let outputsSaved = false;
     let segments = []; // local transcript segment array
+
+    // ─── Phase 2: Consent & Time Limit State ─────────────────────────
+    let consentConfirmed = false;
+    let consentSpeakerName = "";
+    let dataPurged = false;
+    let estimatedDuration = null;
+    let configuredTimeLimit = 120;
 
     // ─── TTS Audio Playback State ─────────────────────────────────────
     /** @type {HTMLAudioElement|null} Audio element for TTS playback */
@@ -681,6 +906,7 @@
       btnReplay: document.getElementById("btn-replay"),
       btnSave: document.getElementById("btn-save"),
       btnPanic: document.getElementById("btn-panic"),
+      btnRevoke: document.getElementById("btn-revoke"),
       speakingIndicator: document.getElementById("speaking-indicator"),
       processingIndicator: document.getElementById("processing-indicator"),
       transcriptPanel: document.getElementById("transcript-panel"),
@@ -696,6 +922,17 @@
       connectionStatus: document.getElementById("connection-status"),
       audioLevel: document.getElementById("audio-level"),
       audioLevelBar: document.getElementById("audio-level-bar"),
+      // Phase 2: Consent & Time Limit DOM refs
+      consentForm: document.getElementById("consent-form"),
+      speakerNameInput: document.getElementById("speaker-name-input"),
+      consentCheckbox: document.getElementById("consent-checkbox"),
+      consentStatus: document.getElementById("consent-status"),
+      timeLimitControl: document.getElementById("time-limit-control"),
+      timeLimitInput: document.getElementById("time-limit-input"),
+      durationEstimate: document.getElementById("duration-estimate"),
+      durationEstimateText: document.getElementById("duration-estimate-text"),
+      purgeBanner: document.getElementById("purge-banner"),
+      purgeMessage: document.getElementById("purge-message"),
     };
 
     // ─── Status Text Map ──────────────────────────────────────────────
@@ -721,23 +958,40 @@
       dom.statusIndicator.className = "status-indicator " + state;
       dom.statusText.textContent = STATUS_TEXT[state] || "Unknown state";
 
-      // Hide all transient banners on state change (except errors)
+      // Hide all transient banners on state change (except errors and purge)
       hide(dom.interruptionBanner);
       hide(dom.savedConfirmation);
 
+      // Update consent status display throughout all states
+      updateConsentStatusDisplay();
+
       // ── IDLE ──
       if (state === SessionState.IDLE) {
+        // Show consent form only in IDLE (and not after purge — form is reset but still shown)
+        show(dom.consentForm);
+        // Show time limit control in IDLE
+        show(dom.timeLimitControl);
+        // Hide duration estimate in IDLE
+        hide(dom.durationEstimate);
+
+        // Start Speech gated on consent
         show(dom.btnStart);
+        if (consentConfirmed && consentSpeakerName.trim().length > 0 && !inCooldown) {
+          enable(dom.btnStart);
+        } else {
+          disable(dom.btnStart);
+        }
+
         hide(dom.btnStop);
         hide(dom.btnDeliver);
-        // Show Save Outputs only if evaluation data exists and not already saved
-        if (hasEvaluationData && !outputsSaved) {
+        // Show Save Outputs only if evaluation data exists, not already saved, and not purged
+        if (hasEvaluationData && !outputsSaved && !dataPurged) {
           show(dom.btnSave);
         } else {
           hide(dom.btnSave);
         }
-        // Show Replay button if TTS audio was received and evaluation data exists
-        if (hasTTSAudio && hasEvaluationData) {
+        // Show Replay button if TTS audio was received and evaluation data exists and not purged
+        if (hasTTSAudio && hasEvaluationData && !dataPurged) {
           show(dom.btnReplay);
         } else {
           hide(dom.btnReplay);
@@ -748,8 +1002,14 @@
         } else {
           enable(dom.btnReplay);
         }
-        enable(dom.btnStart);
         enable(dom.btnPanic);
+
+        // Show Revoke Consent button when consent is confirmed (allows opt-out)
+        if (consentConfirmed) {
+          show(dom.btnRevoke);
+        } else {
+          hide(dom.btnRevoke);
+        }
 
         hide(dom.speakingIndicator);
         hide(dom.processingIndicator);
@@ -761,6 +1021,12 @@
 
       // ── RECORDING ──
       if (state === SessionState.RECORDING) {
+        // Hide consent form during recording (consent is immutable)
+        hide(dom.consentForm);
+        // Hide time limit control during recording
+        hide(dom.timeLimitControl);
+        hide(dom.durationEstimate);
+
         hide(dom.btnStart);
         show(dom.btnStop);
         hide(dom.btnDeliver);
@@ -768,6 +1034,13 @@
         hide(dom.btnReplay);
         enable(dom.btnStop);
         enable(dom.btnPanic);
+
+        // Show Revoke Consent during recording (opt-out is always available)
+        if (consentConfirmed) {
+          show(dom.btnRevoke);
+        } else {
+          hide(dom.btnRevoke);
+        }
 
         hide(dom.speakingIndicator);
         hide(dom.processingIndicator);
@@ -782,6 +1055,15 @@
 
       // ── PROCESSING ──
       if (state === SessionState.PROCESSING) {
+        // Hide consent form during processing
+        hide(dom.consentForm);
+        // Show time limit control in PROCESSING (can still adjust before delivery)
+        show(dom.timeLimitControl);
+        // Show duration estimate if available
+        if (estimatedDuration !== null) {
+          show(dom.durationEstimate);
+        }
+
         hide(dom.btnStart);
         hide(dom.btnStop);
         show(dom.btnDeliver);
@@ -789,6 +1071,13 @@
         hide(dom.btnReplay);
         enable(dom.btnDeliver);
         enable(dom.btnPanic);
+
+        // Show Revoke Consent during processing
+        if (consentConfirmed) {
+          show(dom.btnRevoke);
+        } else {
+          hide(dom.btnRevoke);
+        }
 
         hide(dom.speakingIndicator);
         show(dom.processingIndicator);
@@ -803,11 +1092,18 @@
 
       // ── DELIVERING ──
       if (state === SessionState.DELIVERING) {
+        // Hide consent form during delivery
+        hide(dom.consentForm);
+        // Hide time limit and duration estimate during delivery
+        hide(dom.timeLimitControl);
+        hide(dom.durationEstimate);
+
         hide(dom.btnStart);
         hide(dom.btnStop);
         hide(dom.btnDeliver);
         hide(dom.btnSave);
         hide(dom.btnReplay);
+        hide(dom.btnRevoke);
         // Disable all actions except Panic Mute during delivery
         enable(dom.btnPanic);
 
@@ -854,6 +1150,82 @@
       const secs = seconds % 60;
       const formatted = String(mins).padStart(2, "0") + ":" + String(secs).padStart(2, "0");
       dom.elapsedTime.textContent = formatted;
+    }
+
+    // ─── UI Update: Consent Status Display ────────────────────────────
+    /**
+     * Updates the consent status display in the status bar.
+     * Shows "Speaker: Name ✓ Consent confirmed" when consent is set.
+     */
+    function updateConsentStatusDisplay() {
+      if (consentConfirmed && consentSpeakerName.trim().length > 0) {
+        dom.consentStatus.textContent = "Speaker: " + consentSpeakerName + " \u2713 Consent confirmed";
+        show(dom.consentStatus);
+      } else {
+        dom.consentStatus.textContent = "";
+        hide(dom.consentStatus);
+      }
+    }
+
+    // ─── UI Update: Duration Estimate ─────────────────────────────────
+    /**
+     * Updates the duration estimate display.
+     * @param {number} estimatedSeconds - Estimated evaluation duration in seconds
+     * @param {number} timeLimitSeconds - Configured time limit in seconds
+     */
+    function updateDurationEstimateDisplay(estimatedSeconds, timeLimitSeconds) {
+      const estMins = Math.floor(estimatedSeconds / 60);
+      const estSecs = Math.floor(estimatedSeconds % 60);
+      const limMins = Math.floor(timeLimitSeconds / 60);
+      const limSecs = Math.floor(timeLimitSeconds % 60);
+      const estStr = String(estMins) + ":" + String(estSecs).padStart(2, "0");
+      const limStr = String(limMins) + ":" + String(limSecs).padStart(2, "0");
+      dom.durationEstimateText.textContent = "Estimated: " + estStr + " / Limit: " + limStr;
+    }
+
+    // ─── Consent Form Event Handlers ──────────────────────────────────
+    /**
+     * Called when the speaker name input or consent checkbox changes.
+     * Sends set_consent message to server and updates local state.
+     */
+    function onConsentChange() {
+      const name = dom.speakerNameInput.value.trim();
+      const checked = dom.consentCheckbox.checked;
+
+      consentSpeakerName = name;
+      consentConfirmed = checked && name.length > 0;
+
+      // Send consent state to server
+      wsSend({
+        type: "set_consent",
+        speakerName: name,
+        consentConfirmed: checked && name.length > 0,
+      });
+
+      // Update Start Speech button gating
+      updateUI(currentState);
+    }
+
+    /**
+     * Called when the time limit input changes.
+     * Sends set_time_limit message to server.
+     */
+    function onTimeLimitChange() {
+      const seconds = parseInt(dom.timeLimitInput.value, 10);
+      if (isNaN(seconds) || seconds < 30) return;
+
+      configuredTimeLimit = seconds;
+
+      // Send time limit to server
+      wsSend({
+        type: "set_time_limit",
+        seconds: seconds,
+      });
+
+      // Update duration estimate display if we have an estimate
+      if (estimatedDuration !== null) {
+        updateDurationEstimateDisplay(estimatedDuration, configuredTimeLimit);
+      }
     }
 
     // ─── UI Update: Transcript ────────────────────────────────────────
@@ -1103,6 +1475,15 @@
             stopAudioCapture();
           }
           break;
+        case "consent_status":
+          handleConsentStatus(message.consent);
+          break;
+        case "duration_estimate":
+          handleDurationEstimate(message.estimatedSeconds, message.timeLimitSeconds);
+          break;
+        case "data_purged":
+          handleDataPurged(message.reason);
+          break;
         default:
           console.warn("Unknown server message type:", message.type);
       }
@@ -1251,6 +1632,87 @@
       ttsDeliveryComplete = true;
     }
 
+    // ─── Phase 2: Consent, Duration, and Purge Handlers ──────────────
+
+    /**
+     * Handles consent_status message from the server.
+     * Updates local consent state and UI.
+     * @param {Object|null} consent - ConsentRecord or null
+     */
+    function handleConsentStatus(consent) {
+      if (consent) {
+        consentSpeakerName = consent.speakerName || "";
+        consentConfirmed = consent.consentConfirmed || false;
+        // Sync form inputs with server state
+        dom.speakerNameInput.value = consentSpeakerName;
+        dom.consentCheckbox.checked = consentConfirmed;
+      } else {
+        consentSpeakerName = "";
+        consentConfirmed = false;
+        dom.speakerNameInput.value = "";
+        dom.consentCheckbox.checked = false;
+      }
+      updateUI(currentState);
+    }
+
+    /**
+     * Handles duration_estimate message from the server.
+     * Updates the duration estimate display.
+     * @param {number} estimatedSeconds - Estimated evaluation duration
+     * @param {number} timeLimitSeconds - Configured time limit
+     */
+    function handleDurationEstimate(estimatedSeconds, timeLimitSeconds) {
+      estimatedDuration = estimatedSeconds;
+      configuredTimeLimit = timeLimitSeconds;
+      dom.timeLimitInput.value = timeLimitSeconds;
+      updateDurationEstimateDisplay(estimatedSeconds, timeLimitSeconds);
+      // Show the estimate if we're in PROCESSING state
+      if (currentState === SessionState.PROCESSING) {
+        show(dom.durationEstimate);
+      }
+    }
+
+    /**
+     * Handles data_purged message from the server.
+     * Clears all displayed data and updates UI based on purge reason.
+     * @param {string} reason - "opt_out" or "auto_purge"
+     */
+    function handleDataPurged(reason) {
+      // Clear all displayed data
+      segments = [];
+      renderTranscript();
+      dom.evaluationContent.innerHTML =
+        '<div class="evaluation-empty">Evaluation will appear here after delivery...</div>';
+      hide(dom.evaluationPanel);
+      hide(dom.transcriptPanel);
+      hasEvaluationData = false;
+      hasTTSAudio = false;
+      lastEvaluationScript = "";
+      estimatedDuration = null;
+      hide(dom.durationEstimate);
+      stopTTSPlayback();
+
+      if (reason === "opt_out") {
+        // Permanent purge — disable Save Outputs for this session
+        dataPurged = true;
+        // Reset consent form
+        consentSpeakerName = "";
+        consentConfirmed = false;
+        dom.speakerNameInput.value = "";
+        dom.consentCheckbox.checked = false;
+        // Show opt-out purge banner
+        dom.purgeMessage.textContent = "Speaker data has been purged per opt-out request.";
+        dom.purgeBanner.className = "purge-banner visible opt-out";
+      } else if (reason === "auto_purge") {
+        // Auto-purge — informational
+        dom.purgeMessage.textContent = "Session data auto-purged after timeout.";
+        dom.purgeBanner.className = "purge-banner visible auto-purge";
+      }
+
+      // Transition to IDLE
+      updateUI(SessionState.IDLE);
+    }
+
     // ─── Audio Capture: Mic + AudioWorklet ────────────────────────────
 
     /**
@@ -1388,8 +1850,11 @@
       cooldownTimer = setTimeout(function () {
         inCooldown = false;
         cooldownTimer = null;
-        enable(dom.btnStart);
-        if (hasTTSAudio && hasEvaluationData) {
+        // Re-enable Start Speech only if consent is confirmed
+        if (consentConfirmed && consentSpeakerName.trim().length > 0) {
+          enable(dom.btnStart);
+        }
+        if (hasTTSAudio && hasEvaluationData && !dataPurged) {
           enable(dom.btnReplay);
         }
         dom.statusText.textContent = STATUS_TEXT[SessionState.IDLE];
@@ -1413,6 +1878,12 @@
       // Guard: don't start during cooldown
       if (inCooldown) return;
 
+      // Guard: consent must be confirmed (Req 2.3)
+      if (!consentConfirmed || consentSpeakerName.trim().length === 0) {
+        showError("Please enter the speaker's name and confirm consent before starting.", true);
+        return;
+      }
+
       // Guard: need WebSocket connection
       if (!ws || ws.readyState !== WebSocket.OPEN) {
         showError("Not connected to server. Please wait for connection or refresh.", false);
@@ -1424,11 +1895,15 @@
       hasEvaluationData = false;
       hasTTSAudio = false;
       outputsSaved = false;
+      dataPurged = false;
+      estimatedDuration = null;
       lastEvaluationScript = "";
       stopTTSPlayback();
       dismissError();
       hide(dom.interruptionBanner);
       hide(dom.savedConfirmation);
+      hide(dom.purgeBanner);
+      hide(dom.durationEstimate);
       dom.evaluationContent.innerHTML =
         '<div class="evaluation-empty">Evaluation will appear here after delivery...</div>';
       hide(dom.evaluationPanel);
@@ -1489,9 +1964,31 @@
     }
 
     function onSaveOutputs() {
+      // Guard: don't save if data was purged
+      if (dataPurged) return;
+
       // Send save_outputs command to server
       wsSend({ type: "save_outputs" });
       disable(dom.btnSave);
+    }
+
+    function onRevokeConsent() {
+      // Confirmation dialog per privacy-and-retention.md and meeting-safety-controls.md
+      const confirmed = window.confirm(
+        "This will permanently delete all data from this speech. Continue?"
+      );
+      if (!confirmed) return;
+
+      // Hard-stop mic if recording
+      hardStopMic();
+      // Stop any TTS playback
+      stopTTSPlayback();
+      clearCooldown();
+
+      // Send revoke_consent command to server
+      wsSend({ type: "revoke_consent" });
+
+      // The server will respond with data_purged message which handles the rest
     }
 
     function onPanicMute() {
@@ -1569,6 +2066,14 @@
 
     // Check mic availability on load (non-blocking)
     checkMicPermission();
+
+    // ─── Phase 2: Consent & Time Limit Event Listeners ────────────────
+    // Listen for consent form changes
+    dom.speakerNameInput.addEventListener("input", onConsentChange);
+    dom.consentCheckbox.addEventListener("change", onConsentChange);
+
+    // Listen for time limit changes
+    dom.timeLimitInput.addEventListener("change", onTimeLimitChange);
   </script>
 </body>
 </html>

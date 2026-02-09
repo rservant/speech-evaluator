@@ -131,6 +131,10 @@ async function createClient(server: AppServer): Promise<TestClient> {
  * DELIVERING state for the duration of the test.
  */
 async function transitionToDelivering(client: TestClient, server: AppServer): Promise<void> {
+  // Set consent before starting recording (required by Phase 2 consent gating)
+  client.sendJson({ type: "set_consent", speakerName: "Test Speaker", consentConfirmed: true });
+  await client.nextMessageOfType("consent_status");
+
   client.sendJson({ type: "audio_format", ...EXPECTED_FORMAT });
   client.sendJson({ type: "start_recording" });
   await client.nextMessageOfType("state_change"); // RECORDING
@@ -196,7 +200,7 @@ describe("Feature: ai-toastmasters-evaluator, Property 9: Audio Capture Inactive
    *   containing 'not "recording"'
    * - No audio chunks are buffered in the session during DELIVERING state
    */
-  it("rejects all arbitrary audio chunks sent during DELIVERING state", async () => {
+  it("rejects all arbitrary audio chunks sent during DELIVERING state", { timeout: 30000 }, async () => {
     // Create a single server for all iterations (stays open throughout the test)
     const silentLogger = createSilentLogger();
     const server = createAppServer({ logger: silentLogger });

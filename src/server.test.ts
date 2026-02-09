@@ -147,6 +147,12 @@ async function createClient(server: AppServer): Promise<TestClient> {
   return client;
 }
 
+/** Sets consent on a client so start_recording is allowed (Phase 2 consent gating) */
+async function setConsentForRecording(client: TestClient): Promise<void> {
+  client.sendJson({ type: "set_consent", speakerName: "TestSpeaker", consentConfirmed: true });
+  await client.nextMessageOfType("consent_status");
+}
+
 // ─── Tests ──────────────────────────────────────────────────────────────────────
 
 describe("Server", () => {
@@ -199,6 +205,7 @@ describe("Server", () => {
       expect(sessions[0].id).not.toBe(sessions[1].id);
 
       // Verify they are independent: start recording on one, other is unaffected
+      await setConsentForRecording(c1);
       c1.sendJson({ type: "start_recording" });
       const msg = await c1.nextMessageOfType("state_change");
       expect(msg).toEqual({ type: "state_change", state: SessionState.RECORDING });
@@ -219,6 +226,7 @@ describe("Server", () => {
       });
 
       // Verify format was accepted by successfully starting recording
+      await setConsentForRecording(c);
       c.sendJson({ type: "start_recording" });
       const msg = await c.nextMessageOfType("state_change");
       expect(msg).toEqual({ type: "state_change", state: SessionState.RECORDING });
@@ -313,6 +321,7 @@ describe("Server", () => {
       const c = track(await createClient(server));
 
       c.sendJson({ type: "audio_format", ...EXPECTED_FORMAT });
+      await setConsentForRecording(c);
       c.sendJson({ type: "start_recording" });
       await c.nextMessageOfType("state_change"); // RECORDING
 
@@ -326,6 +335,7 @@ describe("Server", () => {
       const c = track(await createClient(server));
 
       c.sendJson({ type: "audio_format", ...EXPECTED_FORMAT });
+      await setConsentForRecording(c);
       c.sendJson({ type: "start_recording" });
       await c.nextMessageOfType("state_change"); // RECORDING
 
@@ -348,6 +358,7 @@ describe("Server", () => {
       const c = track(await createClient(server));
 
       c.sendJson({ type: "audio_format", ...EXPECTED_FORMAT });
+      await setConsentForRecording(c);
       c.sendJson({ type: "start_recording" });
       await c.nextMessageOfType("state_change"); // RECORDING
 
@@ -377,6 +388,7 @@ describe("Server", () => {
     it("should handle start_recording → state_change to RECORDING", async () => {
       const c = track(await createClient(server));
 
+      await setConsentForRecording(c);
       c.sendJson({ type: "start_recording" });
       const msg = await c.nextMessageOfType("state_change");
 
@@ -386,6 +398,7 @@ describe("Server", () => {
     it("should handle stop_recording → state_change to PROCESSING", async () => {
       const c = track(await createClient(server));
 
+      await setConsentForRecording(c);
       c.sendJson({ type: "start_recording" });
       await c.nextMessageOfType("state_change"); // RECORDING
 
@@ -398,6 +411,7 @@ describe("Server", () => {
     it("should handle deliver_evaluation → state_change to DELIVERING", async () => {
       const c = track(await createClient(server));
 
+      await setConsentForRecording(c);
       c.sendJson({ type: "start_recording" });
       await c.nextMessageOfType("state_change"); // RECORDING
 
@@ -426,6 +440,7 @@ describe("Server", () => {
     it("should transition to IDLE from RECORDING", async () => {
       const c = track(await createClient(server));
 
+      await setConsentForRecording(c);
       c.sendJson({ type: "start_recording" });
       await c.nextMessageOfType("state_change"); // RECORDING
 
@@ -438,6 +453,7 @@ describe("Server", () => {
     it("should transition to IDLE from PROCESSING", async () => {
       const c = track(await createClient(server));
 
+      await setConsentForRecording(c);
       c.sendJson({ type: "start_recording" });
       await c.nextMessageOfType("state_change"); // RECORDING
       c.sendJson({ type: "stop_recording" });
@@ -461,6 +477,7 @@ describe("Server", () => {
     it("should stop the elapsed time ticker", async () => {
       const c = track(await createClient(server));
 
+      await setConsentForRecording(c);
       c.sendJson({ type: "start_recording" });
       await c.nextMessageOfType("state_change"); // RECORDING
 
@@ -486,6 +503,7 @@ describe("Server", () => {
     it("should send elapsed_time messages during RECORDING", async () => {
       const c = track(await createClient(server));
 
+      await setConsentForRecording(c);
       c.sendJson({ type: "start_recording" });
       await c.nextMessageOfType("state_change"); // RECORDING
 
@@ -501,6 +519,7 @@ describe("Server", () => {
     it("should stop sending elapsed_time after stop_recording", async () => {
       const c = track(await createClient(server));
 
+      await setConsentForRecording(c);
       c.sendJson({ type: "start_recording" });
       await c.nextMessageOfType("state_change"); // RECORDING
       await c.nextMessageOfType("elapsed_time"); // wait for one tick
@@ -536,6 +555,7 @@ describe("Server", () => {
     it("should send quality warning after stop_recording when transcription had issues", async () => {
       const c = track(await createClient(server));
 
+      await setConsentForRecording(c);
       c.sendJson({ type: "start_recording" });
       await c.nextMessageOfType("state_change"); // RECORDING
 
@@ -567,7 +587,7 @@ describe("Server", () => {
       vi.spyOn(server.sessionManager, "generateEvaluation").mockImplementation(async (sid) => {
         const session = server.sessionManager.getSession(sid);
         session.state = SessionState.DELIVERING;
-        session.evaluation = { opening: "Great speech.", items: [], closing: "Well done." };
+        session.evaluation = { opening: "Great speech.", items: [], closing: "Well done.", structure_commentary: { opening_comment: null, body_comment: null, closing_comment: null } };
         session.evaluationScript = "Great speech. Well done.";
         return Buffer.from("fake-tts-audio");
       });
@@ -576,6 +596,7 @@ describe("Server", () => {
         session.state = SessionState.IDLE;
       });
 
+      await setConsentForRecording(c);
       c.sendJson({ type: "start_recording" });
       await c.nextMessageOfType("state_change"); // RECORDING
 
@@ -605,7 +626,7 @@ describe("Server", () => {
       vi.spyOn(server.sessionManager, "generateEvaluation").mockImplementation(async (sid) => {
         const session = server.sessionManager.getSession(sid);
         session.state = SessionState.DELIVERING;
-        session.evaluation = { opening: "Great speech.", items: [], closing: "Well done." };
+        session.evaluation = { opening: "Great speech.", items: [], closing: "Well done.", structure_commentary: { opening_comment: null, body_comment: null, closing_comment: null } };
         session.evaluationScript = "Great speech. Well done.";
         return undefined; // TTS failed
       });
@@ -614,6 +635,7 @@ describe("Server", () => {
         session.state = SessionState.IDLE;
       });
 
+      await setConsentForRecording(c);
       c.sendJson({ type: "start_recording" });
       await c.nextMessageOfType("state_change"); // RECORDING
 
@@ -648,6 +670,7 @@ describe("Server", () => {
         throw new Error("OpenAI API rate limit exceeded");
       });
 
+      await setConsentForRecording(c);
       c.sendJson({ type: "start_recording" });
       await c.nextMessageOfType("state_change"); // RECORDING
 
@@ -679,6 +702,7 @@ describe("Server", () => {
         ];
       });
 
+      await setConsentForRecording(c);
       c.sendJson({ type: "start_recording" });
       await c.nextMessageOfType("state_change"); // RECORDING
 
@@ -699,6 +723,7 @@ describe("Server", () => {
       const c = track(await createClient(server));
 
       c.sendJson({ type: "audio_format", ...EXPECTED_FORMAT });
+      await setConsentForRecording(c);
       c.sendJson({ type: "start_recording" });
       await c.nextMessageOfType("state_change"); // RECORDING
 
@@ -714,6 +739,7 @@ describe("Server", () => {
       const c = track(await createClient(server));
 
       c.sendJson({ type: "audio_format", ...EXPECTED_FORMAT });
+      await setConsentForRecording(c);
       c.sendJson({ type: "start_recording" });
       await c.nextMessageOfType("state_change"); // RECORDING
 
@@ -739,7 +765,7 @@ describe("Server", () => {
       vi.spyOn(server.sessionManager, "generateEvaluation").mockImplementation(async (sid) => {
         const session = server.sessionManager.getSession(sid);
         session.state = SessionState.DELIVERING;
-        session.evaluation = { opening: "Great speech.", items: [], closing: "Well done." };
+        session.evaluation = { opening: "Great speech.", items: [], closing: "Well done.", structure_commentary: { opening_comment: null, body_comment: null, closing_comment: null } };
         session.evaluationScript = "Great speech. Well done.";
         session.ttsAudioCache = Buffer.from("fake-tts-audio");
         return Buffer.from("fake-tts-audio");
@@ -750,6 +776,7 @@ describe("Server", () => {
       });
 
       // Go through full lifecycle: start → stop → deliver → wait for IDLE
+      await setConsentForRecording(c);
       c.sendJson({ type: "start_recording" });
       await c.nextMessageOfType("state_change"); // RECORDING
 
@@ -803,6 +830,7 @@ describe("Server", () => {
       const c = track(await createClient(server));
 
       // Start recording to put session in RECORDING state
+      await setConsentForRecording(c);
       c.sendJson({ type: "start_recording" });
       await c.nextMessageOfType("state_change"); // RECORDING
 
@@ -832,6 +860,196 @@ describe("Server", () => {
       const msg = await c.nextMessageOfType("error");
 
       expect((msg as { message: string }).message).toContain("Unknown message type");
+    });
+  });
+
+  // ─── Consent Handlers (Task 11.2) ──────────────────────────────────────────
+
+  describe("set_consent", () => {
+    it("should set consent and respond with consent_status", async () => {
+      const c = track(await createClient(server));
+
+      c.sendJson({ type: "set_consent", speakerName: "Alice", consentConfirmed: true });
+      const msg = await c.nextMessageOfType("consent_status");
+
+      expect(msg.type).toBe("consent_status");
+      const consent = (msg as unknown as { consent: { speakerName: string; consentConfirmed: boolean; consentTimestamp: string } }).consent;
+      expect(consent.speakerName).toBe("Alice");
+      expect(consent.consentConfirmed).toBe(true);
+      expect(consent.consentTimestamp).toBeDefined();
+    });
+
+    it("should allow setting consent with consentConfirmed=false", async () => {
+      const c = track(await createClient(server));
+
+      c.sendJson({ type: "set_consent", speakerName: "Bob", consentConfirmed: false });
+      const msg = await c.nextMessageOfType("consent_status");
+
+      const consent = (msg as { consent: { speakerName: string; consentConfirmed: boolean } }).consent;
+      expect(consent.speakerName).toBe("Bob");
+      expect(consent.consentConfirmed).toBe(false);
+    });
+
+    it("should return error when setting consent in non-IDLE state", async () => {
+      const c = track(await createClient(server));
+
+      // Set consent and start recording to move out of IDLE
+      c.sendJson({ type: "set_consent", speakerName: "Alice", consentConfirmed: true });
+      await c.nextMessageOfType("consent_status");
+
+      c.sendJson({ type: "start_recording" });
+      await c.nextMessageOfType("state_change"); // RECORDING
+
+      // Try to change consent while recording
+      c.sendJson({ type: "set_consent", speakerName: "Bob", consentConfirmed: true });
+      const errorMsg = await c.nextMessageOfType("error");
+
+      expect((errorMsg as { message: string }).message).toContain("Cannot modify consent");
+      expect((errorMsg as { recoverable: boolean }).recoverable).toBe(true);
+    });
+
+    it("should allow updating consent while still in IDLE", async () => {
+      const c = track(await createClient(server));
+
+      c.sendJson({ type: "set_consent", speakerName: "Alice", consentConfirmed: false });
+      await c.nextMessageOfType("consent_status");
+
+      c.sendJson({ type: "set_consent", speakerName: "Alice", consentConfirmed: true });
+      const msg = await c.nextMessageOfType("consent_status");
+
+      const consent = (msg as { consent: { consentConfirmed: boolean } }).consent;
+      expect(consent.consentConfirmed).toBe(true);
+    });
+  });
+
+  // ─── Revoke Consent (Task 11.2) ────────────────────────────────────────────
+
+  describe("revoke_consent", () => {
+    it("should purge session data and respond with data_purged", async () => {
+      const c = track(await createClient(server));
+
+      // Set consent first
+      c.sendJson({ type: "set_consent", speakerName: "Alice", consentConfirmed: true });
+      await c.nextMessageOfType("consent_status");
+
+      c.sendJson({ type: "revoke_consent" });
+      const purgeMsg = await c.nextMessageOfType("data_purged");
+
+      expect(purgeMsg).toEqual({ type: "data_purged", reason: "opt_out" });
+
+      // Should also get state_change to IDLE
+      const stateMsg = await c.nextMessageOfType("state_change");
+      expect(stateMsg).toEqual({ type: "state_change", state: SessionState.IDLE });
+    });
+
+    it("should purge data during RECORDING state", async () => {
+      const c = track(await createClient(server));
+
+      c.sendJson({ type: "set_consent", speakerName: "Alice", consentConfirmed: true });
+      await c.nextMessageOfType("consent_status");
+
+      c.sendJson({ type: "start_recording" });
+      await c.nextMessageOfType("state_change"); // RECORDING
+
+      c.sendJson({ type: "revoke_consent" });
+      const purgeMsg = await c.nextMessageOfType("data_purged");
+      expect(purgeMsg).toEqual({ type: "data_purged", reason: "opt_out" });
+
+      const stateMsg = await c.nextMessageOfType("state_change");
+      expect(stateMsg).toEqual({ type: "state_change", state: SessionState.IDLE });
+
+      // Verify session data is purged
+      const sessions = Array.from(
+        (server.sessionManager as unknown as { sessions: Map<string, Session> }).sessions.values(),
+      );
+      const session = sessions[0];
+      expect(session.consent).toBeNull();
+      expect(session.transcript).toEqual([]);
+      expect(session.audioChunks).toEqual([]);
+      expect(session.evaluation).toBeNull();
+    });
+
+    it("should work even when no consent was set", async () => {
+      const c = track(await createClient(server));
+
+      c.sendJson({ type: "revoke_consent" });
+      const purgeMsg = await c.nextMessageOfType("data_purged");
+      expect(purgeMsg).toEqual({ type: "data_purged", reason: "opt_out" });
+
+      const stateMsg = await c.nextMessageOfType("state_change");
+      expect(stateMsg).toEqual({ type: "state_change", state: SessionState.IDLE });
+    });
+  });
+
+  // ─── Set Time Limit (Task 11.2) ────────────────────────────────────────────
+
+  describe("set_time_limit", () => {
+    it("should update time limit and respond with duration_estimate", async () => {
+      const c = track(await createClient(server));
+
+      c.sendJson({ type: "set_time_limit", seconds: 90 });
+      const msg = await c.nextMessageOfType("duration_estimate");
+
+      expect(msg).toEqual({
+        type: "duration_estimate",
+        estimatedSeconds: 90,
+        timeLimitSeconds: 90,
+      });
+
+      // Verify session was updated
+      const sessions = Array.from(
+        (server.sessionManager as unknown as { sessions: Map<string, Session> }).sessions.values(),
+      );
+      expect(sessions[0].timeLimitSeconds).toBe(90);
+    });
+
+    it("should accept different time limit values", async () => {
+      const c = track(await createClient(server));
+
+      c.sendJson({ type: "set_time_limit", seconds: 180 });
+      const msg = await c.nextMessageOfType("duration_estimate");
+
+      expect((msg as { timeLimitSeconds: number }).timeLimitSeconds).toBe(180);
+      expect((msg as { estimatedSeconds: number }).estimatedSeconds).toBe(180);
+    });
+  });
+
+  // ─── Consent Gating on start_recording (Task 11.2) ─────────────────────────
+
+  describe("consent gating", () => {
+    it("should reject start_recording when no consent is set", async () => {
+      const c = track(await createClient(server));
+
+      c.sendJson({ type: "start_recording" });
+      const msg = await c.nextMessageOfType("error");
+
+      expect((msg as { message: string }).message).toContain("consent has not been confirmed");
+      expect((msg as { recoverable: boolean }).recoverable).toBe(true);
+    });
+
+    it("should reject start_recording when consent is not confirmed", async () => {
+      const c = track(await createClient(server));
+
+      c.sendJson({ type: "set_consent", speakerName: "Alice", consentConfirmed: false });
+      await c.nextMessageOfType("consent_status");
+
+      c.sendJson({ type: "start_recording" });
+      const msg = await c.nextMessageOfType("error");
+
+      expect((msg as { message: string }).message).toContain("consent has not been confirmed");
+      expect((msg as { recoverable: boolean }).recoverable).toBe(true);
+    });
+
+    it("should allow start_recording when consent is confirmed", async () => {
+      const c = track(await createClient(server));
+
+      c.sendJson({ type: "set_consent", speakerName: "Alice", consentConfirmed: true });
+      await c.nextMessageOfType("consent_status");
+
+      c.sendJson({ type: "start_recording" });
+      const msg = await c.nextMessageOfType("state_change");
+
+      expect(msg).toEqual({ type: "state_change", state: SessionState.RECORDING });
     });
   });
 
@@ -874,13 +1092,23 @@ describe("purgeSessionData", () => {
         pauseCount: 0,
         totalPauseDurationSeconds: 0,
         averagePauseDurationSeconds: 0,
+        intentionalPauseCount: 0,
+        hesitationPauseCount: 0,
+        classifiedPauses: [],
+        energyVariationCoefficient: 0,
+        energyProfile: { windowDurationMs: 250, windows: [], coefficientOfVariation: 0, silenceThreshold: 0 },
+        classifiedFillers: [],
       },
-      evaluation: { opening: "test", items: [], closing: "test" },
+      evaluation: { opening: "test", items: [], closing: "test", structure_commentary: { opening_comment: null, body_comment: null, closing_comment: null } },
+      evaluationPublic: null,
       evaluationScript: "test script",
       ttsAudioCache: null,
       qualityWarning: false,
       outputsSaved: false,
       runId: 1,
+      consent: null,
+      timeLimitSeconds: 120,
+      evaluationPassRate: null,
     };
 
     purgeSessionData(session);

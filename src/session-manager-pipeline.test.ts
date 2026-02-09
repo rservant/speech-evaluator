@@ -49,6 +49,12 @@ function makeMetrics(overrides: Partial<DeliveryMetrics> = {}): DeliveryMetrics 
     pauseCount: 2,
     totalPauseDurationSeconds: 3.5,
     averagePauseDurationSeconds: 1.75,
+    intentionalPauseCount: 1,
+    hesitationPauseCount: 1,
+    classifiedPauses: [],
+    energyVariationCoefficient: 0,
+    energyProfile: { windowDurationMs: 250, windows: [], coefficientOfVariation: 0, silenceThreshold: 0 },
+    classifiedFillers: [],
     ...overrides,
   };
 }
@@ -80,6 +86,11 @@ function makeEvaluation(): StructuredEvaluation {
       },
     ],
     closing: "Keep up the great work!",
+    structure_commentary: {
+      opening_comment: null,
+      body_comment: null,
+      closing_comment: null,
+    },
   };
 }
 
@@ -98,16 +109,46 @@ function makeMockDeps(): SessionManagerDeps {
     } as any,
     metricsExtractor: {
       extract: vi.fn().mockReturnValue(metrics),
+      computeEnergyProfile: vi.fn().mockReturnValue({
+        windowDurationMs: 250,
+        windows: [0.5, 0.8, 0.6],
+        coefficientOfVariation: 0.2,
+        silenceThreshold: 0.1,
+      }),
     } as any,
     evaluationGenerator: {
-      generate: vi.fn().mockResolvedValue(evaluation),
+      generate: vi.fn().mockResolvedValue({ evaluation, passRate: 1.0 }),
       validate: vi.fn().mockReturnValue({ valid: true, issues: [] }),
       renderScript: vi.fn().mockReturnValue("Rendered evaluation script text."),
+      redact: vi.fn().mockReturnValue({
+        scriptRedacted: "Redacted evaluation script text.",
+        evaluationPublic: {
+          opening: evaluation.opening,
+          items: evaluation.items.map(i => ({
+            type: i.type,
+            summary: i.summary,
+            explanation: i.explanation,
+            evidence_quote: i.evidence_quote,
+            evidence_timestamp: i.evidence_timestamp,
+          })),
+          closing: evaluation.closing,
+          structure_commentary: evaluation.structure_commentary,
+        },
+      }),
+      logConsistencyTelemetry: vi.fn().mockResolvedValue(undefined),
     } as any,
     ttsEngine: {
       trimToFit: vi.fn().mockReturnValue("Rendered evaluation script text."),
       synthesize: vi.fn().mockResolvedValue(Buffer.from("fake-audio-data")),
       estimateDuration: vi.fn().mockReturnValue(120),
+    } as any,
+    toneChecker: {
+      check: vi.fn().mockReturnValue({ passed: true, violations: [] }),
+      stripViolations: vi.fn().mockImplementation((script: string) => script),
+      stripMarkers: vi.fn().mockImplementation((script: string) =>
+        script.replace(/\s*\[\[(Q|M):[^\]]+\]\]/g, "").replace(/\s{2,}/g, " ").trim()
+      ),
+      appendScopeAcknowledgment: vi.fn().mockImplementation((script: string) => script),
     } as any,
     filePersistence: {
       saveSession: vi.fn().mockResolvedValue([
@@ -374,52 +415,111 @@ describe("SessionManager Pipeline Wiring", () => {
       );
     });
 
-    it("calls EvaluationGenerator.renderScript() with evaluation", async () => {
+    it("calls EvaluationGenerator.renderScript() with evaluation, undefined speakerName, and metrics", async () => {
       const session = await setupForEvaluation();
 
       await manager.generateEvaluation(session.id);
 
       expect(deps.evaluationGenerator!.renderScript).toHaveBeenCalledOnce();
-      const evaluation = (deps.evaluationGenerator!.generate as any).mock.results[0].value;
+      const generateResult = await (deps.evaluationGenerator!.generate as any).mock.results[0].value;
       expect(deps.evaluationGenerator!.renderScript).toHaveBeenCalledWith(
-        await evaluation,
-        undefined, // no speakerName
+        generateResult.evaluation,
+        undefined, // No speakerName — redaction happens at stage 7
+        session.metrics,
       );
     });
 
-    it("passes speakerName to renderScript for redaction", async () => {
+    it("calls ToneChecker.check() with rendered script, evaluation, and metrics", async () => {
       const session = await setupForEvaluation();
-      session.speakerName = "Alice";
 
       await manager.generateEvaluation(session.id);
 
-      expect(deps.evaluationGenerator!.renderScript).toHaveBeenCalledWith(
-        expect.any(Object),
-        "Alice",
+      expect(deps.toneChecker!.check).toHaveBeenCalledOnce();
+      expect(deps.toneChecker!.check).toHaveBeenCalledWith(
+        "Rendered evaluation script text.",
+        expect.any(Object), // evaluation
+        session.metrics,
       );
     });
 
-    it("calls TTSEngine.trimToFit() with rendered script", async () => {
+    it("calls ToneChecker.stripMarkers() to remove markers after tone check", async () => {
+      const session = await setupForEvaluation();
+
+      await manager.generateEvaluation(session.id);
+
+      expect(deps.toneChecker!.stripMarkers).toHaveBeenCalledOnce();
+    });
+
+    it("calls TTSEngine.trimToFit() with session timeLimitSeconds", async () => {
       const session = await setupForEvaluation();
 
       await manager.generateEvaluation(session.id);
 
       expect(deps.ttsEngine!.trimToFit).toHaveBeenCalledOnce();
       expect(deps.ttsEngine!.trimToFit).toHaveBeenCalledWith(
-        "Rendered evaluation script text.",
-        210,
+        expect.any(String),
+        120, // session.timeLimitSeconds default
       );
     });
 
-    it("calls TTSEngine.synthesize() with trimmed script", async () => {
+    it("calls ToneChecker.appendScopeAcknowledgment() after trimming", async () => {
+      const session = await setupForEvaluation();
+
+      await manager.generateEvaluation(session.id);
+
+      expect(deps.toneChecker!.appendScopeAcknowledgment).toHaveBeenCalledOnce();
+      expect(deps.toneChecker!.appendScopeAcknowledgment).toHaveBeenCalledWith(
+        expect.any(String),
+        false, // qualityWarning
+        false, // hasStructureCommentary (all null)
+      );
+    });
+
+    it("calls TTSEngine.synthesize() with script (no redaction without consent)", async () => {
       const session = await setupForEvaluation();
 
       await manager.generateEvaluation(session.id);
 
       expect(deps.ttsEngine!.synthesize).toHaveBeenCalledOnce();
+      // Without consent, no redaction is applied — synthesize receives the processed script
       expect(deps.ttsEngine!.synthesize).toHaveBeenCalledWith(
-        "Rendered evaluation script text.",
+        expect.any(String),
       );
+    });
+
+    it("calls redact() and synthesizes redacted script when consent exists", async () => {
+      const session = await setupForEvaluation();
+      // Set consent directly on session (session is in PROCESSING state, can't use setConsent())
+      session.consent = {
+        speakerName: "Alice",
+        consentConfirmed: true,
+        consentTimestamp: new Date(),
+      };
+
+      await manager.generateEvaluation(session.id);
+
+      expect((deps.evaluationGenerator as any).redact).toHaveBeenCalledOnce();
+      expect((deps.evaluationGenerator as any).redact).toHaveBeenCalledWith({
+        script: expect.any(String),
+        evaluation: expect.any(Object),
+        consent: session.consent,
+      });
+      // TTS should receive the redacted script
+      expect(deps.ttsEngine!.synthesize).toHaveBeenCalledWith("Redacted evaluation script text.");
+    });
+
+    it("stores evaluationPublic on session when consent exists", async () => {
+      const session = await setupForEvaluation();
+      session.consent = {
+        speakerName: "Alice",
+        consentConfirmed: true,
+        consentTimestamp: new Date(),
+      };
+
+      await manager.generateEvaluation(session.id);
+
+      expect(session.evaluationPublic).not.toBeNull();
+      expect(session.evaluationPublic!.opening).toBe("That was a wonderful speech about leadership.");
     });
 
     it("stores evaluation and script in session", async () => {
@@ -472,7 +572,7 @@ describe("SessionManager Pipeline Wiring", () => {
       // Override generate to simulate panic mute mid-flight
       (deps.evaluationGenerator!.generate as any).mockImplementation(async () => {
         manager.panicMute(session.id);
-        return makeEvaluation();
+        return { evaluation: makeEvaluation(), passRate: 1.0 };
       });
 
       const session = manager.createSession();
@@ -777,7 +877,7 @@ describe("SessionManager Pipeline Wiring", () => {
         expect(session.state).toBe(SessionState.PROCESSING);
 
         // Second attempt succeeds (mock returns default evaluation)
-        (deps.evaluationGenerator!.generate as any).mockResolvedValueOnce(makeEvaluation());
+        (deps.evaluationGenerator!.generate as any).mockResolvedValueOnce({ evaluation: makeEvaluation(), passRate: 1.0 });
         const audioBuffer = await manager.generateEvaluation(session.id);
 
         expect(session.state).toBe(SessionState.DELIVERING);
@@ -897,6 +997,252 @@ describe("SessionManager Pipeline Wiring", () => {
       manager.startRecording(session.id);
       expect(session.state).toBe(SessionState.RECORDING);
       expect(session.audioChunks).toEqual([]); // cleared on new recording
+    });
+  });
+
+  // ─── Phase 2 Pipeline Stages (Task 11.1) ──────────────────────────────────
+
+  describe("Phase 2 pipeline stages", () => {
+    async function setupForEvaluation() {
+      const session = manager.createSession();
+      manager.startRecording(session.id);
+      session.audioChunks.push(Buffer.from([0x01, 0x02]));
+      await manager.stopRecording(session.id);
+      return session;
+    }
+
+    // ─── Energy profile computation ─────────────────────────────────────
+
+    describe("energy profile computation", () => {
+      it("calls MetricsExtractor.computeEnergyProfile() with audio chunks", async () => {
+        const session = await setupForEvaluation();
+
+        await manager.generateEvaluation(session.id);
+
+        expect(deps.metricsExtractor!.computeEnergyProfile).toHaveBeenCalledOnce();
+        expect(deps.metricsExtractor!.computeEnergyProfile).toHaveBeenCalledWith(
+          session.audioChunks,
+        );
+      });
+
+      it("updates metrics with energy profile data", async () => {
+        const session = await setupForEvaluation();
+
+        await manager.generateEvaluation(session.id);
+
+        expect(session.metrics!.energyVariationCoefficient).toBe(0.2);
+        expect(session.metrics!.energyProfile.coefficientOfVariation).toBe(0.2);
+        expect(session.metrics!.energyProfile.windows).toEqual([0.5, 0.8, 0.6]);
+      });
+    });
+
+    // ─── Tone check pipeline ────────────────────────────────────────────
+
+    describe("tone check pipeline", () => {
+      it("strips violations when tone check fails", async () => {
+        const violation = {
+          category: "psychological_inference" as const,
+          sentence: "You seemed nervous.",
+          pattern: "seemed nervous",
+          explanation: "Psychological inference",
+        };
+        (deps.toneChecker!.check as any).mockReturnValue({
+          passed: false,
+          violations: [violation],
+        });
+
+        const session = await setupForEvaluation();
+        await manager.generateEvaluation(session.id);
+
+        expect(deps.toneChecker!.stripViolations).toHaveBeenCalledOnce();
+        expect(deps.toneChecker!.stripViolations).toHaveBeenCalledWith(
+          expect.any(String),
+          [violation],
+        );
+        // stripMarkers should still be called after stripViolations
+        expect(deps.toneChecker!.stripMarkers).toHaveBeenCalledOnce();
+      });
+
+      it("does not call stripViolations when tone check passes", async () => {
+        const session = await setupForEvaluation();
+        await manager.generateEvaluation(session.id);
+
+        expect(deps.toneChecker!.stripViolations).not.toHaveBeenCalled();
+        // stripMarkers is always called
+        expect(deps.toneChecker!.stripMarkers).toHaveBeenCalledOnce();
+      });
+
+      it("markers are stripped before script reaches TTS", async () => {
+        // renderScript returns a script with markers
+        (deps.evaluationGenerator!.renderScript as any).mockReturnValue(
+          "Great opening. [[Q:item-0]] Your pace was steady. [[M:wordsPerMinute]] Keep it up."
+        );
+        // stripMarkers removes them
+        (deps.toneChecker!.stripMarkers as any).mockReturnValue(
+          "Great opening. Your pace was steady. Keep it up."
+        );
+
+        const session = await setupForEvaluation();
+        await manager.generateEvaluation(session.id);
+
+        // TTS should receive the marker-free script
+        const synthesizeArg = (deps.ttsEngine!.synthesize as any).mock.calls[0][0];
+        expect(synthesizeArg).not.toContain("[[Q:");
+        expect(synthesizeArg).not.toContain("[[M:");
+      });
+    });
+
+    // ─── Scope acknowledgment ───────────────────────────────────────────
+
+    describe("scope acknowledgment", () => {
+      it("passes hasStructureCommentary=true when structure commentary exists", async () => {
+        // Override generate to return evaluation with structure commentary
+        const evalWithCommentary = makeEvaluation();
+        evalWithCommentary.structure_commentary = {
+          opening_comment: "Strong opening hook.",
+          body_comment: null,
+          closing_comment: null,
+        };
+        (deps.evaluationGenerator!.generate as any).mockResolvedValue({
+          evaluation: evalWithCommentary,
+          passRate: 1.0,
+        });
+
+        const session = await setupForEvaluation();
+        await manager.generateEvaluation(session.id);
+
+        expect(deps.toneChecker!.appendScopeAcknowledgment).toHaveBeenCalledWith(
+          expect.any(String),
+          false, // qualityWarning
+          true,  // hasStructureCommentary
+        );
+      });
+
+      it("passes qualityWarning=true when session has quality warning", async () => {
+        const session = await setupForEvaluation();
+        session.qualityWarning = true;
+
+        await manager.generateEvaluation(session.id);
+
+        expect(deps.toneChecker!.appendScopeAcknowledgment).toHaveBeenCalledWith(
+          expect.any(String),
+          true,  // qualityWarning
+          false, // hasStructureCommentary
+        );
+      });
+    });
+
+    // ─── Pass rate storage ──────────────────────────────────────────────
+
+    describe("pass rate storage", () => {
+      it("stores evaluationPassRate on session from generate result", async () => {
+        (deps.evaluationGenerator!.generate as any).mockResolvedValue({
+          evaluation: makeEvaluation(),
+          passRate: 0.75,
+        });
+
+        const session = await setupForEvaluation();
+        await manager.generateEvaluation(session.id);
+
+        expect(session.evaluationPassRate).toBe(0.75);
+      });
+    });
+
+    // ─── Redaction and public evaluation ────────────────────────────────
+
+    describe("redaction and public evaluation", () => {
+      it("does not call redact() when no consent exists", async () => {
+        const session = await setupForEvaluation();
+        expect(session.consent).toBeNull();
+
+        await manager.generateEvaluation(session.id);
+
+        expect((deps.evaluationGenerator as any).redact).not.toHaveBeenCalled();
+        expect(session.evaluationPublic).toBeNull();
+      });
+
+      it("stores evaluationPublic as null when no consent", async () => {
+        const session = await setupForEvaluation();
+
+        await manager.generateEvaluation(session.id);
+
+        expect(session.evaluationPublic).toBeNull();
+      });
+
+      it("stores redacted evaluationScript when consent exists", async () => {
+        const session = await setupForEvaluation();
+        session.consent = {
+          speakerName: "Alice",
+          consentConfirmed: true,
+          consentTimestamp: new Date(),
+        };
+
+        await manager.generateEvaluation(session.id);
+
+        expect(session.evaluationScript).toBe("Redacted evaluation script text.");
+      });
+    });
+
+    // ─── RunId cancellation at async boundaries ─────────────────────────
+
+    describe("runId cancellation at async boundaries", () => {
+      it("discards results if runId changes during TTS synthesis", async () => {
+        (deps.ttsEngine!.synthesize as any).mockImplementation(async () => {
+          manager.panicMute(session.id);
+          return Buffer.from("should-be-discarded");
+        });
+
+        const session = manager.createSession();
+        manager.startRecording(session.id);
+        session.audioChunks.push(Buffer.from([0x01, 0x02]));
+        await manager.stopRecording(session.id);
+
+        const result = await manager.generateEvaluation(session.id);
+
+        expect(result).toBeUndefined();
+        expect(session.ttsAudioCache).toBeNull();
+      });
+
+      it("discards results if runId changes during LLM generation", async () => {
+        (deps.evaluationGenerator!.generate as any).mockImplementation(async () => {
+          manager.panicMute(session.id);
+          return { evaluation: makeEvaluation(), passRate: 1.0 };
+        });
+
+        const session = manager.createSession();
+        manager.startRecording(session.id);
+        session.audioChunks.push(Buffer.from([0x01, 0x02]));
+        await manager.stopRecording(session.id);
+
+        const result = await manager.generateEvaluation(session.id);
+
+        expect(result).toBeUndefined();
+        expect(session.evaluation).toBeNull();
+      });
+    });
+
+    // ─── Pipeline without ToneChecker (backward compat) ─────────────────
+
+    describe("pipeline without ToneChecker", () => {
+      it("strips markers via regex fallback when no ToneChecker is configured", async () => {
+        const noToneDeps = { ...makeMockDeps(), toneChecker: undefined };
+        const noToneManager = new SessionManager(noToneDeps);
+        const session = noToneManager.createSession();
+        noToneManager.startRecording(session.id);
+        session.audioChunks.push(Buffer.from([0x01, 0x02]));
+        await noToneManager.stopRecording(session.id);
+
+        // renderScript returns script with markers
+        (noToneDeps.evaluationGenerator!.renderScript as any).mockReturnValue(
+          "Great speech. [[Q:item-0]] Keep it up. [[M:wordsPerMinute]]"
+        );
+
+        await noToneManager.generateEvaluation(session.id);
+
+        // Script should have markers stripped
+        expect(session.evaluationScript).not.toContain("[[Q:");
+        expect(session.evaluationScript).not.toContain("[[M:");
+      });
     });
   });
 });

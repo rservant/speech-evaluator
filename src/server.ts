@@ -12,6 +12,7 @@ import { WebSocketServer, WebSocket } from "ws";
 import { SessionManager } from "./session-manager.js";
 import {
   type ClientMessage,
+  type ConsentRecord,
   type ServerMessage,
   type Session,
   type TranscriptSegment,
@@ -333,6 +334,18 @@ function handleClientMessage(
       catchAsync(handleReplayTTS(ws, connState, sessionManager, logger));
       break;
 
+    case "set_consent":
+      handleSetConsent(ws, message, connState, sessionManager, logger);
+      break;
+
+    case "revoke_consent":
+      handleRevokeConsent(ws, connState, sessionManager, logger);
+      break;
+
+    case "set_time_limit":
+      handleSetTimeLimit(ws, message, connState, sessionManager, logger);
+      break;
+
     default: {
       const exhaustiveCheck: never = message;
       sendMessage(ws, {
@@ -384,6 +397,17 @@ function handleStartRecording(
   logger: ServerLogger,
 ): void {
   const session = sessionManager.getSession(connState.sessionId);
+
+  // Gate on consent confirmation (Req 2.3) — reject if consent not confirmed
+  if (!session.consent?.consentConfirmed) {
+    logger.warn(`start_recording rejected: consent not confirmed for session ${connState.sessionId}`);
+    sendMessage(ws, {
+      type: "error",
+      message: "Cannot start recording: speaker consent has not been confirmed.",
+      recoverable: true,
+    });
+    return;
+  }
 
   // Cancel any pending auto-purge timer when starting a new recording
   clearPurgeTimer(connState);
@@ -654,6 +678,71 @@ function handlePanicMute(
   logger.info(`Panic mute activated for session ${connState.sessionId}`);
 
   sendMessage(ws, { type: "state_change", state: SessionState.IDLE });
+}
+
+// ─── Set Consent (Req 2.1, 2.3) ────────────────────────────────────────────────
+
+function handleSetConsent(
+  ws: WebSocket,
+  message: Extract<ClientMessage, { type: "set_consent" }>,
+  connState: ConnectionState,
+  sessionManager: SessionManager,
+  logger: ServerLogger,
+): void {
+  try {
+    sessionManager.setConsent(connState.sessionId, message.speakerName, message.consentConfirmed);
+    const session = sessionManager.getSession(connState.sessionId);
+    sendMessage(ws, { type: "consent_status", consent: session.consent });
+    logger.info(`Consent set for session ${connState.sessionId}: speaker="${message.speakerName}", confirmed=${message.consentConfirmed}`);
+  } catch (err) {
+    const errorMessage = err instanceof Error ? err.message : String(err);
+    logger.warn(`set_consent failed for session ${connState.sessionId}: ${errorMessage}`);
+    sendMessage(ws, {
+      type: "error",
+      message: errorMessage,
+      recoverable: true,
+    });
+  }
+}
+
+// ─── Revoke Consent / Speaker Opt-Out (Req 2.7) ────────────────────────────────
+
+function handleRevokeConsent(
+  ws: WebSocket,
+  connState: ConnectionState,
+  sessionManager: SessionManager,
+  logger: ServerLogger,
+): void {
+  // Stop any active timers — session is being purged
+  stopElapsedTimeTicker(connState);
+  clearPurgeTimer(connState);
+
+  sessionManager.revokeConsent(connState.sessionId);
+  logger.info(`Consent revoked (opt-out) for session ${connState.sessionId}`);
+
+  // Notify client of data purge and state change
+  sendMessage(ws, { type: "data_purged", reason: "opt_out" });
+  sendMessage(ws, { type: "state_change", state: SessionState.IDLE });
+}
+
+// ─── Set Time Limit (Req 6.8) ──────────────────────────────────────────────────
+
+function handleSetTimeLimit(
+  ws: WebSocket,
+  message: Extract<ClientMessage, { type: "set_time_limit" }>,
+  connState: ConnectionState,
+  sessionManager: SessionManager,
+  logger: ServerLogger,
+): void {
+  const session = sessionManager.getSession(connState.sessionId);
+  session.timeLimitSeconds = message.seconds;
+  logger.info(`Time limit set to ${message.seconds}s for session ${connState.sessionId}`);
+
+  sendMessage(ws, {
+    type: "duration_estimate",
+    estimatedSeconds: message.seconds,
+    timeLimitSeconds: message.seconds,
+  });
 }
 
 // ─── Elapsed Time Ticker ────────────────────────────────────────────────────────

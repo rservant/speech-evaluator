@@ -11,18 +11,96 @@
 
 import type OpenAI from "openai";
 import type {
+  ConsentRecord,
   DeliveryMetrics,
   EvaluationConfig,
   EvaluationItem,
+  EvaluationItemPublic,
+  RedactionInput,
+  RedactionOutput,
+  StructureCommentary,
   StructuredEvaluation,
+  StructuredEvaluationPublic,
   TranscriptSegment,
 } from "./types.js";
 import { EvidenceValidator, type ValidationResult } from "./evidence-validator.js";
+import { splitSentences } from "./utils.js";
 
 // ─── Transcript quality thresholds ──────────────────────────────────────────────
 
 const MIN_WORDS_PER_MINUTE = 10;
 const MIN_AVERAGE_CONFIDENCE = 0.5;
+
+// ─── High-confidence segment threshold (Req 10.2) ──────────────────────────────
+
+const HIGH_CONFIDENCE_SEGMENT_THRESHOLD = 0.7;
+
+// ─── Non-speech marker detection ────────────────────────────────────────────────
+
+/**
+ * Common non-speech tokens emitted by transcription engines.
+ * These are excluded from confidence computation per Req 10.1.
+ */
+const NON_SPEECH_MARKERS = new Set([
+  "[silence]",
+  "[noise]",
+  "[music]",
+  "[inaudible]",
+  "[laughter]",
+  "[applause]",
+  "[crosstalk]",
+  "[blank_audio]",
+]);
+
+/**
+ * Returns true if a word is a silence or non-speech marker.
+ * A word is considered a marker if:
+ * - Its text is empty or whitespace-only
+ * - Its text (lowercased, trimmed) matches a known non-speech token
+ */
+function isSilenceOrNonSpeechMarker(word: string): boolean {
+  const trimmed = word.trim();
+  if (trimmed.length === 0) return true;
+  return NON_SPEECH_MARKERS.has(trimmed.toLowerCase());
+}
+// ─── Cosine Similarity (Req 7.3, 7.5) ──────────────────────────────────────────
+
+/**
+ * Compute cosine similarity between two vectors of equal dimension.
+ *
+ * Returns dot(a, b) / (norm(a) * norm(b)).
+ * Returns 0 for zero-length vectors or vectors of different lengths.
+ * Result is in the range [-1, 1] for non-zero vectors.
+ *
+ * Exported for use by Property 19 tests.
+ *
+ * Requirements: 7.3, 7.5
+ */
+export function cosineSimilarity(a: number[], b: number[]): number {
+  if (a.length !== b.length || a.length === 0) return 0;
+  let dot = 0;
+  let normA = 0;
+  let normB = 0;
+  for (let i = 0; i < a.length; i++) {
+    dot += a[i] * b[i];
+    normA += a[i] * a[i];
+    normB += b[i] * b[i];
+  }
+  if (normA === 0 || normB === 0) return 0;
+  return dot / (Math.sqrt(normA) * Math.sqrt(normB));
+}
+
+// ─── Embedding model constant (Req 7.5) ────────────────────────────────────────
+
+/**
+ * Fixed embedding model for consistency monitoring telemetry.
+ * Specified as a configured constant to ensure reproducible similarity scoring.
+ */
+export const EMBEDDING_MODEL = "text-embedding-3-small";
+
+// ─── Consistency similarity threshold (Req 7.3) ────────────────────────────────
+
+const CONSISTENCY_SIMILARITY_THRESHOLD = 0.75;
 
 // ─── Shape invariant bounds ─────────────────────────────────────────────────────
 
@@ -35,6 +113,76 @@ const MAX_RECOMMENDATIONS = 2;
 
 const MAX_ITEM_RETRIES = 1;
 const MAX_FULL_GENERATION_ATTEMPTS = 2;
+
+// ─── Short-form fallback bounds (Req 9.2) ───────────────────────────────────────
+
+const SHORT_FORM_MIN_COMMENDATIONS = 1;
+const SHORT_FORM_MIN_RECOMMENDATIONS = 1;
+
+// ─── Metrics field names for marker detection ───────────────────────────────────
+
+const METRICS_FIELD_NAMES = [
+  "wordsPerMinute",
+  "fillerWordCount",
+  "fillerWordFrequency",
+  "pauseCount",
+  "durationSeconds",
+  "intentionalPauseCount",
+  "hesitationPauseCount",
+  "energyVariationCoefficient",
+  "totalPauseDurationSeconds",
+  "averagePauseDurationSeconds",
+] as const;
+
+/**
+ * Human-readable keywords that map to DeliveryMetrics field names.
+ * Used to detect when a sentence references a specific metric.
+ */
+const METRICS_KEYWORDS: Record<string, string> = {
+  // wordsPerMinute
+  "words per minute": "wordsPerMinute",
+  "speaking rate": "wordsPerMinute",
+  "speaking pace": "wordsPerMinute",
+  "speech pace": "wordsPerMinute",
+  "pace": "wordsPerMinute",
+  "wpm": "wordsPerMinute",
+  "steady pace": "wordsPerMinute",
+  "speaking speed": "wordsPerMinute",
+  // fillerWordCount / fillerWordFrequency
+  "filler word": "fillerWordCount",
+  "filler words": "fillerWordCount",
+  "um": "fillerWordCount",
+  "uh": "fillerWordCount",
+  "you know": "fillerWordCount",
+  "filler": "fillerWordCount",
+  // pauseCount
+  "pause": "pauseCount",
+  "pauses": "pauseCount",
+  "pausing": "pauseCount",
+  "paused": "pauseCount",
+  // durationSeconds
+  "duration": "durationSeconds",
+  "speech length": "durationSeconds",
+  "how long": "durationSeconds",
+  "minutes long": "durationSeconds",
+  // intentionalPauseCount
+  "intentional pause": "intentionalPauseCount",
+  "dramatic pause": "intentionalPauseCount",
+  "rhetorical pause": "intentionalPauseCount",
+  // hesitationPauseCount
+  "hesitation": "hesitationPauseCount",
+  "hesitation pause": "hesitationPauseCount",
+  // energyVariationCoefficient
+  "vocal variety": "energyVariationCoefficient",
+  "energy variation": "energyVariationCoefficient",
+  "vocal energy": "energyVariationCoefficient",
+  "volume variation": "energyVariationCoefficient",
+  // totalPauseDurationSeconds
+  "total pause": "totalPauseDurationSeconds",
+  "pause duration": "totalPauseDurationSeconds",
+  // averagePauseDurationSeconds
+  "average pause": "averagePauseDurationSeconds",
+};
 
 // ─── OpenAI client interface (for testability / dependency injection) ────────────
 
@@ -59,6 +207,40 @@ export interface OpenAIClient {
       }>;
     };
   };
+  // Optional embeddings API surface for consistency monitoring telemetry (Req 7.5)
+  embeddings?: {
+    create(params: {
+      model: string;
+      input: string;
+    }): Promise<{
+      data: Array<{
+        embedding: number[];
+      }>;
+    }>;
+  };
+}
+
+// ─── Generate result type (Req 1.6, 9.2) ────────────────────────────────────────
+
+export interface GenerateResult {
+  evaluation: StructuredEvaluation;
+  passRate: number; // passedOnFirstAttempt / totalDeliveredItems
+}
+
+// ─── Internal validation tracking types ─────────────────────────────────────────
+
+/** Tracks whether an individual item passed evidence validation on first attempt. */
+interface ItemValidationRecord {
+  item: EvaluationItem;
+  passedFirstAttempt: boolean;
+}
+
+/** Result of validateAndRetry, including pass-rate tracking data. */
+interface ValidateAndRetryResult {
+  evaluation: StructuredEvaluation;
+  firstAttemptResults: ItemValidationRecord[];
+  /** Count of items in the final evaluation that passed on first attempt. */
+  passedOnFirstAttempt: number;
 }
 
 // ─── EvaluationGenerator ────────────────────────────────────────────────────────
@@ -67,6 +249,9 @@ export class EvaluationGenerator {
   private readonly openai: OpenAIClient;
   private readonly evidenceValidator: EvidenceValidator;
   private readonly model: string;
+
+  /** Cached embedding from the previous evaluation for consistency comparison (Req 7.3). */
+  private lastEmbedding: number[] | null = null;
 
   constructor(openaiClient: OpenAIClient, model: string = "gpt-4o") {
     this.openai = openaiClient;
@@ -84,23 +269,45 @@ export class EvaluationGenerator {
    *  2. Validate evidence quotes against transcript.
    *  3. Re-prompt failed items individually (max 1 retry per item).
    *  4. If shape invariant violated after dropping failures, regenerate fully (max 2 total).
+   *  5. If shape invariant still fails after all retries, produce short-form fallback (Req 9.2).
+   *
+   * Returns the evaluation along with the pass rate (Req 1.6):
+   *  passRate = passedOnFirstAttempt / totalDeliveredItems
    */
   async generate(
     transcript: TranscriptSegment[],
     metrics: DeliveryMetrics,
     config?: EvaluationConfig,
-  ): Promise<StructuredEvaluation> {
+  ): Promise<GenerateResult> {
     const transcriptText = this.buildTranscriptText(transcript);
     const qualityWarning = this.assessTranscriptQuality(transcript, metrics);
 
+    // When quality warning is active, filter to high-confidence segments (Req 10.2)
+    let highConfidenceSegments: TranscriptSegment[] | undefined;
+    if (qualityWarning) {
+      highConfidenceSegments = transcript.filter((seg) => {
+        const speechWords = seg.words.filter((w) => !isSilenceOrNonSpeechMarker(w.word));
+        if (speechWords.length === 0) return false;
+        const meanConfidence = speechWords.reduce((sum, w) => sum + w.confidence, 0) / speechWords.length;
+        return meanConfidence >= HIGH_CONFIDENCE_SEGMENT_THRESHOLD;
+      });
+      // If no segments meet the threshold, use all segments (with strong uncertainty qualifier)
+      if (highConfidenceSegments.length === 0) {
+        highConfidenceSegments = undefined;
+      }
+    }
+
+    // Track the last validated result for short-form fallback
+    let lastValidatedResult: ValidateAndRetryResult | null = null;
+
     for (let attempt = 0; attempt < MAX_FULL_GENERATION_ATTEMPTS; attempt++) {
       // Stage 1: Call LLM
-      const prompt = this.buildPrompt(transcriptText, metrics, qualityWarning, config);
+      const prompt = this.buildPrompt(transcriptText, metrics, qualityWarning, config, highConfidenceSegments);
       const raw = await this.callLLM(prompt);
       const evaluation = this.parseEvaluation(raw);
 
-      // Stage 2: Validate evidence
-      const validated = await this.validateAndRetry(
+      // Stage 2: Validate evidence (with pass-rate tracking)
+      const validateResult = await this.validateAndRetry(
         evaluation,
         transcript,
         transcriptText,
@@ -108,19 +315,44 @@ export class EvaluationGenerator {
         qualityWarning,
         config,
       );
+      lastValidatedResult = validateResult;
 
       // Check shape invariant
-      if (this.meetsShapeInvariant(validated)) {
-        return validated;
+      if (this.meetsShapeInvariant(validateResult.evaluation)) {
+        return {
+          evaluation: validateResult.evaluation,
+          passRate: this.computePassRate(
+            validateResult.passedOnFirstAttempt,
+            validateResult.evaluation.items.length,
+          ),
+        };
       }
 
       // Shape violated — will regenerate on next iteration (if budget remains)
     }
 
-    // Exhausted retries — best-effort: call LLM one last time and return as-is
-    const lastPrompt = this.buildPrompt(transcriptText, metrics, qualityWarning, config);
+    // Exhausted retries — attempt short-form fallback (Req 9.2, 9.3)
+    if (lastValidatedResult) {
+      const shortForm = this.buildShortFormFallback(lastValidatedResult);
+      if (shortForm) {
+        return {
+          evaluation: shortForm.evaluation,
+          passRate: this.computePassRate(
+            shortForm.passedOnFirstAttempt,
+            shortForm.evaluation.items.length,
+          ),
+        };
+      }
+    }
+
+    // Short-form fallback couldn't produce valid items — best-effort last LLM call
+    const lastPrompt = this.buildPrompt(transcriptText, metrics, qualityWarning, config, highConfidenceSegments);
     const lastRaw = await this.callLLM(lastPrompt);
-    return this.parseEvaluation(lastRaw);
+    const lastEval = this.parseEvaluation(lastRaw);
+    return {
+      evaluation: lastEval,
+      passRate: 0,
+    };
   }
 
   // ── Stage 2: Validation (delegates to EvidenceValidator) ────────────────────
@@ -150,111 +382,196 @@ export class EvaluationGenerator {
    * Third-party name redaction is applied: names other than the speaker's
    * own name are replaced with "[a fellow member]".
    */
-  renderScript(
-    evaluation: StructuredEvaluation,
-    speakerName?: string,
-  ): string {
-    const parts: string[] = [];
+  /**
+     * Render a validated StructuredEvaluation into a natural spoken script
+     * with inline markers for tone checking (pipeline stage 4).
+     *
+     * Emits:
+     *  - `[[Q:item-N]]` after sentences derived from evidence quotes
+     *  - `[[M:fieldName]]` after sentences referencing DeliveryMetrics fields
+     *
+     * Structure commentary (non-null fields) is woven between the opening
+     * and the first evaluation item.
+     *
+     * Markers are stripped later in stage 5 by ToneChecker.stripMarkers().
+     *
+     * Third-party name redaction is applied after markers (for backward compat;
+     * will be moved to pipeline stage 8 in full pipeline wiring).
+     */
+    renderScript(
+      evaluation: StructuredEvaluation,
+      speakerName?: string,
+      metrics?: DeliveryMetrics,
+    ): string {
+      const parts: string[] = [];
 
-    // Opening
-    parts.push(evaluation.opening);
+      // Opening
+      parts.push(evaluation.opening);
 
-    // Items (commendations and recommendations in order)
-    for (const item of evaluation.items) {
-      const section = this.renderItemSection(item);
-      parts.push(section);
+      // Structure commentary (between opening and first item)
+      // Omit sections where the field is null; omit entirely if all null or undefined
+      const commentary = evaluation.structure_commentary;
+      const commentaryParts: string[] = [];
+      if (commentary?.opening_comment) {
+        commentaryParts.push(commentary.opening_comment);
+      }
+      if (commentary?.body_comment) {
+        commentaryParts.push(commentary.body_comment);
+      }
+      if (commentary?.closing_comment) {
+        commentaryParts.push(commentary.closing_comment);
+      }
+      if (commentaryParts.length > 0) {
+        parts.push(commentaryParts.join(" "));
+      }
+
+      // Items (commendations and recommendations in order) with markers
+      for (let i = 0; i < evaluation.items.length; i++) {
+        const item = evaluation.items[i];
+        const section = this.renderItemSection(item);
+        const markedSection = this.applyMarkers(section, i, item, metrics);
+        parts.push(markedSection);
+      }
+
+      // Closing
+      parts.push(evaluation.closing);
+
+      const script = parts.join("\n\n");
+
+      // Apply third-party name redaction for TTS delivery
+      return this.redactThirdPartyNames(script, speakerName);
     }
-
-    // Closing
-    parts.push(evaluation.closing);
-
-    const script = parts.join("\n\n");
-
-    // Apply third-party name redaction for TTS delivery
-    return this.redactThirdPartyNames(script, speakerName);
-  }
 
   // ── Prompt construction ─────────────────────────────────────────────────────
 
   /**
    * Build the system + user prompt for the LLM structured output call.
+   *
+   * When qualityWarning is active and highConfidenceSegments are available,
+   * the user prompt annotates which segments are high-confidence so the LLM
+   * can focus evidence on those segments (Req 10.2).
    */
   private buildPrompt(
     transcriptText: string,
     metrics: DeliveryMetrics,
     qualityWarning: boolean,
     config?: EvaluationConfig,
+    highConfidenceSegments?: TranscriptSegment[],
   ): { system: string; user: string } {
     const system = this.buildSystemPrompt(qualityWarning);
-    const user = this.buildUserPrompt(transcriptText, metrics, config);
+    const user = this.buildUserPrompt(transcriptText, metrics, config, highConfidenceSegments);
     return { system, user };
   }
 
   private buildSystemPrompt(qualityWarning: boolean): string {
-    let prompt = `You are an experienced Toastmasters speech evaluator. Your role is to provide supportive, evidence-based evaluations of speeches.
+      let prompt = `You are an experienced Toastmasters speech evaluator. Your role is to provide supportive, evidence-based evaluations of speeches.
 
-## Output Format
-You MUST respond with a valid JSON object matching this exact structure:
-{
-  "opening": "string (1-2 sentences, warm greeting and overall impression)",
-  "items": [
-    {
-      "type": "commendation" or "recommendation",
-      "summary": "string (brief label for this point)",
-      "evidence_quote": "string (verbatim quote from the transcript, at most 15 words)",
-      "evidence_timestamp": number (seconds since speech start when the quoted passage begins),
-      "explanation": "string (2-3 sentences explaining why this matters)"
+  ## Output Format
+  You MUST respond with a valid JSON object matching this exact structure:
+  {
+    "opening": "string (1-2 sentences, warm greeting and overall impression)",
+    "items": [
+      {
+        "type": "commendation" or "recommendation",
+        "summary": "string (brief label for this point)",
+        "evidence_quote": "string (verbatim quote from the transcript, at most 15 words)",
+        "evidence_timestamp": number (seconds since speech start when the quoted passage begins),
+        "explanation": "string (2-3 sentences explaining why this matters)"
+      }
+    ],
+    "closing": "string (1-2 sentences, encouraging wrap-up)",
+    "structure_commentary": {
+      "opening_comment": "string or null (descriptive observation about the speech opening)",
+      "body_comment": "string or null (descriptive observation about the speech body organization)",
+      "closing_comment": "string or null (descriptive observation about the speech closing)"
     }
-  ],
-  "closing": "string (1-2 sentences, encouraging wrap-up)"
-}
-
-## Evaluation Style
-- Use a free-form natural conversational style. Do NOT use the CRC (Commend-Recommend-Commend) sandwich pattern.
-- Mix commendations and recommendations naturally, as a skilled evaluator would in conversation.
-- Be warm, supportive, and specific. Every point must reference something the speaker actually said or did.
-
-## Evidence Rules
-- Every commendation and recommendation MUST include an evidence_quote that is a VERBATIM snippet from the transcript.
-- Each evidence_quote must be at most 15 words long and at least 6 words long.
-- Each evidence_quote must be copied exactly from the transcript text (word for word).
-- The evidence_timestamp must be the approximate start time (in seconds) of where that quote appears in the speech.
-- Do NOT fabricate, paraphrase, or invent quotes. Use only the speaker's actual words.
-
-## Counts
-- Include exactly 2 to 3 commendations (type: "commendation").
-- Include exactly 1 to 2 recommendations (type: "recommendation").
-
-## Length
-- Opening: 1-2 sentences.
-- Each item explanation: 2-3 sentences.
-- Closing: 1-2 sentences.
-- Target total: approximately 250-400 words when rendered as spoken text.`;
-
-    if (qualityWarning) {
-      prompt += `
-
-## Audio Quality Warning
-The transcript quality appears to be poor (low word count relative to duration, or low confidence scores). Please:
-- Acknowledge the audio quality limitations in your opening.
-- Base your evaluation only on what is clearly present in the transcript.
-- Include a caveat that some aspects of the speech may not have been captured accurately.
-- Still provide your best evaluation with the available content.`;
-    }
-
-    return prompt;
   }
+
+  ## Evaluation Style
+  - Use a free-form natural conversational style. Do NOT use the CRC (Commend-Recommend-Commend) sandwich pattern.
+  - Mix commendations and recommendations naturally, as a skilled evaluator would in conversation.
+  - Be warm, supportive, and specific. Every point must reference something the speaker actually said or did.
+
+  ## Evidence Rules
+  - Every commendation and recommendation MUST include an evidence_quote that is a VERBATIM snippet from the transcript.
+  - Each evidence_quote must be at most 15 words long and at least 6 words long.
+  - Each evidence_quote must be copied exactly from the transcript text (word for word).
+  - The evidence_timestamp must be the approximate start time (in seconds) of where that quote appears in the speech.
+  - Do NOT fabricate, paraphrase, or invent quotes. Use only the speaker's actual words.
+
+  ## Counts
+  - Include exactly 2 to 3 commendations (type: "commendation").
+  - Include exactly 1 to 2 recommendations (type: "recommendation").
+
+  ## Length
+  - Opening: 1-2 sentences.
+  - Each item explanation: 2-3 sentences.
+  - Closing: 1-2 sentences.
+  - Target total: approximately 250-400 words when rendered as spoken text.
+
+  ## Speech Structure Commentary
+  Analyze the transcript to provide descriptive commentary on the speech's structure.
+
+  ### Segmentation
+  - **Opening** (first 10-15% of words): Look for a hook, attention-grabber, or topic introduction.
+  - **Body** (middle 70-80% of words): Look for main points, transitions between ideas, and overall organization.
+  - **Closing** (final 10-15% of words): Look for a call to action, memorable ending, or summary.
+
+  ### Heuristic Fallback for Short Transcripts
+  If the transcript contains fewer than 120 words, do NOT use percentage-based segmentation. Instead, use heuristic markers to identify sections:
+  - Opening markers: "today I want to talk about", "let me tell you", "good morning", "I'm here to"
+  - Closing markers: "in conclusion", "to wrap up", "to summarize", "in closing", "my final thought"
+  - If no reliable markers are found, return null for that section.
+
+  ### Null Handling
+  - If you cannot identify a reliable opening, return null for opening_comment.
+  - If you cannot identify a reliable closing, return null for closing_comment.
+  - If the body is too short or unclear to comment on, return null for body_comment.
+  - It is better to return null than to speculate about structure that is not clearly present.
+
+  ### Commentary Style
+  - All structure commentary must be descriptive and observational.
+  - Do not include numerical scores, ratings, or percentage-based assessments in structure commentary.
+  - Describe what the speaker did, not how you would rate it.
+  - Good: "You opened with a personal anecdote that drew the audience in."
+  - Bad: "Your opening was 7/10" or "Your opening covered 12% of the speech."`;
+
+      if (qualityWarning) {
+        prompt += `
+
+  ## Audio Quality Warning
+  The transcript quality appears to be degraded (low word count relative to duration, or low confidence scores). Please:
+  - Include an uncertainty qualifier in your opening acknowledging the audio quality limitations, such as: "The audio quality made some parts difficult to catch, so I'll focus on what came through clearly."
+  - Reduce claim strength and limit evidence-dependent observations to only clearly audible portions of the transcript.
+  - Focus observations on high-confidence transcript segments only (segments where the mean word confidence is 0.7 or above).
+  - Do not fabricate content to compensate for gaps in the transcript.
+  - Still provide your best evaluation with the available content, but be transparent about limitations.`;
+      }
+
+      return prompt;
+    }
 
   private buildUserPrompt(
     transcriptText: string,
     metrics: DeliveryMetrics,
     config?: EvaluationConfig,
+    highConfidenceSegments?: TranscriptSegment[],
   ): string {
     let prompt = `## Speech Transcript
 ${transcriptText}
 
 ## Delivery Metrics
 ${JSON.stringify(metrics, null, 2)}`;
+
+    // When quality warning is active, annotate high-confidence segments (Req 10.2)
+    if (highConfidenceSegments && highConfidenceSegments.length > 0) {
+      const highConfText = this.buildTranscriptText(highConfidenceSegments);
+      prompt += `
+
+## High-Confidence Segments
+The following transcript segments have high confidence (mean word confidence ≥ 0.7). Focus your evidence quotes on these segments:
+${highConfText}`;
+    }
 
     if (config?.objectives && config.objectives.length > 0) {
       prompt += `
@@ -336,35 +653,39 @@ Please provide a corrected version of this ${item.type} with a valid evidence qu
    * Throws if the response doesn't match the expected shape.
    */
   private parseEvaluation(raw: string): StructuredEvaluation {
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(raw);
-    } catch {
-      throw new Error(`Failed to parse LLM response as JSON: ${raw.slice(0, 200)}`);
-    }
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(raw);
+      } catch {
+        throw new Error(`Failed to parse LLM response as JSON: ${raw.slice(0, 200)}`);
+      }
 
-    const obj = parsed as Record<string, unknown>;
+      const obj = parsed as Record<string, unknown>;
 
-    if (typeof obj.opening !== "string") {
-      throw new Error("LLM response missing or invalid 'opening' field");
-    }
-    if (!Array.isArray(obj.items)) {
-      throw new Error("LLM response missing or invalid 'items' array");
-    }
-    if (typeof obj.closing !== "string") {
-      throw new Error("LLM response missing or invalid 'closing' field");
-    }
+      if (typeof obj.opening !== "string") {
+        throw new Error("LLM response missing or invalid 'opening' field");
+      }
+      if (!Array.isArray(obj.items)) {
+        throw new Error("LLM response missing or invalid 'items' array");
+      }
+      if (typeof obj.closing !== "string") {
+        throw new Error("LLM response missing or invalid 'closing' field");
+      }
 
-    const items: EvaluationItem[] = (obj.items as unknown[]).map(
-      (item, index) => this.parseItem(item, index),
-    );
+      const items: EvaluationItem[] = (obj.items as unknown[]).map(
+        (item, index) => this.parseItem(item, index),
+      );
 
-    return {
-      opening: obj.opening,
-      items,
-      closing: obj.closing,
-    };
-  }
+      // Parse structure_commentary with graceful defaults
+      const structureCommentary = this.parseStructureCommentary(obj.structure_commentary);
+
+      return {
+        opening: obj.opening,
+        items,
+        closing: obj.closing,
+        structure_commentary: structureCommentary,
+      };
+    }
 
   private parseItem(raw: unknown, index: number): EvaluationItem {
     const item = raw as Record<string, unknown>;
@@ -395,11 +716,37 @@ Please provide a corrected version of this ${item.type} with a valid evidence qu
     };
   }
 
+  /**
+   * Parse the structure_commentary field from the LLM response.
+   * Handles missing/null fields gracefully — defaults each sub-field to null.
+   */
+  private parseStructureCommentary(raw: unknown): StructureCommentary {
+    if (!raw || typeof raw !== "object") {
+      return { opening_comment: null, body_comment: null, closing_comment: null };
+    }
+
+    const obj = raw as Record<string, unknown>;
+
+    return {
+      opening_comment: typeof obj.opening_comment === "string" && obj.opening_comment.length > 0
+        ? obj.opening_comment
+        : null,
+      body_comment: typeof obj.body_comment === "string" && obj.body_comment.length > 0
+        ? obj.body_comment
+        : null,
+      closing_comment: typeof obj.closing_comment === "string" && obj.closing_comment.length > 0
+        ? obj.closing_comment
+        : null,
+    };
+  }
+
   // ── Validate and retry pipeline ────────────────────────────────────────────
 
   /**
    * Validate all items in the evaluation. For items that fail, attempt a
    * single per-item retry. Drop items that still fail after retry.
+   *
+   * Tracks first-attempt pass/fail per item for pass-rate computation (Req 1.6).
    */
   private async validateAndRetry(
     evaluation: StructuredEvaluation,
@@ -408,8 +755,9 @@ Please provide a corrected version of this ${item.type} with a valid evidence qu
     metrics: DeliveryMetrics,
     qualityWarning: boolean,
     config?: EvaluationConfig,
-  ): Promise<StructuredEvaluation> {
+  ): Promise<ValidateAndRetryResult> {
     const validatedItems: EvaluationItem[] = [];
+    const firstAttemptResults: ItemValidationRecord[] = [];
 
     for (const item of evaluation.items) {
       // Validate this single item
@@ -417,15 +765,18 @@ Please provide a corrected version of this ${item.type} with a valid evidence qu
         opening: evaluation.opening,
         items: [item],
         closing: evaluation.closing,
+        structure_commentary: evaluation.structure_commentary,
       };
       const result = this.evidenceValidator.validate(singleEval, segments);
 
       if (result.valid) {
         validatedItems.push(item);
+        firstAttemptResults.push({ item, passedFirstAttempt: true });
         continue;
       }
 
-      // Item failed — attempt one retry
+      // Item failed first attempt — attempt one retry
+      firstAttemptResults.push({ item, passedFirstAttempt: false });
       const retried = await this.retryItem(item, transcriptText, result.issues, segments);
       if (retried) {
         validatedItems.push(retried);
@@ -434,9 +785,18 @@ Please provide a corrected version of this ${item.type} with a valid evidence qu
     }
 
     return {
-      opening: evaluation.opening,
-      items: validatedItems,
-      closing: evaluation.closing,
+      evaluation: {
+        opening: evaluation.opening,
+        items: validatedItems,
+        closing: evaluation.closing,
+        structure_commentary: evaluation.structure_commentary,
+      },
+      firstAttemptResults,
+      // Count items that are in the final evaluation AND passed on first attempt.
+      // Items that passed first attempt are the original items (not retried replacements).
+      passedOnFirstAttempt: firstAttemptResults.filter(
+        (r) => r.passedFirstAttempt && validatedItems.includes(r.item),
+      ).length,
     };
   }
 
@@ -460,6 +820,7 @@ Please provide a corrected version of this ${item.type} with a valid evidence qu
         opening: "",
         items: [retriedItem],
         closing: "",
+        structure_commentary: { opening_comment: null, body_comment: null, closing_comment: null },
       };
       const result = this.evidenceValidator.validate(singleEval, segments);
 
@@ -492,6 +853,69 @@ Please provide a corrected version of this ${item.type} with a valid evidence qu
     );
   }
 
+  // ── Pass-rate computation (Req 1.6) ────────────────────────────────────────
+
+  /**
+   * Compute the evidence validation pass rate.
+   *
+   * passRate = passedOnFirstAttempt / totalDeliveredItems
+   *
+   * Returns 0 when there are no delivered items (avoids division by zero).
+   */
+  private computePassRate(passedOnFirstAttempt: number, totalDeliveredItems: number): number {
+    if (totalDeliveredItems === 0) return 0;
+    return passedOnFirstAttempt / totalDeliveredItems;
+  }
+
+  // ── Short-form fallback (Req 9.2, 9.3) ────────────────────────────────────
+
+  /**
+   * Build a short-form fallback evaluation when the standard shape invariant
+   * cannot be met after exhausting all retry and regeneration attempts.
+   *
+   * Takes whatever valid items remain from the last validation pass and
+   * ensures ≥1 commendation + ≥1 recommendation. Every item in the
+   * short-form fallback has already passed evidence validation.
+   *
+   * Returns null if we don't have enough valid items to meet the short-form
+   * minimum (≥1 commendation + ≥1 recommendation).
+   */
+  private buildShortFormFallback(
+    lastResult: ValidateAndRetryResult,
+  ): { evaluation: StructuredEvaluation; passedOnFirstAttempt: number } | null {
+    const { evaluation, firstAttemptResults } = lastResult;
+    const validItems = evaluation.items;
+
+    const commendations = validItems.filter((i) => i.type === "commendation");
+    const recommendations = validItems.filter((i) => i.type === "recommendation");
+
+    // Need at least 1 commendation and 1 recommendation for short-form
+    if (
+      commendations.length < SHORT_FORM_MIN_COMMENDATIONS ||
+      recommendations.length < SHORT_FORM_MIN_RECOMMENDATIONS
+    ) {
+      return null;
+    }
+
+    // Take the minimum required items (all valid items that remain)
+    const shortFormItems = validItems;
+
+    // Recompute passedOnFirstAttempt for the short-form items
+    const passedOnFirstAttempt = firstAttemptResults.filter(
+      (r) => r.passedFirstAttempt && shortFormItems.includes(r.item),
+    ).length;
+
+    return {
+      evaluation: {
+        opening: evaluation.opening,
+        items: shortFormItems,
+        closing: evaluation.closing,
+        structure_commentary: evaluation.structure_commentary,
+      },
+      passedOnFirstAttempt,
+    };
+  }
+
   // ── Transcript helpers ─────────────────────────────────────────────────────
 
   /**
@@ -514,7 +938,8 @@ Please provide a corrected version of this ${item.type} with a valid evidence qu
    *
    * Checks:
    *  - Word count relative to recording duration (flag if < 10 WPM)
-   *  - Average word confidence (flag if < 0.5)
+   *  - Average word confidence (flag if < 0.5), computed over speech words only
+   *    (excluding silence and non-speech markers per Req 10.1)
    */
   private assessTranscriptQuality(
     segments: TranscriptSegment[],
@@ -528,11 +953,12 @@ Please provide a corrected version of this ${item.type} with a valid evidence qu
       }
     }
 
-    // Check average word confidence
+    // Check average word confidence — exclude silence/non-speech markers
     const allWords = segments.flatMap((s) => s.words);
-    if (allWords.length > 0) {
+    const speechWords = allWords.filter((w) => !isSilenceOrNonSpeechMarker(w.word));
+    if (speechWords.length > 0) {
       const avgConfidence =
-        allWords.reduce((sum, w) => sum + w.confidence, 0) / allWords.length;
+        speechWords.reduce((sum, w) => sum + w.confidence, 0) / speechWords.length;
       if (avgConfidence < MIN_AVERAGE_CONFIDENCE) {
         return true;
       }
@@ -556,6 +982,75 @@ Please provide a corrected version of this ${item.type} with a valid evidence qu
   }
 
   /**
+   * Apply [[Q:item-N]] and [[M:fieldName]] markers to a rendered item section.
+   *
+   * Markers are placed after terminal punctuation, before following whitespace.
+   * A sentence gets a [[Q:item-N]] marker if it contains the evidence quote text.
+   * A sentence gets [[M:fieldName]] markers for each metrics field it references.
+   * Multiple markers may appear on the same sentence.
+   */
+  private applyMarkers(
+    section: string,
+    itemIndex: number,
+    item: EvaluationItem,
+    metrics?: DeliveryMetrics,
+  ): string {
+    const sentences = splitSentences(section);
+    if (sentences.length === 0) return section;
+
+    // Normalize the evidence quote for fuzzy matching within sentences
+    const quoteNormalized = item.evidence_quote.toLowerCase().replace(/[^\w\s]/g, "").replace(/\s+/g, " ").trim();
+
+    const markedSentences = sentences.map((sentence) => {
+      let markers = "";
+
+      // Check if this sentence contains the evidence quote
+      const sentenceNormalized = sentence.toLowerCase().replace(/[^\w\s]/g, "").replace(/\s+/g, " ").trim();
+      if (quoteNormalized.length > 0 && sentenceNormalized.includes(quoteNormalized)) {
+        markers += `[[Q:item-${itemIndex}]]`;
+      }
+
+      // Check if this sentence references any metrics fields
+      if (metrics) {
+        const sentenceLower = sentence.toLowerCase();
+        const matchedFields = new Set<string>();
+        for (const [keyword, fieldName] of Object.entries(METRICS_KEYWORDS)) {
+          if (sentenceLower.includes(keyword) && !matchedFields.has(fieldName)) {
+            matchedFields.add(fieldName);
+          }
+        }
+        for (const fieldName of matchedFields) {
+          markers += `[[M:${fieldName}]]`;
+        }
+      }
+
+      if (markers.length === 0) return sentence;
+
+      // Place markers after terminal punctuation, before following whitespace
+      // Find the last terminal punctuation character
+      const terminalMatch = sentence.match(/[.!?][.!?]*$/);
+      if (terminalMatch) {
+        // Insert markers right after the terminal punctuation
+        return sentence + markers;
+      }
+
+      // No terminal punctuation — append markers at the end
+      return sentence + markers;
+    });
+
+    // Reconstruct the section by replacing original sentences with marked ones.
+    // We need to preserve the original whitespace structure between sentences.
+    let result = section;
+    for (let i = 0; i < sentences.length; i++) {
+      if (markedSentences[i] !== sentences[i]) {
+        result = result.replace(sentences[i], markedSentences[i]);
+      }
+    }
+
+    return result;
+  }
+
+  /**
    * Redact third-party names from the rendered script for TTS delivery.
    *
    * Per privacy steering rules:
@@ -570,36 +1065,199 @@ Please provide a corrected version of this ${item.type} with a valid evidence qu
    * a conservative approach — the LLM is instructed not to include names,
    * and this serves as a safety net.
    */
-  private redactThirdPartyNames(script: string, speakerName?: string): string {
-    if (!speakerName) {
-      // Without a speaker name, we can't distinguish speaker from third-party.
-      // Return as-is; the LLM prompt already instructs against including names.
-      return script;
+  /**
+     * Internal helper: redact third-party names in a text string.
+     * Uses a best-effort heuristic: capitalized words mid-sentence that look like
+     * proper person names are replaced with "a fellow member".
+     *
+     * Conservative: does not redact uncertain entities (places, orgs, brands).
+     * Preserves the speaker's own name.
+     */
+    private redactThirdPartyNames(script: string, speakerName?: string): string {
+      if (!speakerName) {
+        // Without a speaker name, we can't distinguish speaker from third-party.
+        // Return as-is; the LLM prompt already instructs against including names.
+        return script;
+      }
+
+      return this.redactText(script, speakerName);
     }
 
-    // Build a set of speaker name tokens to preserve (case-insensitive)
-    const speakerTokens = new Set(
-      speakerName.toLowerCase().split(/\s+/).filter(Boolean),
-    );
-
-    // Simple heuristic: find capitalized words that aren't at sentence start
-    // and aren't the speaker's name, then replace with "[a fellow member]"
-    const sentences = script.split(/(?<=[.!?])\s+/);
-    const redacted = sentences.map((sentence) => {
-      // Replace potential third-party names (capitalized words mid-sentence)
-      return sentence.replace(
-        /(?<=\s)([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)/g,
-        (match) => {
-          const matchTokens = match.toLowerCase().split(/\s+/);
-          // If any token matches the speaker name, preserve it
-          if (matchTokens.some((t) => speakerTokens.has(t))) {
-            return match;
-          }
-          return "[a fellow member]";
-        },
+    /**
+     * Core redaction logic: replaces third-party private individual names with
+     * "a fellow member" in the given text. Speaker's own name is preserved.
+     *
+     * Conservative heuristic:
+     * - Only redacts capitalized words that appear mid-sentence (not sentence-start)
+     * - Skips common non-name capitalized words (places, orgs, brands, common English words)
+     * - Skips words that match any token in the speaker's name
+     * - Does NOT redact uncertain entities
+     */
+    private redactText(text: string, speakerName: string): string {
+      // Build a set of speaker name tokens to preserve (case-insensitive)
+      const speakerTokens = new Set(
+        speakerName.toLowerCase().split(/\s+/).filter(Boolean),
       );
-    });
 
-    return redacted.join(" ");
-  }
+      // Common capitalized words that are NOT person names — conservative exclusion list
+      const nonNameWords = new Set([
+        // Common English words that may appear capitalized
+        "i", "the", "a", "an", "this", "that", "these", "those",
+        "my", "your", "his", "her", "its", "our", "their",
+        // Days, months
+        "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday",
+        "january", "february", "march", "april", "may", "june", "july",
+        "august", "september", "october", "november", "december",
+        // Common place/org indicators — if the word is one of these, skip
+        "toastmasters", "club", "university", "college", "school", "church",
+        "hospital", "company", "corporation", "inc", "llc", "ltd",
+        "street", "avenue", "road", "boulevard", "park", "city", "town",
+        "state", "country", "america", "american", "english", "spanish",
+        "french", "german", "chinese", "japanese", "african", "european",
+        "asian", "christian", "muslim", "jewish", "buddhist",
+        // Common words that start sentences or appear after quotes
+        "one", "next", "first", "second", "third", "also", "however",
+        "overall", "finally", "additionally", "furthermore", "meanwhile",
+        "something", "when", "where", "what", "who", "how", "why",
+        "thank", "thanks", "great", "good", "well", "keep",
+      ]);
+
+      const sentences = text.split(/(?<=[.!?])\s+/);
+      const redacted = sentences.map((sentence) => {
+        // Replace potential third-party names (capitalized words mid-sentence)
+        return sentence.replace(
+          /(?<=\s)([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)/g,
+          (match) => {
+            const matchTokens = match.toLowerCase().split(/\s+/);
+
+            // If any token matches the speaker name, preserve it
+            if (matchTokens.some((t) => speakerTokens.has(t))) {
+              return match;
+            }
+
+            // If all tokens are in the non-name exclusion list, preserve (conservative)
+            if (matchTokens.every((t) => nonNameWords.has(t))) {
+              return match;
+            }
+
+            return "a fellow member";
+          },
+        );
+      });
+
+      return redacted.join(" ");
+    }
+
+    /**
+     * Public redaction method (Pipeline Stage 8).
+     *
+     * Redacts third-party private individual names from both the script and
+     * the structured evaluation, producing:
+     * - `scriptRedacted`: the script with names replaced by "a fellow member"
+     * - `evaluationPublic`: a StructuredEvaluationPublic with redacted evidence quotes
+     *
+     * The replacement phrase "a fellow member" is identical across scriptRedacted
+     * and evaluationPublic.items[*].evidence_quote.
+     *
+     * Conservative: does not redact uncertain entities (places, orgs, brands).
+     * Preserves the speaker's own name (from consent.speakerName).
+     *
+     * Requirements: 8.1, 8.2, 8.3, 8.4, 8.5
+     */
+    redact(input: RedactionInput): RedactionOutput {
+      const { script, evaluation, consent } = input;
+      const speakerName = consent.speakerName;
+
+      // Redact the script
+      const scriptRedacted = this.redactText(script, speakerName);
+
+      // Redact the evaluation to produce the public version
+      // All user-visible text fields must be redacted (Req 8.4)
+      const publicItems: EvaluationItemPublic[] = evaluation.items.map((item) => ({
+        type: item.type,
+        summary: this.redactText(item.summary, speakerName),
+        explanation: this.redactText(item.explanation, speakerName),
+        evidence_quote: this.redactText(item.evidence_quote, speakerName),
+        evidence_timestamp: item.evidence_timestamp,
+      }));
+
+      const evaluationPublic: StructuredEvaluationPublic = {
+        opening: this.redactText(evaluation.opening, speakerName),
+        items: publicItems,
+        closing: this.redactText(evaluation.closing, speakerName),
+        structure_commentary: evaluation.structure_commentary,
+      };
+
+      return { scriptRedacted, evaluationPublic };
+    }
+
+    // ── Consistency Monitoring Telemetry (Req 7.1, 7.3, 7.4, 7.5) ────────────
+
+    /**
+     * Retrieve an embedding vector for the given text using the configured
+     * embedding model. Returns null if the embeddings API is not available.
+     *
+     * This is a separate method to allow mocking in tests.
+     */
+    async getEmbedding(text: string): Promise<number[] | null> {
+      if (!this.openai.embeddings) {
+        return null;
+      }
+      const response = await this.openai.embeddings.create({
+        model: EMBEDDING_MODEL,
+        input: text,
+      });
+      if (response.data.length === 0) {
+        return null;
+      }
+      return response.data[0].embedding;
+    }
+
+    /**
+     * Log consistency telemetry for the given evaluation.
+     *
+     * This method is async and non-blocking — it MUST NOT block or modify
+     * evaluation delivery (Design Decision #7). Errors are caught and logged,
+     * never thrown.
+     *
+     * Behavior:
+     * - Extracts item summaries from the evaluation
+     * - Computes an embedding using the fixed EMBEDDING_MODEL
+     * - If a previous evaluation's embedding is cached, computes cosine similarity
+     * - Logs the similarity score (threshold: 0.75 per Req 7.3)
+     * - Caches the current embedding for future comparison
+     *
+     * Requirements: 7.1, 7.3, 7.4, 7.5
+     */
+    async logConsistencyTelemetry(evaluation: StructuredEvaluation): Promise<void> {
+      try {
+        // Extract summaries from all items to form a single text for embedding
+        const summaries = evaluation.items.map((item) => item.summary).join(". ");
+
+        // Get embedding using the fixed model (Req 7.5)
+        const embedding = await this.getEmbedding(summaries);
+
+        if (!embedding) {
+          console.log("[ConsistencyTelemetry] Embeddings API not available, skipping consistency check");
+          return;
+        }
+
+        // Compare with previous evaluation's embedding if available
+        if (this.lastEmbedding) {
+          const similarity = cosineSimilarity(this.lastEmbedding, embedding);
+          const meetsThreshold = similarity >= CONSISTENCY_SIMILARITY_THRESHOLD;
+          console.log(
+            `[ConsistencyTelemetry] Summary similarity: ${similarity.toFixed(4)} (threshold: ${CONSISTENCY_SIMILARITY_THRESHOLD}, meets: ${meetsThreshold})`,
+          );
+        } else {
+          console.log("[ConsistencyTelemetry] First evaluation — no previous embedding to compare");
+        }
+
+        // Cache current embedding for next comparison
+        this.lastEmbedding = embedding;
+      } catch (err) {
+        // Non-blocking: log and continue — never throw (Design Decision #7)
+        console.warn("[ConsistencyTelemetry] Failed to compute consistency:", err);
+      }
+    }
 }
