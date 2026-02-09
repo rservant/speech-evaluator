@@ -268,7 +268,7 @@ function handleBinaryMessage(
 
   // Buffer audio chunk and forward to Deepgram live transcription
   // Privacy: audio chunks are in-memory only, never written to disk
-  logger.debug(`[handleBinaryMessage] Feeding audio chunk (${data.length} bytes) for session ${connState.sessionId}`);
+  // too verbose logger.debug(`[handleBinaryMessage] Feeding audio chunk (${data.length} bytes) for session ${connState.sessionId}`);
   sessionManager.feedAudio(connState.sessionId, Buffer.from(data));
 }
 
