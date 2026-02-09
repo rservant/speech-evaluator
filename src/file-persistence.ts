@@ -8,7 +8,7 @@
 
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import type { Session, TranscriptSegment, DeliveryMetrics, StructuredEvaluation } from "./types.js";
+import type { Session, TranscriptSegment, DeliveryMetrics, StructuredEvaluation, StructuredEvaluationPublic, ConsentRecord } from "./types.js";
 
 /**
  * Formats a number of seconds into `[MM:SS]` timestamp format.
@@ -45,8 +45,15 @@ export function formatMetrics(metrics: DeliveryMetrics): string {
  * Renders the evaluation.txt content with a session metadata header
  * followed by the evaluation text.
  *
- * Header includes: date, session ID, duration, speaker name (if provided).
- * Body uses the evaluationScript if available, otherwise renders from StructuredEvaluation.
+ * Header includes: date, session ID, duration, speaker name (from consent if available),
+ * and consent metadata (confirmed status, timestamp).
+ * Body uses the evaluationScript if available, otherwise renders from
+ * evaluationPublic (redacted) or evaluation (internal) as fallback.
+ *
+ * Phase 2 changes (Req 2.6, 8.4):
+ * - Speaker name sourced from session.consent?.speakerName
+ * - Consent metadata included in header
+ * - evaluationPublic used for structured rendering (never saves internal unredacted evaluation)
  */
 export function formatEvaluation(session: Session): string {
   const lines: string[] = [];
@@ -63,8 +70,18 @@ export function formatEvaluation(session: Session): string {
     lines.push(`Duration: ${session.metrics.durationFormatted}`);
   }
 
-  if (session.speakerName) {
-    lines.push(`Speaker: ${session.speakerName}`);
+  // Use consent.speakerName as the primary source (Phase 2), fall back to deprecated speakerName
+  const speakerName = session.consent?.speakerName ?? session.speakerName;
+  if (speakerName) {
+    lines.push(`Speaker: ${speakerName}`);
+  }
+
+  // Include consent metadata in header (Req 2.6)
+  if (session.consent) {
+    lines.push(`Consent: ${session.consent.consentConfirmed ? "Confirmed" : "Not Confirmed"}`);
+    const ts = session.consent.consentTimestamp;
+    const tsStr = ts instanceof Date && !isNaN(ts.getTime()) ? ts.toISOString() : "N/A";
+    lines.push(`Consent Timestamp: ${tsStr}`);
   }
 
   lines.push("");
@@ -72,8 +89,11 @@ export function formatEvaluation(session: Session): string {
   lines.push("");
 
   // Body: prefer evaluationScript, fall back to rendering StructuredEvaluation
+  // When rendering from structured data, use evaluationPublic (redacted) if available (Req 8.4)
   if (session.evaluationScript) {
     lines.push(session.evaluationScript);
+  } else if (session.evaluationPublic) {
+    lines.push(renderEvaluationText(session.evaluationPublic));
   } else if (session.evaluation) {
     lines.push(renderEvaluationText(session.evaluation));
   }
@@ -82,9 +102,12 @@ export function formatEvaluation(session: Session): string {
 }
 
 /**
- * Renders a StructuredEvaluation into plain text when no evaluationScript is available.
+ * Renders a StructuredEvaluation or StructuredEvaluationPublic into plain text
+ * when no evaluationScript is available.
+ * Both types share the same shape (opening, items, closing) so this function
+ * accepts either.
  */
-function renderEvaluationText(evaluation: StructuredEvaluation): string {
+function renderEvaluationText(evaluation: StructuredEvaluation | StructuredEvaluationPublic): string {
   const parts: string[] = [];
 
   parts.push(evaluation.opening);
@@ -185,6 +208,21 @@ export class FilePersistence {
       } catch (err) {
         console.warn("Failed to save TTS audio file:", err);
       }
+    }
+
+    // Write consent.json (if consent record exists) — Req 2.6
+    // Serializes the ConsentRecord for round-trip verification (Property 3)
+    if (session.consent) {
+      const consentPath = join(dirPath, "consent.json");
+      const ts = session.consent.consentTimestamp;
+      const tsStr = ts instanceof Date && !isNaN(ts.getTime()) ? ts.toISOString() : null;
+      const consentContent = JSON.stringify({
+        speakerName: session.consent.speakerName,
+        consentConfirmed: session.consent.consentConfirmed,
+        consentTimestamp: tsStr,
+      }, null, 2);
+      await writeFile(consentPath, consentContent, "utf-8");
+      savedPaths.push(consentPath);
     }
 
     // Mark session as saved

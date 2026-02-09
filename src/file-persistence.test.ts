@@ -18,6 +18,8 @@ import type {
   TranscriptSegment,
   DeliveryMetrics,
   StructuredEvaluation,
+  StructuredEvaluationPublic,
+  ConsentRecord,
 } from "./types.js";
 import { SessionState } from "./types.js";
 
@@ -34,11 +36,15 @@ function makeSession(overrides: Partial<Session> = {}): Session {
     audioChunks: [],
     metrics: null,
     evaluation: null,
+    evaluationPublic: null,
     evaluationScript: null,
     ttsAudioCache: null,
     qualityWarning: false,
     outputsSaved: false,
     runId: 1,
+    consent: null,
+    timeLimitSeconds: 120,
+    evaluationPassRate: null,
     ...overrides,
   };
 }
@@ -84,6 +90,17 @@ function makeMetrics(): DeliveryMetrics {
     pauseCount: 4,
     totalPauseDurationSeconds: 8.5,
     averagePauseDurationSeconds: 2.125,
+    intentionalPauseCount: 2,
+    hesitationPauseCount: 2,
+    classifiedPauses: [],
+    energyVariationCoefficient: 0.35,
+    energyProfile: {
+      windowDurationMs: 250,
+      windows: [],
+      coefficientOfVariation: 0.35,
+      silenceThreshold: 0.1,
+    },
+    classifiedFillers: [],
   };
 }
 
@@ -114,6 +131,55 @@ function makeEvaluation(): StructuredEvaluation {
       },
     ],
     closing: "Overall, a well-delivered speech with room to grow. Keep it up!",
+    structure_commentary: {
+      opening_comment: null,
+      body_comment: null,
+      closing_comment: null,
+    },
+  };
+}
+
+function makeConsent(overrides: Partial<ConsentRecord> = {}): ConsentRecord {
+  return {
+    speakerName: "Alice",
+    consentConfirmed: true,
+    consentTimestamp: new Date("2025-01-15T14:29:00.000Z"),
+    ...overrides,
+  };
+}
+
+function makeEvaluationPublic(): StructuredEvaluationPublic {
+  return {
+    opening: "That was a compelling speech about leadership.",
+    items: [
+      {
+        type: "commendation",
+        summary: "Strong opening",
+        evidence_quote: "Hello everyone today I want to talk about leadership",
+        evidence_timestamp: 0,
+        explanation: "You immediately engaged the audience with a clear topic statement.",
+      },
+      {
+        type: "commendation",
+        summary: "Clear structure",
+        evidence_quote: "a fellow member made a great point",
+        evidence_timestamp: 15.3,
+        explanation: "Your speech had a logical flow that was easy to follow.",
+      },
+      {
+        type: "recommendation",
+        summary: "Stronger conclusion",
+        evidence_quote: "In conclusion leadership starts with listening",
+        evidence_timestamp: 90.7,
+        explanation: "Consider ending with a call to action to leave a lasting impression.",
+      },
+    ],
+    closing: "Overall, a well-delivered speech with room to grow. Keep it up!",
+    structure_commentary: {
+      opening_comment: null,
+      body_comment: null,
+      closing_comment: null,
+    },
   };
 }
 
@@ -284,6 +350,100 @@ describe("FilePersistence", () => {
       const result = formatEvaluation(session);
 
       expect(result).toContain("Date: 2025-06-20");
+    });
+
+    // ─── Phase 2: Consent metadata in evaluation header (Req 2.6) ─────────
+
+    it("includes consent metadata in header when consent is present", () => {
+      const consent = makeConsent();
+      const session = makeSession({
+        metrics: makeMetrics(),
+        consent,
+      });
+      const result = formatEvaluation(session);
+
+      expect(result).toContain("Speaker: Alice");
+      expect(result).toContain("Consent: Confirmed");
+      expect(result).toContain("Consent Timestamp: 2025-01-15T14:29:00.000Z");
+    });
+
+    it("shows 'Not Confirmed' when consent is not confirmed", () => {
+      const consent = makeConsent({ consentConfirmed: false });
+      const session = makeSession({ consent });
+      const result = formatEvaluation(session);
+
+      expect(result).toContain("Consent: Not Confirmed");
+    });
+
+    it("uses consent.speakerName over deprecated speakerName", () => {
+      const consent = makeConsent({ speakerName: "ConsentAlice" });
+      const session = makeSession({
+        consent,
+        speakerName: "DeprecatedBob",
+      });
+      const result = formatEvaluation(session);
+
+      expect(result).toContain("Speaker: ConsentAlice");
+      expect(result).not.toContain("Speaker: DeprecatedBob");
+    });
+
+    it("falls back to deprecated speakerName when consent is null", () => {
+      const session = makeSession({
+        consent: null,
+        speakerName: "FallbackBob",
+      });
+      const result = formatEvaluation(session);
+
+      expect(result).toContain("Speaker: FallbackBob");
+      expect(result).not.toContain("Consent:");
+    });
+
+    it("omits consent lines when consent is null", () => {
+      const session = makeSession({ consent: null });
+      const result = formatEvaluation(session);
+
+      expect(result).not.toContain("Consent:");
+      expect(result).not.toContain("Consent Timestamp:");
+    });
+
+    // ─── Phase 2: evaluationPublic rendering (Req 8.4) ───────────────────
+
+    it("renders evaluationPublic when no evaluationScript and evaluationPublic is available", () => {
+      const evalPublic = makeEvaluationPublic();
+      const session = makeSession({
+        evaluation: makeEvaluation(),
+        evaluationPublic: evalPublic,
+        evaluationScript: null,
+      });
+      const result = formatEvaluation(session);
+
+      // Should use evaluationPublic (which has redacted evidence quote)
+      expect(result).toContain("a fellow member made a great point");
+    });
+
+    it("prefers evaluationScript over evaluationPublic", () => {
+      const session = makeSession({
+        evaluation: makeEvaluation(),
+        evaluationPublic: makeEvaluationPublic(),
+        evaluationScript: "This is the rendered script.",
+      });
+      const result = formatEvaluation(session);
+
+      expect(result).toContain("This is the rendered script.");
+      // Should NOT contain the structured rendering
+      expect(result).not.toContain("Commendation: Strong opening");
+    });
+
+    it("falls back to internal evaluation when both evaluationScript and evaluationPublic are null", () => {
+      const session = makeSession({
+        evaluation: makeEvaluation(),
+        evaluationPublic: null,
+        evaluationScript: null,
+      });
+      const result = formatEvaluation(session);
+
+      expect(result).toContain("Commendation: Strong opening");
+      expect(result).toContain("Recommendation: Stronger conclusion");
     });
   });
 
@@ -504,6 +664,142 @@ describe("FilePersistence", () => {
       const content = await readFile(paths[2], "utf-8");
 
       expect(content).toContain("Speaker: Bob");
+    });
+
+    // ─── Phase 2: Consent JSON file (Req 2.6, Property 3) ────────────────
+
+    it("writes consent.json when consent record exists", async () => {
+      const consent = makeConsent();
+      const session = makeSession({
+        transcript: makeSegments(),
+        metrics: makeMetrics(),
+        evaluation: makeEvaluation(),
+        evaluationScript: "Great speech!",
+        consent,
+      });
+
+      const paths = await persistence.saveSession(session);
+
+      // Should have 4 paths: transcript, metrics, evaluation, consent
+      expect(paths).toHaveLength(4);
+      expect(paths[3]).toContain("consent.json");
+
+      const content = await readFile(paths[3], "utf-8");
+      const parsed = JSON.parse(content);
+
+      expect(parsed.speakerName).toBe("Alice");
+      expect(parsed.consentConfirmed).toBe(true);
+      expect(parsed.consentTimestamp).toBe("2025-01-15T14:29:00.000Z");
+    });
+
+    it("consent.json round-trips to equivalent ConsentRecord", async () => {
+      const consent = makeConsent({
+        speakerName: "Charlie",
+        consentConfirmed: true,
+        consentTimestamp: new Date("2025-03-10T09:15:30.000Z"),
+      });
+      const session = makeSession({
+        transcript: makeSegments(),
+        metrics: makeMetrics(),
+        evaluation: makeEvaluation(),
+        evaluationScript: "Great speech!",
+        consent,
+      });
+
+      const paths = await persistence.saveSession(session);
+      const consentPath = paths.find((p) => p.endsWith("consent.json"))!;
+      const content = await readFile(consentPath, "utf-8");
+      const parsed = JSON.parse(content);
+
+      // Round-trip: reconstruct ConsentRecord from saved JSON
+      const restored: ConsentRecord = {
+        speakerName: parsed.speakerName,
+        consentConfirmed: parsed.consentConfirmed,
+        consentTimestamp: new Date(parsed.consentTimestamp),
+      };
+
+      expect(restored.speakerName).toBe(consent.speakerName);
+      expect(restored.consentConfirmed).toBe(consent.consentConfirmed);
+      expect(restored.consentTimestamp.toISOString()).toBe(consent.consentTimestamp.toISOString());
+    });
+
+    it("does not write consent.json when consent is null", async () => {
+      const session = makeSession({
+        transcript: makeSegments(),
+        metrics: makeMetrics(),
+        evaluation: makeEvaluation(),
+        evaluationScript: "Great speech!",
+        consent: null,
+      });
+
+      const paths = await persistence.saveSession(session);
+
+      expect(paths).toHaveLength(3);
+      expect(paths.some((p) => p.endsWith("consent.json"))).toBe(false);
+
+      const entries = await readdir(tempDir);
+      const dirPath = join(tempDir, entries[0]);
+      const files = await readdir(dirPath);
+      expect(files.sort()).toEqual(["evaluation.txt", "metrics.json", "transcript.txt"]);
+    });
+
+    it("includes consent.json in directory listing alongside other files", async () => {
+      const session = makeSession({
+        transcript: makeSegments(),
+        metrics: makeMetrics(),
+        evaluation: makeEvaluation(),
+        evaluationScript: "Great speech!",
+        consent: makeConsent(),
+      });
+
+      await persistence.saveSession(session);
+
+      const entries = await readdir(tempDir);
+      const dirPath = join(tempDir, entries[0]);
+      const files = await readdir(dirPath);
+      expect(files.sort()).toEqual([
+        "consent.json",
+        "evaluation.txt",
+        "metrics.json",
+        "transcript.txt",
+      ]);
+    });
+
+    it("includes consent metadata in evaluation.txt header when consent exists", async () => {
+      const consent = makeConsent();
+      const session = makeSession({
+        transcript: makeSegments(),
+        metrics: makeMetrics(),
+        evaluation: makeEvaluation(),
+        evaluationScript: "Great speech!",
+        consent,
+      });
+
+      const paths = await persistence.saveSession(session);
+      const evalContent = await readFile(paths[2], "utf-8");
+
+      expect(evalContent).toContain("Speaker: Alice");
+      expect(evalContent).toContain("Consent: Confirmed");
+      expect(evalContent).toContain("Consent Timestamp:");
+    });
+
+    // ─── Phase 2: Redacted evaluation saving (Req 8.4) ───────────────────
+
+    it("uses evaluationPublic for structured rendering in saved evaluation.txt", async () => {
+      const evalPublic = makeEvaluationPublic();
+      const session = makeSession({
+        transcript: makeSegments(),
+        metrics: makeMetrics(),
+        evaluation: makeEvaluation(),
+        evaluationPublic: evalPublic,
+        evaluationScript: null,
+      });
+
+      const paths = await persistence.saveSession(session);
+      const content = await readFile(paths[2], "utf-8");
+
+      // Should use evaluationPublic (redacted) not internal evaluation
+      expect(content).toContain("a fellow member made a great point");
     });
 
     // ─── TTS Audio File Persistence (Requirements 4.1, 4.2, 4.4) ─────────

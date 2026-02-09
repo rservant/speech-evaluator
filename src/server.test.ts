@@ -147,6 +147,12 @@ async function createClient(server: AppServer): Promise<TestClient> {
   return client;
 }
 
+/** Sets consent on a client so start_recording is allowed (Phase 2 consent gating) */
+async function setConsentForRecording(client: TestClient): Promise<void> {
+  client.sendJson({ type: "set_consent", speakerName: "TestSpeaker", consentConfirmed: true });
+  await client.nextMessageOfType("consent_status");
+}
+
 // ─── Tests ──────────────────────────────────────────────────────────────────────
 
 describe("Server", () => {
@@ -199,6 +205,7 @@ describe("Server", () => {
       expect(sessions[0].id).not.toBe(sessions[1].id);
 
       // Verify they are independent: start recording on one, other is unaffected
+      await setConsentForRecording(c1);
       c1.sendJson({ type: "start_recording" });
       const msg = await c1.nextMessageOfType("state_change");
       expect(msg).toEqual({ type: "state_change", state: SessionState.RECORDING });
@@ -219,6 +226,7 @@ describe("Server", () => {
       });
 
       // Verify format was accepted by successfully starting recording
+      await setConsentForRecording(c);
       c.sendJson({ type: "start_recording" });
       const msg = await c.nextMessageOfType("state_change");
       expect(msg).toEqual({ type: "state_change", state: SessionState.RECORDING });
@@ -313,6 +321,7 @@ describe("Server", () => {
       const c = track(await createClient(server));
 
       c.sendJson({ type: "audio_format", ...EXPECTED_FORMAT });
+      await setConsentForRecording(c);
       c.sendJson({ type: "start_recording" });
       await c.nextMessageOfType("state_change"); // RECORDING
 
@@ -326,6 +335,7 @@ describe("Server", () => {
       const c = track(await createClient(server));
 
       c.sendJson({ type: "audio_format", ...EXPECTED_FORMAT });
+      await setConsentForRecording(c);
       c.sendJson({ type: "start_recording" });
       await c.nextMessageOfType("state_change"); // RECORDING
 
@@ -348,6 +358,7 @@ describe("Server", () => {
       const c = track(await createClient(server));
 
       c.sendJson({ type: "audio_format", ...EXPECTED_FORMAT });
+      await setConsentForRecording(c);
       c.sendJson({ type: "start_recording" });
       await c.nextMessageOfType("state_change"); // RECORDING
 
@@ -377,6 +388,7 @@ describe("Server", () => {
     it("should handle start_recording → state_change to RECORDING", async () => {
       const c = track(await createClient(server));
 
+      await setConsentForRecording(c);
       c.sendJson({ type: "start_recording" });
       const msg = await c.nextMessageOfType("state_change");
 
@@ -386,6 +398,7 @@ describe("Server", () => {
     it("should handle stop_recording → state_change to PROCESSING", async () => {
       const c = track(await createClient(server));
 
+      await setConsentForRecording(c);
       c.sendJson({ type: "start_recording" });
       await c.nextMessageOfType("state_change"); // RECORDING
 
@@ -398,6 +411,7 @@ describe("Server", () => {
     it("should handle deliver_evaluation → state_change to DELIVERING", async () => {
       const c = track(await createClient(server));
 
+      await setConsentForRecording(c);
       c.sendJson({ type: "start_recording" });
       await c.nextMessageOfType("state_change"); // RECORDING
 
@@ -426,6 +440,7 @@ describe("Server", () => {
     it("should transition to IDLE from RECORDING", async () => {
       const c = track(await createClient(server));
 
+      await setConsentForRecording(c);
       c.sendJson({ type: "start_recording" });
       await c.nextMessageOfType("state_change"); // RECORDING
 
@@ -438,6 +453,7 @@ describe("Server", () => {
     it("should transition to IDLE from PROCESSING", async () => {
       const c = track(await createClient(server));
 
+      await setConsentForRecording(c);
       c.sendJson({ type: "start_recording" });
       await c.nextMessageOfType("state_change"); // RECORDING
       c.sendJson({ type: "stop_recording" });
@@ -461,6 +477,7 @@ describe("Server", () => {
     it("should stop the elapsed time ticker", async () => {
       const c = track(await createClient(server));
 
+      await setConsentForRecording(c);
       c.sendJson({ type: "start_recording" });
       await c.nextMessageOfType("state_change"); // RECORDING
 
@@ -486,6 +503,7 @@ describe("Server", () => {
     it("should send elapsed_time messages during RECORDING", async () => {
       const c = track(await createClient(server));
 
+      await setConsentForRecording(c);
       c.sendJson({ type: "start_recording" });
       await c.nextMessageOfType("state_change"); // RECORDING
 
@@ -501,6 +519,7 @@ describe("Server", () => {
     it("should stop sending elapsed_time after stop_recording", async () => {
       const c = track(await createClient(server));
 
+      await setConsentForRecording(c);
       c.sendJson({ type: "start_recording" });
       await c.nextMessageOfType("state_change"); // RECORDING
       await c.nextMessageOfType("elapsed_time"); // wait for one tick
@@ -536,6 +555,7 @@ describe("Server", () => {
     it("should send quality warning after stop_recording when transcription had issues", async () => {
       const c = track(await createClient(server));
 
+      await setConsentForRecording(c);
       c.sendJson({ type: "start_recording" });
       await c.nextMessageOfType("state_change"); // RECORDING
 
@@ -567,7 +587,7 @@ describe("Server", () => {
       vi.spyOn(server.sessionManager, "generateEvaluation").mockImplementation(async (sid) => {
         const session = server.sessionManager.getSession(sid);
         session.state = SessionState.DELIVERING;
-        session.evaluation = { opening: "Great speech.", items: [], closing: "Well done." };
+        session.evaluation = { opening: "Great speech.", items: [], closing: "Well done.", structure_commentary: { opening_comment: null, body_comment: null, closing_comment: null } };
         session.evaluationScript = "Great speech. Well done.";
         return Buffer.from("fake-tts-audio");
       });
@@ -576,6 +596,7 @@ describe("Server", () => {
         session.state = SessionState.IDLE;
       });
 
+      await setConsentForRecording(c);
       c.sendJson({ type: "start_recording" });
       await c.nextMessageOfType("state_change"); // RECORDING
 
@@ -605,7 +626,7 @@ describe("Server", () => {
       vi.spyOn(server.sessionManager, "generateEvaluation").mockImplementation(async (sid) => {
         const session = server.sessionManager.getSession(sid);
         session.state = SessionState.DELIVERING;
-        session.evaluation = { opening: "Great speech.", items: [], closing: "Well done." };
+        session.evaluation = { opening: "Great speech.", items: [], closing: "Well done.", structure_commentary: { opening_comment: null, body_comment: null, closing_comment: null } };
         session.evaluationScript = "Great speech. Well done.";
         return undefined; // TTS failed
       });
@@ -614,6 +635,7 @@ describe("Server", () => {
         session.state = SessionState.IDLE;
       });
 
+      await setConsentForRecording(c);
       c.sendJson({ type: "start_recording" });
       await c.nextMessageOfType("state_change"); // RECORDING
 
@@ -648,6 +670,7 @@ describe("Server", () => {
         throw new Error("OpenAI API rate limit exceeded");
       });
 
+      await setConsentForRecording(c);
       c.sendJson({ type: "start_recording" });
       await c.nextMessageOfType("state_change"); // RECORDING
 
@@ -679,6 +702,7 @@ describe("Server", () => {
         ];
       });
 
+      await setConsentForRecording(c);
       c.sendJson({ type: "start_recording" });
       await c.nextMessageOfType("state_change"); // RECORDING
 
@@ -699,6 +723,7 @@ describe("Server", () => {
       const c = track(await createClient(server));
 
       c.sendJson({ type: "audio_format", ...EXPECTED_FORMAT });
+      await setConsentForRecording(c);
       c.sendJson({ type: "start_recording" });
       await c.nextMessageOfType("state_change"); // RECORDING
 
@@ -714,6 +739,7 @@ describe("Server", () => {
       const c = track(await createClient(server));
 
       c.sendJson({ type: "audio_format", ...EXPECTED_FORMAT });
+      await setConsentForRecording(c);
       c.sendJson({ type: "start_recording" });
       await c.nextMessageOfType("state_change"); // RECORDING
 
@@ -739,7 +765,7 @@ describe("Server", () => {
       vi.spyOn(server.sessionManager, "generateEvaluation").mockImplementation(async (sid) => {
         const session = server.sessionManager.getSession(sid);
         session.state = SessionState.DELIVERING;
-        session.evaluation = { opening: "Great speech.", items: [], closing: "Well done." };
+        session.evaluation = { opening: "Great speech.", items: [], closing: "Well done.", structure_commentary: { opening_comment: null, body_comment: null, closing_comment: null } };
         session.evaluationScript = "Great speech. Well done.";
         session.ttsAudioCache = Buffer.from("fake-tts-audio");
         return Buffer.from("fake-tts-audio");
@@ -750,6 +776,7 @@ describe("Server", () => {
       });
 
       // Go through full lifecycle: start → stop → deliver → wait for IDLE
+      await setConsentForRecording(c);
       c.sendJson({ type: "start_recording" });
       await c.nextMessageOfType("state_change"); // RECORDING
 
@@ -803,6 +830,7 @@ describe("Server", () => {
       const c = track(await createClient(server));
 
       // Start recording to put session in RECORDING state
+      await setConsentForRecording(c);
       c.sendJson({ type: "start_recording" });
       await c.nextMessageOfType("state_change"); // RECORDING
 
@@ -832,6 +860,196 @@ describe("Server", () => {
       const msg = await c.nextMessageOfType("error");
 
       expect((msg as { message: string }).message).toContain("Unknown message type");
+    });
+  });
+
+  // ─── Consent Handlers (Task 11.2) ──────────────────────────────────────────
+
+  describe("set_consent", () => {
+    it("should set consent and respond with consent_status", async () => {
+      const c = track(await createClient(server));
+
+      c.sendJson({ type: "set_consent", speakerName: "Alice", consentConfirmed: true });
+      const msg = await c.nextMessageOfType("consent_status");
+
+      expect(msg.type).toBe("consent_status");
+      const consent = (msg as unknown as { consent: { speakerName: string; consentConfirmed: boolean; consentTimestamp: string } }).consent;
+      expect(consent.speakerName).toBe("Alice");
+      expect(consent.consentConfirmed).toBe(true);
+      expect(consent.consentTimestamp).toBeDefined();
+    });
+
+    it("should allow setting consent with consentConfirmed=false", async () => {
+      const c = track(await createClient(server));
+
+      c.sendJson({ type: "set_consent", speakerName: "Bob", consentConfirmed: false });
+      const msg = await c.nextMessageOfType("consent_status");
+
+      const consent = (msg as { consent: { speakerName: string; consentConfirmed: boolean } }).consent;
+      expect(consent.speakerName).toBe("Bob");
+      expect(consent.consentConfirmed).toBe(false);
+    });
+
+    it("should return error when setting consent in non-IDLE state", async () => {
+      const c = track(await createClient(server));
+
+      // Set consent and start recording to move out of IDLE
+      c.sendJson({ type: "set_consent", speakerName: "Alice", consentConfirmed: true });
+      await c.nextMessageOfType("consent_status");
+
+      c.sendJson({ type: "start_recording" });
+      await c.nextMessageOfType("state_change"); // RECORDING
+
+      // Try to change consent while recording
+      c.sendJson({ type: "set_consent", speakerName: "Bob", consentConfirmed: true });
+      const errorMsg = await c.nextMessageOfType("error");
+
+      expect((errorMsg as { message: string }).message).toContain("Cannot modify consent");
+      expect((errorMsg as { recoverable: boolean }).recoverable).toBe(true);
+    });
+
+    it("should allow updating consent while still in IDLE", async () => {
+      const c = track(await createClient(server));
+
+      c.sendJson({ type: "set_consent", speakerName: "Alice", consentConfirmed: false });
+      await c.nextMessageOfType("consent_status");
+
+      c.sendJson({ type: "set_consent", speakerName: "Alice", consentConfirmed: true });
+      const msg = await c.nextMessageOfType("consent_status");
+
+      const consent = (msg as { consent: { consentConfirmed: boolean } }).consent;
+      expect(consent.consentConfirmed).toBe(true);
+    });
+  });
+
+  // ─── Revoke Consent (Task 11.2) ────────────────────────────────────────────
+
+  describe("revoke_consent", () => {
+    it("should purge session data and respond with data_purged", async () => {
+      const c = track(await createClient(server));
+
+      // Set consent first
+      c.sendJson({ type: "set_consent", speakerName: "Alice", consentConfirmed: true });
+      await c.nextMessageOfType("consent_status");
+
+      c.sendJson({ type: "revoke_consent" });
+      const purgeMsg = await c.nextMessageOfType("data_purged");
+
+      expect(purgeMsg).toEqual({ type: "data_purged", reason: "opt_out" });
+
+      // Should also get state_change to IDLE
+      const stateMsg = await c.nextMessageOfType("state_change");
+      expect(stateMsg).toEqual({ type: "state_change", state: SessionState.IDLE });
+    });
+
+    it("should purge data during RECORDING state", async () => {
+      const c = track(await createClient(server));
+
+      c.sendJson({ type: "set_consent", speakerName: "Alice", consentConfirmed: true });
+      await c.nextMessageOfType("consent_status");
+
+      c.sendJson({ type: "start_recording" });
+      await c.nextMessageOfType("state_change"); // RECORDING
+
+      c.sendJson({ type: "revoke_consent" });
+      const purgeMsg = await c.nextMessageOfType("data_purged");
+      expect(purgeMsg).toEqual({ type: "data_purged", reason: "opt_out" });
+
+      const stateMsg = await c.nextMessageOfType("state_change");
+      expect(stateMsg).toEqual({ type: "state_change", state: SessionState.IDLE });
+
+      // Verify session data is purged
+      const sessions = Array.from(
+        (server.sessionManager as unknown as { sessions: Map<string, Session> }).sessions.values(),
+      );
+      const session = sessions[0];
+      expect(session.consent).toBeNull();
+      expect(session.transcript).toEqual([]);
+      expect(session.audioChunks).toEqual([]);
+      expect(session.evaluation).toBeNull();
+    });
+
+    it("should work even when no consent was set", async () => {
+      const c = track(await createClient(server));
+
+      c.sendJson({ type: "revoke_consent" });
+      const purgeMsg = await c.nextMessageOfType("data_purged");
+      expect(purgeMsg).toEqual({ type: "data_purged", reason: "opt_out" });
+
+      const stateMsg = await c.nextMessageOfType("state_change");
+      expect(stateMsg).toEqual({ type: "state_change", state: SessionState.IDLE });
+    });
+  });
+
+  // ─── Set Time Limit (Task 11.2) ────────────────────────────────────────────
+
+  describe("set_time_limit", () => {
+    it("should update time limit and respond with duration_estimate", async () => {
+      const c = track(await createClient(server));
+
+      c.sendJson({ type: "set_time_limit", seconds: 90 });
+      const msg = await c.nextMessageOfType("duration_estimate");
+
+      expect(msg).toEqual({
+        type: "duration_estimate",
+        estimatedSeconds: 90,
+        timeLimitSeconds: 90,
+      });
+
+      // Verify session was updated
+      const sessions = Array.from(
+        (server.sessionManager as unknown as { sessions: Map<string, Session> }).sessions.values(),
+      );
+      expect(sessions[0].timeLimitSeconds).toBe(90);
+    });
+
+    it("should accept different time limit values", async () => {
+      const c = track(await createClient(server));
+
+      c.sendJson({ type: "set_time_limit", seconds: 180 });
+      const msg = await c.nextMessageOfType("duration_estimate");
+
+      expect((msg as { timeLimitSeconds: number }).timeLimitSeconds).toBe(180);
+      expect((msg as { estimatedSeconds: number }).estimatedSeconds).toBe(180);
+    });
+  });
+
+  // ─── Consent Gating on start_recording (Task 11.2) ─────────────────────────
+
+  describe("consent gating", () => {
+    it("should reject start_recording when no consent is set", async () => {
+      const c = track(await createClient(server));
+
+      c.sendJson({ type: "start_recording" });
+      const msg = await c.nextMessageOfType("error");
+
+      expect((msg as { message: string }).message).toContain("consent has not been confirmed");
+      expect((msg as { recoverable: boolean }).recoverable).toBe(true);
+    });
+
+    it("should reject start_recording when consent is not confirmed", async () => {
+      const c = track(await createClient(server));
+
+      c.sendJson({ type: "set_consent", speakerName: "Alice", consentConfirmed: false });
+      await c.nextMessageOfType("consent_status");
+
+      c.sendJson({ type: "start_recording" });
+      const msg = await c.nextMessageOfType("error");
+
+      expect((msg as { message: string }).message).toContain("consent has not been confirmed");
+      expect((msg as { recoverable: boolean }).recoverable).toBe(true);
+    });
+
+    it("should allow start_recording when consent is confirmed", async () => {
+      const c = track(await createClient(server));
+
+      c.sendJson({ type: "set_consent", speakerName: "Alice", consentConfirmed: true });
+      await c.nextMessageOfType("consent_status");
+
+      c.sendJson({ type: "start_recording" });
+      const msg = await c.nextMessageOfType("state_change");
+
+      expect(msg).toEqual({ type: "state_change", state: SessionState.RECORDING });
     });
   });
 
@@ -874,13 +1092,27 @@ describe("purgeSessionData", () => {
         pauseCount: 0,
         totalPauseDurationSeconds: 0,
         averagePauseDurationSeconds: 0,
+        intentionalPauseCount: 0,
+        hesitationPauseCount: 0,
+        classifiedPauses: [],
+        energyVariationCoefficient: 0,
+        energyProfile: { windowDurationMs: 250, windows: [], coefficientOfVariation: 0, silenceThreshold: 0 },
+        classifiedFillers: [],
       },
-      evaluation: { opening: "test", items: [], closing: "test" },
+      evaluation: { opening: "test", items: [], closing: "test", structure_commentary: { opening_comment: null, body_comment: null, closing_comment: null } },
+      evaluationPublic: null,
       evaluationScript: "test script",
       ttsAudioCache: null,
       qualityWarning: false,
       outputsSaved: false,
       runId: 1,
+      consent: null,
+      timeLimitSeconds: 120,
+      evaluationPassRate: null,
+      eagerStatus: "idle",
+      eagerRunId: null,
+      eagerPromise: null,
+      evaluationCache: null,
     };
 
     purgeSessionData(session);
@@ -933,5 +1165,578 @@ describe("sendMessage", () => {
     }).not.toThrow();
 
     expect(mockWs.send).not.toHaveBeenCalled();
+  });
+});
+
+// ─── Eager Evaluation Pipeline: Delivery and Invalidation Edge Cases (Task 5.7) ──
+
+describe("Eager pipeline delivery and invalidation edge cases", () => {
+  let server: AppServer;
+  let silentLogger: ReturnType<typeof createSilentLogger>;
+  let clients: TestClient[];
+
+  beforeEach(async () => {
+    silentLogger = createSilentLogger();
+    server = createAppServer({ logger: silentLogger });
+    await server.listen(TEST_PORT);
+    clients = [];
+  });
+
+  afterEach(async () => {
+    for (const c of clients) c.close();
+    await server.close();
+    vi.restoreAllMocks();
+  });
+
+  function track(client: TestClient): TestClient {
+    clients.push(client);
+    return client;
+  }
+
+  /** Helper: transition a client to PROCESSING state with eager pipeline mocked */
+  async function transitionToProcessing(client: TestClient): Promise<Session> {
+    await setConsentForRecording(client);
+
+    // Mock runEagerPipeline to be a no-op so we control eager state manually
+    vi.spyOn(server.sessionManager, "runEagerPipeline").mockReturnValue(Promise.resolve());
+
+    client.sendJson({ type: "start_recording" });
+    await client.nextMessageOfType("state_change"); // RECORDING
+
+    client.sendJson({ type: "stop_recording" });
+    await client.nextMessageOfType("state_change"); // PROCESSING
+
+    const sessions = Array.from(
+      (server.sessionManager as unknown as { sessions: Map<string, Session> }).sessions.values(),
+    );
+    return sessions[sessions.length - 1];
+  }
+
+  /** Helper: build a valid EvaluationCache for a session */
+  function buildValidCache(session: Session): import("./types.js").EvaluationCache {
+    const evaluation = {
+      opening: "Great speech.",
+      items: [{
+        type: "commendation" as const,
+        summary: "Good opening",
+        evidence_quote: "hello world test speech words here",
+        evidence_timestamp: 1,
+        explanation: "Strong start",
+      }],
+      closing: "Well done.",
+      structure_commentary: { opening_comment: null, body_comment: null, closing_comment: null },
+    };
+    const evaluationPublic = {
+      opening: "Great speech.",
+      items: [{
+        type: "commendation" as const,
+        summary: "Good opening",
+        explanation: "Strong start",
+        evidence_quote: "hello world test speech words here",
+        evidence_timestamp: 1,
+      }],
+      closing: "Well done.",
+      structure_commentary: { opening_comment: null, body_comment: null, closing_comment: null },
+    };
+    return {
+      runId: session.runId,
+      timeLimitSeconds: session.timeLimitSeconds,
+      voiceConfig: session.voiceConfig ?? "nova",
+      evaluation,
+      evaluationScript: "Great speech. Well done.",
+      ttsAudio: Buffer.from("fake-tts-audio-data"),
+      evaluationPublic,
+    };
+  }
+
+  // ─── Await-then-deliver flow (Req 5.2) ──────────────────────────────────────
+
+  describe("await-then-deliver flow (Req 5.2)", () => {
+    it("should await in-flight eager promise then deliver from cache", async () => {
+      const c = track(await createClient(server));
+
+      await setConsentForRecording(c);
+
+      // Control the eager pipeline: capture resolve function
+      let resolveEager: (() => void) | undefined;
+      vi.spyOn(server.sessionManager, "runEagerPipeline").mockImplementation(
+        (sessionId: string, _onProgress?: (stage: import("./types.js").PipelineStage) => void) => {
+          const session = server.sessionManager.getSession(sessionId);
+          session.eagerStatus = "generating";
+          session.eagerRunId = session.runId;
+          const p = new Promise<void>((resolve) => {
+            resolveEager = resolve;
+          });
+          session.eagerPromise = p;
+          return p;
+        },
+      );
+
+      c.sendJson({ type: "start_recording" });
+      await c.nextMessageOfType("state_change"); // RECORDING
+
+      c.sendJson({ type: "stop_recording" });
+      await c.nextMessageOfType("state_change"); // PROCESSING
+
+      const sessions = Array.from(
+        (server.sessionManager as unknown as { sessions: Map<string, Session> }).sessions.values(),
+      );
+      const session = sessions[sessions.length - 1];
+
+      // Mock completeDelivery
+      vi.spyOn(server.sessionManager, "completeDelivery").mockImplementation((sid) => {
+        const s = server.sessionManager.getSession(sid);
+        s.state = SessionState.IDLE;
+      });
+
+      // Send deliver_evaluation while eager is in-flight
+      c.sendJson({ type: "deliver_evaluation" });
+
+      // Give the server a moment to start awaiting the promise
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      // Now simulate eager completing: set cache and resolve
+      const cache = buildValidCache(session);
+      session.evaluationCache = cache;
+      session.eagerStatus = "ready";
+      session.eagerPromise = null;
+      session.eagerRunId = null;
+      resolveEager!();
+
+      // Should get state_change DELIVERING (from cache delivery)
+      const deliveringMsg = await c.nextMessageOfType("state_change");
+      expect(deliveringMsg).toEqual({ type: "state_change", state: SessionState.DELIVERING });
+
+      // Should get evaluation_ready
+      const evalReady = await c.nextMessageOfType("evaluation_ready");
+      expect((evalReady as any).evaluation.opening).toBe("Great speech.");
+
+      // Should get TTS audio
+      await c.nextMessageOfType("tts_audio");
+
+      // Should get tts_complete
+      await c.nextMessageOfType("tts_complete");
+
+      // Should get state_change IDLE
+      const idleMsg = await c.nextMessageOfType("state_change");
+      expect(idleMsg).toEqual({ type: "state_change", state: SessionState.IDLE });
+    });
+
+    it("should not throw when awaiting eager promise (never-reject contract)", async () => {
+      const c = track(await createClient(server));
+
+      await setConsentForRecording(c);
+
+      // Control the eager pipeline: resolve immediately (simulating fast completion)
+      vi.spyOn(server.sessionManager, "runEagerPipeline").mockImplementation(
+        (sessionId: string) => {
+          const session = server.sessionManager.getSession(sessionId);
+          session.eagerStatus = "failed";
+          session.eagerRunId = session.runId;
+          const p = Promise.resolve();
+          session.eagerPromise = p;
+          return p;
+        },
+      );
+
+      c.sendJson({ type: "start_recording" });
+      await c.nextMessageOfType("state_change"); // RECORDING
+
+      c.sendJson({ type: "stop_recording" });
+      await c.nextMessageOfType("state_change"); // PROCESSING
+
+      const sessions = Array.from(
+        (server.sessionManager as unknown as { sessions: Map<string, Session> }).sessions.values(),
+      );
+      const session = sessions[sessions.length - 1];
+
+      // Set eagerStatus to generating so Branch 2 is entered
+      session.eagerStatus = "generating";
+
+      // Mock generateEvaluation for the fallback path
+      vi.spyOn(server.sessionManager, "generateEvaluation").mockImplementation(async (sid) => {
+        const s = server.sessionManager.getSession(sid);
+        s.state = SessionState.DELIVERING;
+        s.evaluation = {
+          opening: "Fallback.",
+          items: [],
+          closing: "Done.",
+          structure_commentary: { opening_comment: null, body_comment: null, closing_comment: null },
+        };
+        s.evaluationScript = "Fallback. Done.";
+        return Buffer.from("fallback-audio");
+      });
+      vi.spyOn(server.sessionManager, "completeDelivery").mockImplementation((sid) => {
+        const s = server.sessionManager.getSession(sid);
+        s.state = SessionState.IDLE;
+      });
+
+      // Send deliver_evaluation — should await the promise (which resolves immediately)
+      // then fall through to fallback since cache is invalid
+      c.sendJson({ type: "deliver_evaluation" });
+
+      // Should eventually get to DELIVERING and then IDLE without errors
+      const deliveringMsg = await c.nextMessageOfType("state_change");
+      expect(deliveringMsg).toEqual({ type: "state_change", state: SessionState.DELIVERING });
+
+      await c.nextMessageOfType("tts_complete");
+
+      const idleMsg = await c.nextMessageOfType("state_change");
+      expect(idleMsg).toEqual({ type: "state_change", state: SessionState.IDLE });
+    });
+
+    it("should fall through to synchronous fallback when runId changes during await", async () => {
+      const c = track(await createClient(server));
+
+      await setConsentForRecording(c);
+
+      // Control the eager pipeline
+      let resolveEager: (() => void) | undefined;
+      vi.spyOn(server.sessionManager, "runEagerPipeline").mockImplementation(
+        (sessionId: string) => {
+          const session = server.sessionManager.getSession(sessionId);
+          session.eagerStatus = "generating";
+          session.eagerRunId = session.runId;
+          const p = new Promise<void>((resolve) => {
+            resolveEager = resolve;
+          });
+          session.eagerPromise = p;
+          return p;
+        },
+      );
+
+      c.sendJson({ type: "start_recording" });
+      await c.nextMessageOfType("state_change"); // RECORDING
+
+      c.sendJson({ type: "stop_recording" });
+      await c.nextMessageOfType("state_change"); // PROCESSING
+
+      const sessions = Array.from(
+        (server.sessionManager as unknown as { sessions: Map<string, Session> }).sessions.values(),
+      );
+      const session = sessions[sessions.length - 1];
+
+      // Mock generateEvaluation for the fallback path
+      vi.spyOn(server.sessionManager, "generateEvaluation").mockImplementation(async (sid) => {
+        const s = server.sessionManager.getSession(sid);
+        s.state = SessionState.DELIVERING;
+        s.evaluation = {
+          opening: "Fallback after invalidation.",
+          items: [],
+          closing: "Done.",
+          structure_commentary: { opening_comment: null, body_comment: null, closing_comment: null },
+        };
+        s.evaluationScript = "Fallback after invalidation. Done.";
+        return Buffer.from("fallback-audio");
+      });
+      vi.spyOn(server.sessionManager, "completeDelivery").mockImplementation((sid) => {
+        const s = server.sessionManager.getSession(sid);
+        s.state = SessionState.IDLE;
+      });
+
+      // Send deliver_evaluation while eager is in-flight
+      c.sendJson({ type: "deliver_evaluation" });
+
+      // Give the server a moment to start awaiting
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      // Simulate runId change (invalidation during await)
+      session.runId++;
+      session.eagerStatus = "idle";
+      session.evaluationCache = null;
+      session.eagerPromise = null;
+      session.eagerRunId = null;
+      resolveEager!();
+
+      // Should fall through to synchronous fallback
+      const deliveringMsg = await c.nextMessageOfType("state_change");
+      expect(deliveringMsg).toEqual({ type: "state_change", state: SessionState.DELIVERING });
+
+      // Verify generateEvaluation was called (fallback path)
+      await c.nextMessageOfType("tts_complete");
+      expect(server.sessionManager.generateEvaluation).toHaveBeenCalled();
+
+      const idleMsg = await c.nextMessageOfType("state_change");
+      expect(idleMsg).toEqual({ type: "state_change", state: SessionState.IDLE });
+    });
+  });
+
+  // ─── Re-entrancy guard (Req 5.6) ───────────────────────────────────────────
+
+  describe("re-entrancy guard (Req 5.6)", () => {
+    it("should ignore deliver_evaluation when already in DELIVERING state", async () => {
+      const c = track(await createClient(server));
+
+      const session = await transitionToProcessing(c);
+
+      // Set up valid cache for first delivery
+      const cache = buildValidCache(session);
+      session.evaluationCache = cache;
+      session.eagerStatus = "ready";
+
+      // Mock completeDelivery to keep session in DELIVERING (don't transition to IDLE)
+      vi.spyOn(server.sessionManager, "completeDelivery").mockImplementation(() => {
+        // No-op: keep session in DELIVERING state
+      });
+
+      // First deliver_evaluation — should succeed
+      c.sendJson({ type: "deliver_evaluation" });
+
+      const deliveringMsg = await c.nextMessageOfType("state_change");
+      expect(deliveringMsg).toEqual({ type: "state_change", state: SessionState.DELIVERING });
+
+      await c.nextMessageOfType("evaluation_ready");
+      await c.nextMessageOfType("tts_audio");
+      await c.nextMessageOfType("tts_complete");
+
+      // deliverFromCache sends state_change: IDLE after completeDelivery even though
+      // completeDelivery is mocked — consume it so it doesn't interfere
+      await c.nextMessageOfType("state_change"); // IDLE message from deliverFromCache
+
+      // Force session back to DELIVERING (since deliverFromCache reads session.state
+      // after completeDelivery, but we need it in DELIVERING for the re-entrancy guard)
+      session.state = SessionState.DELIVERING;
+
+      // Spy on generateEvaluation to verify it's NOT called on second attempt
+      const generateSpy = vi.spyOn(server.sessionManager, "generateEvaluation");
+
+      // Second deliver_evaluation — should be ignored by re-entrancy guard
+      c.sendJson({ type: "deliver_evaluation" });
+
+      // Wait a bit and verify no new state_change or evaluation_ready messages
+      const gotResponse = await c
+        .nextMessageOfType("state_change", 500)
+        .then(() => true)
+        .catch(() => false);
+      expect(gotResponse).toBe(false);
+
+      // generateEvaluation should NOT have been called
+      expect(generateSpy).not.toHaveBeenCalled();
+    });
+  });
+
+  // ─── Message ordering (Req 5.4) ────────────────────────────────────────────
+
+  describe("message ordering (Req 5.4)", () => {
+    it("should send evaluation_ready before TTS audio binary frame on cache-hit delivery", async () => {
+      const c = track(await createClient(server));
+
+      const session = await transitionToProcessing(c);
+
+      // Set up valid cache
+      const cache = buildValidCache(session);
+      session.evaluationCache = cache;
+      session.eagerStatus = "ready";
+
+      vi.spyOn(server.sessionManager, "completeDelivery").mockImplementation((sid) => {
+        const s = server.sessionManager.getSession(sid);
+        s.state = SessionState.IDLE;
+      });
+
+      c.sendJson({ type: "deliver_evaluation" });
+
+      // Collect messages in order
+      const messages: ServerMessage[] = [];
+      // We expect: state_change(DELIVERING), evaluation_ready, tts_audio, tts_complete, state_change(IDLE)
+      for (let i = 0; i < 5; i++) {
+        messages.push(await c.nextMessage(3000));
+      }
+
+      const types = messages.map((m) => m.type);
+
+      // Find indices
+      const evalReadyIdx = types.indexOf("evaluation_ready");
+      const ttsAudioIdx = types.indexOf("tts_audio");
+      const ttsCompleteIdx = types.indexOf("tts_complete");
+
+      // ASSERTION: evaluation_ready comes before tts_audio
+      expect(evalReadyIdx).toBeGreaterThanOrEqual(0);
+      expect(ttsAudioIdx).toBeGreaterThanOrEqual(0);
+      expect(evalReadyIdx).toBeLessThan(ttsAudioIdx);
+
+      // ASSERTION: tts_audio comes before tts_complete
+      expect(ttsCompleteIdx).toBeGreaterThanOrEqual(0);
+      expect(ttsAudioIdx).toBeLessThan(ttsCompleteIdx);
+    });
+
+    it("should send evaluation_ready before TTS audio binary frame on fallback delivery", async () => {
+      const c = track(await createClient(server));
+
+      const session = await transitionToProcessing(c);
+
+      // No cache — fallback path
+      session.eagerStatus = "idle";
+      session.evaluationCache = null;
+
+      vi.spyOn(server.sessionManager, "generateEvaluation").mockImplementation(async (sid) => {
+        const s = server.sessionManager.getSession(sid);
+        s.state = SessionState.DELIVERING;
+        s.evaluation = {
+          opening: "Great speech.",
+          items: [],
+          closing: "Well done.",
+          structure_commentary: { opening_comment: null, body_comment: null, closing_comment: null },
+        };
+        s.evaluationScript = "Great speech. Well done.";
+        return Buffer.from("fallback-audio");
+      });
+      vi.spyOn(server.sessionManager, "completeDelivery").mockImplementation((sid) => {
+        const s = server.sessionManager.getSession(sid);
+        s.state = SessionState.IDLE;
+      });
+
+      c.sendJson({ type: "deliver_evaluation" });
+
+      // Collect messages in order
+      const messages: ServerMessage[] = [];
+      for (let i = 0; i < 5; i++) {
+        messages.push(await c.nextMessage(3000));
+      }
+
+      const types = messages.map((m) => m.type);
+
+      const evalReadyIdx = types.indexOf("evaluation_ready");
+      const ttsAudioIdx = types.indexOf("tts_audio");
+
+      // ASSERTION: evaluation_ready comes before tts_audio
+      expect(evalReadyIdx).toBeGreaterThanOrEqual(0);
+      expect(ttsAudioIdx).toBeGreaterThanOrEqual(0);
+      expect(evalReadyIdx).toBeLessThan(ttsAudioIdx);
+    });
+  });
+
+  // ─── Replay availability with fake timers (Req 5.7, Property 12) ───────────
+
+  describe("replay availability after delivery (Req 5.7, Property 12)", () => {
+    it("should keep evaluationCache available after delivery until auto-purge fires", async () => {
+      vi.useFakeTimers();
+
+      try {
+        const c = track(await createClient(server));
+
+        const session = await transitionToProcessing(c);
+
+        // Set up valid cache
+        const cache = buildValidCache(session);
+        session.evaluationCache = cache;
+        session.eagerStatus = "ready";
+
+        vi.spyOn(server.sessionManager, "completeDelivery").mockImplementation((sid) => {
+          const s = server.sessionManager.getSession(sid);
+          s.state = SessionState.IDLE;
+        });
+
+        c.sendJson({ type: "deliver_evaluation" });
+
+        // Consume all delivery messages
+        await c.nextMessageOfType("state_change"); // DELIVERING
+        await c.nextMessageOfType("evaluation_ready");
+        await c.nextMessageOfType("tts_audio");
+        await c.nextMessageOfType("tts_complete");
+        await c.nextMessageOfType("state_change"); // IDLE
+
+        // (a) Cache non-null immediately after delivery
+        expect(session.evaluationCache).not.toBeNull();
+        expect(session.evaluationCache!.ttsAudio).toBeDefined();
+
+        // (b) Cache non-null before purge timer (advance 9 minutes)
+        await vi.advanceTimersByTimeAsync(9 * 60 * 1000);
+        expect(session.evaluationCache).not.toBeNull();
+
+        // (c) Cache null after purge timer fires (advance past 10 minutes total)
+        await vi.advanceTimersByTimeAsync(2 * 60 * 1000);
+        expect(session.evaluationCache).toBeNull();
+        expect(session.eagerStatus).toBe("idle");
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+  });
+
+  // ─── Invalidated gating (Req 6.2) ──────────────────────────────────────────
+
+  describe("invalidated gating (Req 6.2)", () => {
+    it("should send pipeline_progress: invalidated when time limit changes during PROCESSING with eager in-flight", async () => {
+      const c = track(await createClient(server));
+
+      const session = await transitionToProcessing(c);
+
+      // Set eager status to generating (simulating in-flight eager)
+      session.eagerStatus = "generating";
+      session.eagerRunId = session.runId;
+      session.eagerPromise = new Promise(() => {}); // never resolves
+
+      const runIdBefore = session.runId;
+
+      // Consume pipeline_progress: processing_speech from stop_recording
+      await c.nextMessageOfType("pipeline_progress");
+
+      // Change time limit — should trigger invalidation
+      c.sendJson({ type: "set_time_limit", seconds: 180 });
+
+      // Should get duration_estimate
+      await c.nextMessageOfType("duration_estimate");
+
+      // Should get pipeline_progress: invalidated with NEW runId
+      const invalidatedMsg = await c.nextMessageOfType("pipeline_progress");
+      expect((invalidatedMsg as any).stage).toBe("invalidated");
+      expect((invalidatedMsg as any).runId).toBeGreaterThan(runIdBefore);
+
+      // Verify the stage is "invalidated", NOT "processing_speech"
+      expect((invalidatedMsg as any).stage).not.toBe("processing_speech");
+    });
+
+    it("should fall through to synchronous fallback after invalidation on deliver click", async () => {
+      const c = track(await createClient(server));
+
+      const session = await transitionToProcessing(c);
+
+      // Set up a valid cache that will be invalidated
+      const cache = buildValidCache(session);
+      session.evaluationCache = cache;
+      session.eagerStatus = "ready";
+
+      // Consume pipeline_progress: processing_speech from stop_recording
+      await c.nextMessageOfType("pipeline_progress");
+
+      // Change time limit — invalidates the cache
+      c.sendJson({ type: "set_time_limit", seconds: 180 });
+      await c.nextMessageOfType("duration_estimate");
+      await c.nextMessageOfType("pipeline_progress"); // invalidated
+
+      // Verify cache was cleared
+      expect(session.evaluationCache).toBeNull();
+      expect(session.eagerStatus).toBe("idle");
+
+      // Now deliver — should use synchronous fallback (Branch 3)
+      vi.spyOn(server.sessionManager, "generateEvaluation").mockImplementation(async (sid) => {
+        const s = server.sessionManager.getSession(sid);
+        s.state = SessionState.DELIVERING;
+        s.evaluation = {
+          opening: "New evaluation.",
+          items: [],
+          closing: "Done.",
+          structure_commentary: { opening_comment: null, body_comment: null, closing_comment: null },
+        };
+        s.evaluationScript = "New evaluation. Done.";
+        return Buffer.from("new-audio");
+      });
+      vi.spyOn(server.sessionManager, "completeDelivery").mockImplementation((sid) => {
+        const s = server.sessionManager.getSession(sid);
+        s.state = SessionState.IDLE;
+      });
+
+      c.sendJson({ type: "deliver_evaluation" });
+
+      const deliveringMsg = await c.nextMessageOfType("state_change");
+      expect(deliveringMsg).toEqual({ type: "state_change", state: SessionState.DELIVERING });
+
+      // Verify generateEvaluation was called (fallback path, not cache hit)
+      expect(server.sessionManager.generateEvaluation).toHaveBeenCalled();
+
+      await c.nextMessageOfType("tts_complete");
+      const idleMsg = await c.nextMessageOfType("state_change");
+      expect(idleMsg).toEqual({ type: "state_change", state: SessionState.IDLE });
+    });
   });
 });

@@ -20,6 +20,7 @@ import type {
   StructuredEvaluation,
   EvaluationItem,
   FillerWordEntry,
+  ConsentRecord,
 } from "./types.js";
 import { SessionState } from "./types.js";
 
@@ -654,3 +655,126 @@ describe("Feature: tts-audio-replay-and-save, Property 6: Audio file persistence
   });
 });
 
+
+
+// ─── Property 3 Tests ──────────────────────────────────────────────────────────
+
+/**
+ * Generate an arbitrary ConsentRecord with:
+ * - speakerName: non-empty string (1-50 chars, printable ASCII to avoid encoding edge cases)
+ * - consentConfirmed: random boolean
+ * - consentTimestamp: random Date
+ */
+function arbitraryConsentRecord(): fc.Arbitrary<ConsentRecord> {
+  return fc
+    .tuple(
+      fc.string({ minLength: 1, maxLength: 50 }).filter((s) => s.trim().length > 0),
+      fc.boolean(),
+      fc.date({
+        min: new Date("2020-01-01T00:00:00.000Z"),
+        max: new Date("2030-12-31T23:59:59.999Z"),
+      }).filter((d) => !isNaN(d.getTime()))
+    )
+    .map(([speakerName, consentConfirmed, consentTimestamp]) => ({
+      speakerName,
+      consentConfirmed,
+      consentTimestamp,
+    }));
+}
+
+/**
+ * Generate a minimal session with a ConsentRecord for the consent round-trip test.
+ * Only the fields needed for saveSession + consent.json are populated.
+ */
+function arbitrarySessionWithConsent(): fc.Arbitrary<Session> {
+  return fc
+    .tuple(
+      fc.uuid(),
+      arbitraryConsentRecord(),
+      fc.integer({ min: 1577836800000, max: 1924905600000 }) // 2020-01-01 to 2030-12-31 in ms
+    )
+    .map(([id, consent, startMs]) => ({
+      id,
+      state: SessionState.IDLE,
+      startedAt: new Date(startMs),
+      stoppedAt: null,
+      transcript: [],
+      liveTranscript: [],
+      audioChunks: [],
+      metrics: null,
+      evaluation: null,
+      evaluationPublic: null,
+      evaluationScript: null,
+      ttsAudioCache: null,
+      qualityWarning: false,
+      outputsSaved: false,
+      runId: 1,
+      consent,
+      timeLimitSeconds: 120,
+      evaluationPassRate: null,
+    }));
+}
+
+describe("Feature: phase-2-stability-credibility, Property 3: Consent Round-Trip in Saved Outputs", () => {
+
+  /**
+   * **Validates: Requirements 2.6**
+   *
+   * Property 3: Consent Round-Trip in Saved Outputs
+   *
+   * For any Session with a ConsentRecord and saved outputs, reading the saved
+   * consent.json file SHALL produce a ConsentRecord equivalent to the one stored
+   * on the Session at save time:
+   * - speakerName matches exactly
+   * - consentConfirmed matches exactly
+   * - consentTimestamp matches (via ISO string comparison, since Date serialization goes through JSON)
+   */
+  it("consent.json round-trips: saved ConsentRecord is equivalent to the original", async () => {
+    const baseDir = await mkdtemp(join(tmpdir(), "fp-prop3-consent-roundtrip-"));
+
+    try {
+      await fc.assert(
+        fc.asyncProperty(arbitrarySessionWithConsent(), async (session) => {
+          const iterDir = await mkdtemp(join(baseDir, "iter-"));
+          const persistence = new FilePersistence(iterDir);
+
+          // Save the session (which writes consent.json)
+          const paths = await persistence.saveSession(session);
+
+          // Reset outputsSaved for generator reuse
+          session.outputsSaved = false;
+
+          // Find the consent.json path in the returned paths
+          const consentPath = paths.find((p) => p.endsWith("consent.json"));
+          expect(consentPath).toBeDefined();
+
+          // Read back the consent.json file
+          const content = await readFile(consentPath!, "utf-8");
+          const parsed = JSON.parse(content);
+
+          // Reconstruct a ConsentRecord from the saved JSON
+          const restored: ConsentRecord = {
+            speakerName: parsed.speakerName,
+            consentConfirmed: parsed.consentConfirmed,
+            consentTimestamp: new Date(parsed.consentTimestamp),
+          };
+
+          // Verify equivalence: speakerName matches exactly
+          expect(restored.speakerName).toBe(session.consent!.speakerName);
+
+          // Verify equivalence: consentConfirmed matches exactly
+          expect(restored.consentConfirmed).toBe(session.consent!.consentConfirmed);
+
+          // Verify equivalence: consentTimestamp matches via ISO string comparison
+          // (Date → JSON serialization uses toISOString(), so round-trip through ISO string)
+          expect(restored.consentTimestamp.toISOString()).toBe(
+            session.consent!.consentTimestamp.toISOString()
+          );
+        }),
+        { numRuns: 200 }
+      );
+    } finally {
+      await rm(baseDir, { recursive: true, force: true });
+    }
+  });
+});

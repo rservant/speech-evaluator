@@ -12,8 +12,10 @@ import { WebSocketServer, WebSocket } from "ws";
 import { SessionManager } from "./session-manager.js";
 import {
   type ClientMessage,
+  type ConsentRecord,
   type ServerMessage,
   type Session,
+  type StructuredEvaluationPublic,
   type TranscriptSegment,
   SessionState,
 } from "./types.js";
@@ -268,7 +270,7 @@ function handleBinaryMessage(
 
   // Buffer audio chunk and forward to Deepgram live transcription
   // Privacy: audio chunks are in-memory only, never written to disk
-  logger.debug(`[handleBinaryMessage] Feeding audio chunk (${data.length} bytes) for session ${connState.sessionId}`);
+  // too verbose logger.debug(`[handleBinaryMessage] Feeding audio chunk (${data.length} bytes) for session ${connState.sessionId}`);
   sessionManager.feedAudio(connState.sessionId, Buffer.from(data));
 }
 
@@ -333,6 +335,18 @@ function handleClientMessage(
       catchAsync(handleReplayTTS(ws, connState, sessionManager, logger));
       break;
 
+    case "set_consent":
+      handleSetConsent(ws, message, connState, sessionManager, logger);
+      break;
+
+    case "revoke_consent":
+      handleRevokeConsent(ws, connState, sessionManager, logger);
+      break;
+
+    case "set_time_limit":
+      handleSetTimeLimit(ws, message, connState, sessionManager, logger);
+      break;
+
     default: {
       const exhaustiveCheck: never = message;
       sendMessage(ws, {
@@ -385,10 +399,35 @@ function handleStartRecording(
 ): void {
   const session = sessionManager.getSession(connState.sessionId);
 
+  // Gate on consent confirmation (Req 2.3) — reject if consent not confirmed
+  if (!session.consent?.consentConfirmed) {
+    logger.warn(`start_recording rejected: consent not confirmed for session ${connState.sessionId}`);
+    sendMessage(ws, {
+      type: "error",
+      message: "Cannot start recording: speaker consent has not been confirmed.",
+      recoverable: true,
+    });
+    return;
+  }
+
   // Cancel any pending auto-purge timer when starting a new recording
   clearPurgeTimer(connState);
 
-  sessionManager.startRecording(connState.sessionId);
+  sessionManager.startRecording(connState.sessionId, (segment) => {
+    // Push live transcript segments to the client as they arrive from Deepgram.
+    // Uses replaceFromIndex semantics: interim results replace the last segment,
+    // final results append.
+    const session = sessionManager.getSession(connState.sessionId);
+    if (segment.isFinal) {
+      // Final segment: append after all previously finalized segments
+      const finalCount = session.liveTranscript.filter((s) => s.isFinal).length;
+      sendTranscriptUpdate(ws, [segment], finalCount - 1);
+      connState.liveTranscriptLength = finalCount;
+    } else {
+      // Interim segment: replace from the current finalized count onward
+      sendTranscriptUpdate(ws, [segment], connState.liveTranscriptLength);
+    }
+  });
   logger.info(`Recording started for session ${connState.sessionId}`);
 
   // Reset connection state for new recording
@@ -432,6 +471,19 @@ async function handleStopRecording(
       recoverable: true,
     });
   }
+
+  // Send initial progress — processing_speech is emitted by the stop-recording flow
+  // (not by the eager pipeline) to indicate transcription/metrics are complete (Hazard 4).
+  sendMessage(ws, { type: "pipeline_progress", stage: "processing_speech", runId: session.runId });
+
+  // Kick off eager pipeline — capture runId at this point for progress callback closure.
+  // SessionManager owns session.eagerPromise (assigned inside runEagerPipeline per Hazard 1).
+  // The server only reads it (in handleDeliverEvaluation), never writes it.
+  const capturedRunId = session.runId;
+  sessionManager.runEagerPipeline(
+    connState.sessionId,
+    (stage) => sendMessage(ws, { type: "pipeline_progress", stage, runId: capturedRunId }),
+  );
 }
 
 
@@ -443,9 +495,54 @@ async function handleDeliverEvaluation(
   sessionManager: SessionManager,
   logger: ServerLogger,
 ): Promise<void> {
-  let audioBuffer: Buffer | undefined;
+  const session = sessionManager.getSession(connState.sessionId);
 
-  logger.debug(`[handleDeliverEvaluation] Starting evaluation generation for session ${connState.sessionId}`);
+  // Re-entrancy guard: ignore deliver_evaluation if already delivering (Req 5.6)
+  if (session.state === SessionState.DELIVERING) {
+    logger.debug(`[handleDeliverEvaluation] Ignoring deliver_evaluation — already in DELIVERING state for session ${connState.sessionId}`);
+    return;
+  }
+
+  logger.debug(`[handleDeliverEvaluation] Starting delivery for session ${connState.sessionId}`);
+
+  // ── Branch 1: Cache hit — deliver from eager cache immediately ──
+  if (sessionManager.isEagerCacheValid(connState.sessionId)) {
+    logger.info(`[handleDeliverEvaluation] Cache hit — delivering from eager cache for session ${connState.sessionId}`);
+    deliverFromCache(ws, connState, sessionManager, logger);
+    return;
+  }
+
+  // ── Branch 2: Await in-flight eager pipeline ──
+  // Snapshot BOTH promise AND runId before any async work (Hazard 6).
+  // The promise may be nulled by the pipeline's finally block; the runId detects
+  // invalidation during await.
+  const eagerP = session.eagerPromise;
+  const snapshotRunId = session.runId;
+
+  if (eagerP !== null && (session.eagerStatus === "generating" || session.eagerStatus === "synthesizing")) {
+    logger.info(`[handleDeliverEvaluation] Eager pipeline in-flight (status: ${session.eagerStatus}) — awaiting for session ${connState.sessionId}`);
+
+    // Guaranteed to resolve per never-reject contract — no try/catch needed around await
+    await eagerP;
+
+    // After await: check if runId changed (invalidation during await)
+    if (session.runId !== snapshotRunId) {
+      logger.info(`[handleDeliverEvaluation] RunId changed during await (${snapshotRunId} → ${session.runId}) — falling through to synchronous fallback for session ${connState.sessionId}`);
+      // Fall through to Branch 3
+    } else if (sessionManager.isEagerCacheValid(connState.sessionId)) {
+      logger.info(`[handleDeliverEvaluation] Eager pipeline completed successfully — delivering from cache for session ${connState.sessionId}`);
+      deliverFromCache(ws, connState, sessionManager, logger);
+      return;
+    } else {
+      logger.info(`[handleDeliverEvaluation] Eager pipeline completed but cache invalid — falling through to synchronous fallback for session ${connState.sessionId}`);
+      // Fall through to Branch 3
+    }
+  }
+
+  // ── Branch 3: Synchronous fallback — run existing generateEvaluation() pipeline ──
+  logger.info(`[handleDeliverEvaluation] Running synchronous fallback pipeline for session ${connState.sessionId}`);
+
+  let audioBuffer: Buffer | undefined;
 
   try {
     audioBuffer = await sessionManager.generateEvaluation(connState.sessionId);
@@ -455,8 +552,8 @@ async function handleDeliverEvaluation(
     const errorMessage = err instanceof Error ? err.message : String(err);
     logger.error(`Evaluation generation failed for session ${connState.sessionId}: ${errorMessage}`);
 
-    const session = sessionManager.getSession(connState.sessionId);
-    sendMessage(ws, { type: "state_change", state: session.state });
+    const sessionAfterError = sessionManager.getSession(connState.sessionId);
+    sendMessage(ws, { type: "state_change", state: sessionAfterError.state });
     sendMessage(ws, {
       type: "error",
       message: `Evaluation generation failed: ${errorMessage}. You can retry.`,
@@ -465,29 +562,28 @@ async function handleDeliverEvaluation(
     return;
   }
 
-  const session = sessionManager.getSession(connState.sessionId);
+  const sessionAfterGen = sessionManager.getSession(connState.sessionId);
 
   // Send state change to DELIVERING
-  sendMessage(ws, { type: "state_change", state: session.state });
-  logger.debug(`[handleDeliverEvaluation] State changed to ${session.state} for session ${connState.sessionId}`);
+  sendMessage(ws, { type: "state_change", state: sessionAfterGen.state });
+  logger.debug(`[handleDeliverEvaluation] State changed to ${sessionAfterGen.state} for session ${connState.sessionId}`);
 
-  // Send evaluation_ready with the structured evaluation and script
-  if (session.evaluation && session.evaluationScript) {
+  // Send evaluation_ready with the structured evaluation and script (Req 5.4)
+  if (sessionAfterGen.evaluation && sessionAfterGen.evaluationScript) {
+    const evalPayload = sessionAfterGen.evaluationPublic ?? sessionAfterGen.evaluation;
     sendMessage(ws, {
       type: "evaluation_ready",
-      evaluation: session.evaluation,
-      script: session.evaluationScript,
+      evaluation: evalPayload as StructuredEvaluationPublic,
+      script: sessionAfterGen.evaluationScript,
     });
-    logger.debug(`[handleDeliverEvaluation] Sent evaluation_ready (${session.evaluation.items.length} items, script ${session.evaluationScript.length} chars) for session ${connState.sessionId}`);
+    logger.debug(`[handleDeliverEvaluation] Sent evaluation_ready for session ${connState.sessionId}`);
   }
 
   if (audioBuffer) {
     // TTS succeeded: stream audio and complete
     logger.info(`Streaming TTS audio for session ${connState.sessionId} (${audioBuffer.length} bytes)`);
-    logger.debug(`[handleDeliverEvaluation] WebSocket readyState=${ws.readyState} (OPEN=${WebSocket.OPEN}) before sending audio for session ${connState.sessionId}`);
 
-    // Send TTS audio as a raw binary WebSocket frame so the client
-    // receives it as an ArrayBuffer (not a JSON-serialized object).
+    // Send TTS audio as a raw binary WebSocket frame
     if (ws.readyState === WebSocket.OPEN) {
       ws.send(audioBuffer);
       logger.debug(`[handleDeliverEvaluation] Binary audio frame sent (${audioBuffer.length} bytes) for session ${connState.sessionId}`);
@@ -495,18 +591,15 @@ async function handleDeliverEvaluation(
       logger.warn(`[handleDeliverEvaluation] WebSocket not open, skipping audio send for session ${connState.sessionId}`);
     }
     sendMessage(ws, { type: "tts_complete" });
-    logger.debug(`[handleDeliverEvaluation] Sent tts_complete for session ${connState.sessionId}`);
 
     // Transition back to IDLE after TTS delivery
     sessionManager.completeDelivery(connState.sessionId);
     sendMessage(ws, { type: "state_change", state: SessionState.IDLE });
-    logger.debug(`[handleDeliverEvaluation] Transitioned to IDLE, starting purge timer for session ${connState.sessionId}`);
 
     // Start auto-purge timer (privacy: 10-minute retention after delivery)
     startPurgeTimer(connState, sessionManager, logger);
-  } else if (session.evaluation && session.evaluationScript) {
+  } else if (sessionAfterGen.evaluation && sessionAfterGen.evaluationScript) {
     // TTS failure: evaluation and script are available but no audio (Req 7.4)
-    // The client already has the evaluation_ready message with the script text
     logger.warn(`TTS synthesis failed for session ${connState.sessionId}, falling back to written evaluation`);
 
     sendMessage(ws, {
@@ -528,6 +621,53 @@ async function handleDeliverEvaluation(
     sessionManager.completeDelivery(connState.sessionId);
     sendMessage(ws, { type: "state_change", state: SessionState.IDLE });
   }
+}
+
+
+/**
+ * Delivers evaluation from the eager cache (Branch 1 / Branch 2 cache-hit path).
+ * Transitions to DELIVERING, sends evaluation_ready + cached TTS audio, completes delivery.
+ *
+ * Precondition: isEagerCacheValid() must be true before calling.
+ */
+function deliverFromCache(
+  ws: WebSocket,
+  connState: ConnectionState,
+  sessionManager: SessionManager,
+  logger: ServerLogger,
+): void {
+  const session = sessionManager.getSession(connState.sessionId);
+  const cache = session.evaluationCache!;
+
+  // Transition to DELIVERING — set state directly since we're skipping generateEvaluation()
+  // which normally handles this transition. The session is in PROCESSING state here.
+  session.state = SessionState.DELIVERING;
+  sendMessage(ws, { type: "state_change", state: SessionState.DELIVERING });
+
+  // Send evaluation_ready with the public (redacted) evaluation and script (Req 5.4)
+  sendMessage(ws, {
+    type: "evaluation_ready",
+    evaluation: cache.evaluationPublic!,
+    script: cache.evaluationScript,
+  });
+  logger.debug(`[deliverFromCache] Sent evaluation_ready for session ${connState.sessionId}`);
+
+  // Send cached TTS audio as a raw binary WebSocket frame — no blocking work (Req 5.1)
+  if (ws.readyState === WebSocket.OPEN) {
+    ws.send(cache.ttsAudio);
+    logger.debug(`[deliverFromCache] Binary audio frame sent (${cache.ttsAudio.length} bytes) for session ${connState.sessionId}`);
+  } else {
+    logger.warn(`[deliverFromCache] WebSocket not open, skipping audio send for session ${connState.sessionId}`);
+  }
+  sendMessage(ws, { type: "tts_complete" });
+
+  // Transition back to IDLE after TTS delivery
+  sessionManager.completeDelivery(connState.sessionId);
+  sendMessage(ws, { type: "state_change", state: SessionState.IDLE });
+
+  // Start auto-purge timer (privacy: 10-minute retention after delivery)
+  // evaluationCache remains available for replay_tts until auto-purge fires (Req 5.7)
+  startPurgeTimer(connState, sessionManager, logger);
 }
 
 
@@ -656,6 +796,93 @@ function handlePanicMute(
   sendMessage(ws, { type: "state_change", state: SessionState.IDLE });
 }
 
+// ─── Set Consent (Req 2.1, 2.3) ────────────────────────────────────────────────
+
+function handleSetConsent(
+  ws: WebSocket,
+  message: Extract<ClientMessage, { type: "set_consent" }>,
+  connState: ConnectionState,
+  sessionManager: SessionManager,
+  logger: ServerLogger,
+): void {
+  try {
+    sessionManager.setConsent(connState.sessionId, message.speakerName, message.consentConfirmed);
+    const session = sessionManager.getSession(connState.sessionId);
+    sendMessage(ws, { type: "consent_status", consent: session.consent });
+    logger.info(`Consent set for session ${connState.sessionId}: speaker="${message.speakerName}", confirmed=${message.consentConfirmed}`);
+  } catch (err) {
+    const errorMessage = err instanceof Error ? err.message : String(err);
+    logger.warn(`set_consent failed for session ${connState.sessionId}: ${errorMessage}`);
+    sendMessage(ws, {
+      type: "error",
+      message: errorMessage,
+      recoverable: true,
+    });
+  }
+}
+
+// ─── Revoke Consent / Speaker Opt-Out (Req 2.7) ────────────────────────────────
+
+function handleRevokeConsent(
+  ws: WebSocket,
+  connState: ConnectionState,
+  sessionManager: SessionManager,
+  logger: ServerLogger,
+): void {
+  // Stop any active timers — session is being purged
+  stopElapsedTimeTicker(connState);
+  clearPurgeTimer(connState);
+
+  sessionManager.revokeConsent(connState.sessionId);
+  logger.info(`Consent revoked (opt-out) for session ${connState.sessionId}`);
+
+  // Notify client of data purge and state change
+  sendMessage(ws, { type: "data_purged", reason: "opt_out" });
+  sendMessage(ws, { type: "state_change", state: SessionState.IDLE });
+}
+
+// ─── Set Time Limit (Req 6.8) ──────────────────────────────────────────────────
+
+function handleSetTimeLimit(
+  ws: WebSocket,
+  message: Extract<ClientMessage, { type: "set_time_limit" }>,
+  connState: ConnectionState,
+  sessionManager: SessionManager,
+  logger: ServerLogger,
+): void {
+  const session = sessionManager.getSession(connState.sessionId);
+  session.timeLimitSeconds = message.seconds;
+  logger.info(`Time limit set to ${message.seconds}s for session ${connState.sessionId}`);
+
+  sendMessage(ws, {
+    type: "duration_estimate",
+    estimatedSeconds: message.seconds,
+    timeLimitSeconds: message.seconds,
+  });
+
+  // Invalidate eager cache if session is in PROCESSING state and eager data exists or is in-flight.
+  // invalidateEagerCache() calls cancelEagerGeneration() internally — increments runId.
+  if (
+    session.state === SessionState.PROCESSING &&
+    (session.evaluationCache !== null ||
+      session.eagerStatus === "generating" ||
+      session.eagerStatus === "synthesizing" ||
+      session.eagerStatus === "ready")
+  ) {
+    sessionManager.invalidateEagerCache(connState.sessionId);
+    logger.info(`Eager cache invalidated due to time limit change for session ${connState.sessionId}`);
+
+    // Send pipeline_progress: invalidated with the NEW runId (post-increment).
+    // NOT processing_speech — that stage means "transcription complete" per Hazard 4.
+    // UI maps this to "Settings changed — evaluation will regenerate on delivery".
+    sendMessage(ws, {
+      type: "pipeline_progress",
+      stage: "invalidated",
+      runId: session.runId,
+    });
+  }
+}
+
 // ─── Elapsed Time Ticker ────────────────────────────────────────────────────────
 
 function startElapsedTimeTicker(
@@ -764,6 +991,13 @@ export function purgeSessionData(session: Session): void {
   session.evaluation = null;
   session.evaluationScript = null;
   session.ttsAudioCache = null;
+
+  // Clear eager pipeline state — pure reset only, no runId++ needed
+  // (purge happens after delivery, no in-flight work to cancel)
+  session.eagerStatus = "idle";
+  session.eagerRunId = null;
+  session.eagerPromise = null;
+  session.evaluationCache = null;
 }
 
 // ─── Transcript Update Helpers ──────────────────────────────────────────────────
