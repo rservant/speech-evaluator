@@ -4,6 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>AI Toastmasters Evaluator</title>
+  <link rel="icon" href="data:,">
   <style>
     /* ─── CSS Custom Properties ──────────────────────────────────────── */
     :root {
@@ -638,12 +639,10 @@
     let segments = []; // local transcript segment array
 
     // ─── TTS Audio Playback State ─────────────────────────────────────
-    /** @type {AudioContext|null} AudioContext for TTS playback */
-    let ttsAudioContext = null;
-    /** @type {AudioBufferSourceNode|null} Currently playing audio source */
-    let ttsCurrentSource = null;
-    /** @type {ArrayBuffer[]} Queue of audio chunks waiting to be played */
-    let ttsAudioQueue = [];
+    /** @type {HTMLAudioElement|null} Audio element for TTS playback */
+    let ttsAudioElement = null;
+    /** @type {string|null} Current Blob URL for TTS audio */
+    let ttsBlobUrl = null;
     /** Whether TTS playback is currently active */
     let ttsPlaying = false;
     /** Whether the server has signaled TTS delivery is complete */
@@ -1143,7 +1142,9 @@
 
     /**
      * Handles incoming TTS audio data (binary WebSocket frames).
-     * Queues audio chunks and plays them sequentially via Web Audio API.
+     * Creates a Blob URL and plays via HTMLAudioElement for cross-browser
+     * compatibility (Safari has issues with Web Audio API decodeAudioData
+     * on certain MP3 encodings).
      * @param {ArrayBuffer} audioData - Raw audio bytes from TTS
      */
     function handleTTSAudio(audioData) {
@@ -1156,65 +1157,55 @@
 
       console.log("[TTS] Received audio chunk:", audioData.byteLength, "bytes");
 
-      // Queue the chunk
-      ttsAudioQueue.push(audioData);
+      // Clean up any previous playback
+      cleanupTTSAudio();
 
-      // If not already playing, start playback from the queue
-      if (!ttsPlaying) {
-        playNextTTSChunk();
-      }
+      // Create a Blob URL from the audio data and play via <audio> element
+      const blob = new Blob([audioData], { type: "audio/mpeg" });
+      ttsBlobUrl = URL.createObjectURL(blob);
+
+      ttsAudioElement = new Audio(ttsBlobUrl);
+      ttsAudioElement.preload = "auto";
+      ttsPlaying = true;
+
+      ttsAudioElement.onplay = function () {
+        console.log("[TTS] Audio playback started");
+      };
+
+      ttsAudioElement.onended = function () {
+        console.log("[TTS] Audio playback ended naturally");
+        ttsPlaying = false;
+        cleanupTTSAudio();
+      };
+
+      ttsAudioElement.onerror = function (e) {
+        console.error("[TTS] Audio element error:", ttsAudioElement.error);
+        triggerTTSFailSafe();
+      };
+
+      ttsAudioElement.play().then(function () {
+        console.log("[TTS] play() promise resolved, audio is playing");
+      }).catch(function (err) {
+        console.error("[TTS] play() promise rejected:", err);
+        triggerTTSFailSafe();
+      });
     }
 
     /**
-     * Plays the next TTS audio chunk from the queue.
-     * Uses Web Audio API to decode and play audio sequentially.
-     * On error, triggers fail-safe silent mode (shows written evaluation).
+     * Cleans up TTS audio resources (element and Blob URL).
      */
-    async function playNextTTSChunk() {
-      if (ttsAudioQueue.length === 0) {
-        ttsPlaying = false;
-        return;
+    function cleanupTTSAudio() {
+      if (ttsAudioElement) {
+        ttsAudioElement.onplay = null;
+        ttsAudioElement.onended = null;
+        ttsAudioElement.onerror = null;
+        ttsAudioElement.pause();
+        ttsAudioElement.src = "";
+        ttsAudioElement = null;
       }
-
-      ttsPlaying = true;
-
-      // Ensure we have an AudioContext for TTS playback
-      try {
-        if (!ttsAudioContext || ttsAudioContext.state === "closed") {
-          ttsAudioContext = new AudioContext();
-        }
-        if (ttsAudioContext.state === "suspended") {
-          await ttsAudioContext.resume();
-        }
-      } catch (err) {
-        console.error("Failed to create TTS AudioContext:", err);
-        triggerTTSFailSafe();
-        return;
-      }
-
-      const chunk = ttsAudioQueue.shift();
-
-      try {
-        // Decode the audio data (expects a complete audio format like mp3/opus)
-        const audioBuffer = await ttsAudioContext.decodeAudioData(chunk.slice(0));
-        console.log("[TTS] Decoded audio buffer:", audioBuffer.duration.toFixed(2), "seconds,", audioBuffer.numberOfChannels, "ch,", audioBuffer.sampleRate, "Hz");
-
-        // Create a source node for playback
-        const source = ttsAudioContext.createBufferSource();
-        source.buffer = audioBuffer;
-        source.connect(ttsAudioContext.destination);
-        ttsCurrentSource = source;
-
-        // When this chunk finishes, play the next one
-        source.onended = function () {
-          ttsCurrentSource = null;
-          playNextTTSChunk();
-        };
-
-        source.start(0);
-      } catch (err) {
-        console.error("Failed to decode/play TTS audio chunk:", err);
-        triggerTTSFailSafe();
+      if (ttsBlobUrl) {
+        URL.revokeObjectURL(ttsBlobUrl);
+        ttsBlobUrl = null;
       }
     }
 
@@ -1222,19 +1213,7 @@
      * Stops all TTS audio playback and cleans up resources.
      */
     function stopTTSPlayback() {
-      // Stop the currently playing source
-      if (ttsCurrentSource) {
-        try {
-          ttsCurrentSource.onended = null; // Prevent triggering next chunk
-          ttsCurrentSource.stop();
-        } catch (e) {
-          // Ignore errors from stopping already-stopped sources
-        }
-        ttsCurrentSource = null;
-      }
-
-      // Clear the queue
-      ttsAudioQueue = [];
+      cleanupTTSAudio();
       ttsPlaying = false;
       ttsDeliveryComplete = false;
     }
@@ -1264,10 +1243,8 @@
 
     /**
      * Handles tts_complete message — TTS delivery finished on the server side.
-     * Does NOT stop playback — the audio may still be decoding/playing.
+     * Does NOT stop playback — the audio may still be playing.
      * Sets a flag so the client knows no more chunks are coming.
-     * Actual cleanup happens when playback finishes naturally (source.onended)
-     * or on forced stop (panic mute, disconnect).
      */
     function handleTTSComplete() {
       console.log("[TTS] Server signaled tts_complete, audio may still be playing");
@@ -1483,7 +1460,7 @@
       updateUI(SessionState.PROCESSING);
     }
 
-    function onDeliverEvaluation() {
+    async function onDeliverEvaluation() {
       // Echo prevention: hard-stop mic tracks before TTS delivery
       hardStopMic();
 
@@ -1494,7 +1471,7 @@
       updateUI(SessionState.DELIVERING);
     }
 
-    function onReplayEvaluation() {
+    async function onReplayEvaluation() {
       // Guard: don't replay during cooldown
       if (inCooldown) return;
 

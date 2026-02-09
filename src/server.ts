@@ -60,12 +60,18 @@ export interface ServerLogger {
   info(message: string, ...args: unknown[]): void;
   warn(message: string, ...args: unknown[]): void;
   error(message: string, ...args: unknown[]): void;
+  debug(message: string, ...args: unknown[]): void;
 }
+
+const isDebug = process.env.NODE_ENV === "development" || process.env.LOG_LEVEL === "debug";
 
 const defaultLogger: ServerLogger = {
   info: (msg, ...args) => console.log(`[INFO] ${msg}`, ...args),
   warn: (msg, ...args) => console.warn(`[WARN] ${msg}`, ...args),
   error: (msg, ...args) => console.error(`[ERROR] ${msg}`, ...args),
+  debug: (msg, ...args) => {
+    if (isDebug) console.log(`[DEBUG] ${msg}`, ...args);
+  },
 };
 
 // ─── Server Factory ─────────────────────────────────────────────────────────────
@@ -228,6 +234,7 @@ function handleBinaryMessage(
 
   // Reject audio chunks in non-RECORDING states (echo prevention, Req 2.5)
   if (session.state !== SessionState.RECORDING) {
+    logger.debug(`[handleBinaryMessage] Rejecting audio chunk in state="${session.state}" for session ${connState.sessionId}`);
     sendMessage(ws, {
       type: "error",
       message: `Audio chunks rejected: session is in "${session.state}" state, not "recording".`,
@@ -261,6 +268,7 @@ function handleBinaryMessage(
 
   // Buffer audio chunk and forward to Deepgram live transcription
   // Privacy: audio chunks are in-memory only, never written to disk
+  logger.debug(`[handleBinaryMessage] Feeding audio chunk (${data.length} bytes) for session ${connState.sessionId}`);
   sessionManager.feedAudio(connState.sessionId, Buffer.from(data));
 }
 
@@ -437,8 +445,11 @@ async function handleDeliverEvaluation(
 ): Promise<void> {
   let audioBuffer: Buffer | undefined;
 
+  logger.debug(`[handleDeliverEvaluation] Starting evaluation generation for session ${connState.sessionId}`);
+
   try {
     audioBuffer = await sessionManager.generateEvaluation(connState.sessionId);
+    logger.debug(`[handleDeliverEvaluation] generateEvaluation returned ${audioBuffer ? `${audioBuffer.length} bytes` : "undefined"} for session ${connState.sessionId}`);
   } catch (err) {
     // LLM failure: session has been transitioned back to PROCESSING by SessionManager (Req 7.3)
     const errorMessage = err instanceof Error ? err.message : String(err);
@@ -458,6 +469,7 @@ async function handleDeliverEvaluation(
 
   // Send state change to DELIVERING
   sendMessage(ws, { type: "state_change", state: session.state });
+  logger.debug(`[handleDeliverEvaluation] State changed to ${session.state} for session ${connState.sessionId}`);
 
   // Send evaluation_ready with the structured evaluation and script
   if (session.evaluation && session.evaluationScript) {
@@ -466,22 +478,29 @@ async function handleDeliverEvaluation(
       evaluation: session.evaluation,
       script: session.evaluationScript,
     });
+    logger.debug(`[handleDeliverEvaluation] Sent evaluation_ready (${session.evaluation.items.length} items, script ${session.evaluationScript.length} chars) for session ${connState.sessionId}`);
   }
 
   if (audioBuffer) {
     // TTS succeeded: stream audio and complete
     logger.info(`Streaming TTS audio for session ${connState.sessionId} (${audioBuffer.length} bytes)`);
+    logger.debug(`[handleDeliverEvaluation] WebSocket readyState=${ws.readyState} (OPEN=${WebSocket.OPEN}) before sending audio for session ${connState.sessionId}`);
 
     // Send TTS audio as a raw binary WebSocket frame so the client
     // receives it as an ArrayBuffer (not a JSON-serialized object).
     if (ws.readyState === WebSocket.OPEN) {
       ws.send(audioBuffer);
+      logger.debug(`[handleDeliverEvaluation] Binary audio frame sent (${audioBuffer.length} bytes) for session ${connState.sessionId}`);
+    } else {
+      logger.warn(`[handleDeliverEvaluation] WebSocket not open, skipping audio send for session ${connState.sessionId}`);
     }
     sendMessage(ws, { type: "tts_complete" });
+    logger.debug(`[handleDeliverEvaluation] Sent tts_complete for session ${connState.sessionId}`);
 
     // Transition back to IDLE after TTS delivery
     sessionManager.completeDelivery(connState.sessionId);
     sendMessage(ws, { type: "state_change", state: SessionState.IDLE });
+    logger.debug(`[handleDeliverEvaluation] Transitioned to IDLE, starting purge timer for session ${connState.sessionId}`);
 
     // Start auto-purge timer (privacy: 10-minute retention after delivery)
     startPurgeTimer(connState, sessionManager, logger);
@@ -522,8 +541,11 @@ async function handleReplayTTS(
 ): Promise<void> {
   let audioBuffer: Buffer | undefined;
 
+  logger.debug(`[handleReplayTTS] Replay requested for session ${connState.sessionId}`);
+
   try {
     audioBuffer = sessionManager.replayTTS(connState.sessionId);
+    logger.debug(`[handleReplayTTS] replayTTS returned ${audioBuffer ? `${audioBuffer.length} bytes` : "undefined"} for session ${connState.sessionId}`);
   } catch (err) {
     const errorMessage = err instanceof Error ? err.message : String(err);
     logger.error(`Replay TTS failed for session ${connState.sessionId}: ${errorMessage}`);
@@ -536,6 +558,7 @@ async function handleReplayTTS(
   }
 
   if (!audioBuffer) {
+    logger.debug(`[handleReplayTTS] No audio buffer available for session ${connState.sessionId}`);
     sendMessage(ws, {
       type: "error",
       message: "No TTS audio available for replay.",
@@ -546,17 +569,24 @@ async function handleReplayTTS(
 
   // Send state change to DELIVERING
   sendMessage(ws, { type: "state_change", state: SessionState.DELIVERING });
+  logger.debug(`[handleReplayTTS] State changed to DELIVERING for session ${connState.sessionId}`);
 
   // Send TTS audio as a raw binary WebSocket frame
   logger.info(`Replaying TTS audio for session ${connState.sessionId} (${audioBuffer.length} bytes)`);
+  logger.debug(`[handleReplayTTS] WebSocket readyState=${ws.readyState} (OPEN=${WebSocket.OPEN}) before sending audio for session ${connState.sessionId}`);
   if (ws.readyState === WebSocket.OPEN) {
     ws.send(audioBuffer);
+    logger.debug(`[handleReplayTTS] Binary audio frame sent (${audioBuffer.length} bytes) for session ${connState.sessionId}`);
+  } else {
+    logger.warn(`[handleReplayTTS] WebSocket not open, skipping audio send for session ${connState.sessionId}`);
   }
   sendMessage(ws, { type: "tts_complete" });
+  logger.debug(`[handleReplayTTS] Sent tts_complete for session ${connState.sessionId}`);
 
   // Transition back to IDLE
   sessionManager.completeDelivery(connState.sessionId);
   sendMessage(ws, { type: "state_change", state: SessionState.IDLE });
+  logger.debug(`[handleReplayTTS] Transitioned to IDLE for session ${connState.sessionId}`);
 
   // Restart auto-purge timer (privacy: 10-minute retention after delivery)
   startPurgeTimer(connState, sessionManager, logger);
