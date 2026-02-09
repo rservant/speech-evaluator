@@ -110,8 +110,7 @@
       animation: pulse 1.2s ease-in-out infinite;
     }
     .status-indicator.processing {
-      background: var(--color-processing);
-      animation: pulse 1.5s ease-in-out infinite;
+      background: var(--color-success);
     }
     .status-indicator.delivering {
       background: var(--color-delivering);
@@ -307,27 +306,14 @@
       gap: 0.75rem;
       padding: 1rem;
       background: var(--color-surface);
-      border: 1px solid var(--color-processing);
+      border: 1px solid var(--color-success);
       border-radius: var(--radius);
       font-size: 1rem;
-      color: var(--color-processing);
+      color: var(--color-success);
     }
 
     .processing-indicator.visible {
       display: flex;
-    }
-
-    .spinner {
-      width: 20px;
-      height: 20px;
-      border: 3px solid var(--color-border);
-      border-top-color: var(--color-processing);
-      border-radius: 50%;
-      animation: spin 0.8s linear infinite;
-    }
-
-    @keyframes spin {
-      to { transform: rotate(360deg); }
     }
 
     /* ─── Content Panels ─────────────────────────────────────────────── */
@@ -805,8 +791,7 @@
 
     <!-- Processing Indicator -->
     <div id="processing-indicator" class="processing-indicator" role="status" aria-live="polite">
-      <div class="spinner"></div>
-      <span>Processing transcript and generating evaluation...</span>
+      <span>✓ Speech processed — review transcript and click "Deliver Evaluation" when ready</span>
     </div>
 
     <!-- Transcript Panel -->
@@ -939,7 +924,7 @@
     const STATUS_TEXT = {
       [SessionState.IDLE]: "Ready — click \"Start Speech\" to begin",
       [SessionState.RECORDING]: "Recording speech...",
-      [SessionState.PROCESSING]: "Processing transcript and generating evaluation...",
+      [SessionState.PROCESSING]: "Speech processed — click \"Deliver Evaluation\" when ready",
       [SessionState.DELIVERING]: "Delivering evaluation...",
     };
 
