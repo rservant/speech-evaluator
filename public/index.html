@@ -646,6 +646,8 @@
     let ttsAudioQueue = [];
     /** Whether TTS playback is currently active */
     let ttsPlaying = false;
+    /** Whether the server has signaled TTS delivery is complete */
+    let ttsDeliveryComplete = false;
     /** The last evaluation script text, used as fallback on TTS error */
     let lastEvaluationScript = "";
 
@@ -997,7 +999,8 @@
 
       ws.onmessage = function (event) {
         if (event.data instanceof ArrayBuffer) {
-          // Binary message — TTS audio chunk (handled by task 11.3)
+          // Binary message — TTS audio chunk
+          console.log("[WS] Received binary frame:", event.data.byteLength, "bytes");
           handleTTSAudio(event.data);
           return;
         }
@@ -1119,9 +1122,15 @@
         hardStopMic();
       }
 
-      // If leaving DELIVERING state (panic mute or TTS complete), stop TTS playback
+      // If leaving DELIVERING due to panic mute (going to IDLE without tts_complete),
+      // force-stop playback. But if tts_complete was received, let audio play naturally.
       if (previousState === SessionState.DELIVERING && newState !== SessionState.DELIVERING) {
-        stopTTSPlayback();
+        if (!ttsDeliveryComplete) {
+          // Panic mute or error — force stop
+          console.log("[TTS] Forced stop: leaving DELIVERING without tts_complete");
+          stopTTSPlayback();
+        }
+        // If ttsDeliveryComplete is true, audio is playing or finished — don't interrupt
       }
 
       // When transitioning from DELIVERING to IDLE, start cooldown
@@ -1139,7 +1148,13 @@
      */
     function handleTTSAudio(audioData) {
       hasTTSAudio = true;
-      if (!audioData || audioData.byteLength === 0) return;
+      ttsDeliveryComplete = false;
+      if (!audioData || audioData.byteLength === 0) {
+        console.warn("[TTS] Received empty audio data, ignoring");
+        return;
+      }
+
+      console.log("[TTS] Received audio chunk:", audioData.byteLength, "bytes");
 
       // Queue the chunk
       ttsAudioQueue.push(audioData);
@@ -1182,6 +1197,7 @@
       try {
         // Decode the audio data (expects a complete audio format like mp3/opus)
         const audioBuffer = await ttsAudioContext.decodeAudioData(chunk.slice(0));
+        console.log("[TTS] Decoded audio buffer:", audioBuffer.duration.toFixed(2), "seconds,", audioBuffer.numberOfChannels, "ch,", audioBuffer.sampleRate, "Hz");
 
         // Create a source node for playback
         const source = ttsAudioContext.createBufferSource();
@@ -1220,6 +1236,7 @@
       // Clear the queue
       ttsAudioQueue = [];
       ttsPlaying = false;
+      ttsDeliveryComplete = false;
     }
 
     /**
@@ -1246,15 +1263,15 @@
     }
 
     /**
-     * Handles tts_complete message — TTS delivery finished.
-     * Stops any remaining playback and lets the state_change message
-     * handle the transition to IDLE (which triggers cooldown).
+     * Handles tts_complete message — TTS delivery finished on the server side.
+     * Does NOT stop playback — the audio may still be decoding/playing.
+     * Sets a flag so the client knows no more chunks are coming.
+     * Actual cleanup happens when playback finishes naturally (source.onended)
+     * or on forced stop (panic mute, disconnect).
      */
     function handleTTSComplete() {
-      // Stop any remaining queued audio (the server signals completion)
-      stopTTSPlayback();
-      // State change to IDLE will be handled by the state_change message
-      // that accompanies tts_complete. The cooldown is started in handleStateChange.
+      console.log("[TTS] Server signaled tts_complete, audio may still be playing");
+      ttsDeliveryComplete = true;
     }
 
     // ─── Audio Capture: Mic + AudioWorklet ────────────────────────────

@@ -472,11 +472,11 @@ async function handleDeliverEvaluation(
     // TTS succeeded: stream audio and complete
     logger.info(`Streaming TTS audio for session ${connState.sessionId} (${audioBuffer.length} bytes)`);
 
-    // Create a proper ArrayBuffer copy from the Node.js Buffer
-    const arrayBuffer = new ArrayBuffer(audioBuffer.length);
-    const view = new Uint8Array(arrayBuffer);
-    view.set(audioBuffer);
-    sendMessage(ws, { type: "tts_audio", data: arrayBuffer });
+    // Send TTS audio as a raw binary WebSocket frame so the client
+    // receives it as an ArrayBuffer (not a JSON-serialized object).
+    if (ws.readyState === WebSocket.OPEN) {
+      ws.send(audioBuffer);
+    }
     sendMessage(ws, { type: "tts_complete" });
 
     // Transition back to IDLE after TTS delivery
@@ -547,12 +547,11 @@ async function handleReplayTTS(
   // Send state change to DELIVERING
   sendMessage(ws, { type: "state_change", state: SessionState.DELIVERING });
 
-  // Stream the cached audio
+  // Send TTS audio as a raw binary WebSocket frame
   logger.info(`Replaying TTS audio for session ${connState.sessionId} (${audioBuffer.length} bytes)`);
-  const arrayBuffer = new ArrayBuffer(audioBuffer.length);
-  const view = new Uint8Array(arrayBuffer);
-  view.set(audioBuffer);
-  sendMessage(ws, { type: "tts_audio", data: arrayBuffer });
+  if (ws.readyState === WebSocket.OPEN) {
+    ws.send(audioBuffer);
+  }
   sendMessage(ws, { type: "tts_complete" });
 
   // Transition back to IDLE

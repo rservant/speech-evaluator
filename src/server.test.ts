@@ -38,9 +38,17 @@ class TestClient {
 
   constructor(url: string) {
     this.ws = new WebSocket(url);
-    this.ws.on("message", (data: WebSocket.RawData) => {
-      const text = Buffer.isBuffer(data) ? data.toString("utf-8") : String(data);
-      const msg = JSON.parse(text) as ServerMessage;
+    this.ws.on("message", (data: WebSocket.RawData, isBinary: boolean) => {
+      let msg: ServerMessage;
+      if (isBinary) {
+        // Binary frame = TTS audio data. Wrap it as a synthetic tts_audio message
+        // so tests can use nextMessageOfType("tts_audio") as before.
+        const buf = Buffer.isBuffer(data) ? data : Buffer.from(data as ArrayBuffer);
+        msg = { type: "tts_audio", data: buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength) } as ServerMessage;
+      } else {
+        const text = Buffer.isBuffer(data) ? data.toString("utf-8") : String(data);
+        msg = JSON.parse(text) as ServerMessage;
+      }
       // If someone is waiting for a message, deliver immediately
       if (this.waiters.length > 0) {
         const waiter = this.waiters.shift()!;
