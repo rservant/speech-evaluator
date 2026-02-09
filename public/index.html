@@ -1528,6 +1528,31 @@
      * on certain MP3 encodings).
      * @param {ArrayBuffer} audioData - Raw audio bytes from TTS
      */
+
+    /**
+     * Primes the TTS audio element during a user gesture so the browser
+     * grants playback permission. Called from click handlers before the
+     * async WebSocket round-trip that delivers the actual audio data.
+     * A tiny silent MP3 is loaded and played to "unlock" the element.
+     */
+    function primeTTSAudioElement() {
+      cleanupTTSAudio();
+
+      ttsAudioElement = new Audio();
+      ttsAudioElement.preload = "auto";
+
+      // Minimal valid silent MP3 frame (~0.03s of silence).
+      // Playing this during the gesture satisfies the browser autoplay policy.
+      var silentMp3 = "data:audio/mpeg;base64,SUQzBAAAAAAAI1RTU0UAAAAPAAADTGF2ZjU4Ljc2LjEwMAAAAAAAAAAAAAAA//tQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWGluZwAAAA8AAAACAAABhgC7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7//////////////////////////////////////////////////////////////////8AAAAATGF2YzU4LjEzAAAAAAAAAAAAAAAAJAAAAAAAAAAAAYYoRwMHAAAAAAD/+1DEAAAH+ANoUAAABNQJrLoYkAAAAAA0YAAAAAAAANIAAAAASEFJRkZJAAAAAElORk8AAAAJAAAAAAAAAFRTRVQAAAAPAAADTGF2ZjU4Ljc2LjEwMA==";
+      ttsAudioElement.src = silentMp3;
+      ttsAudioElement.play().then(function () {
+        console.log("[TTS] Audio element primed with silent frame");
+      }).catch(function () {
+        // Priming failed — will retry with real audio (may hit autoplay block)
+        console.warn("[TTS] Silent prime failed, will attempt direct play");
+      });
+    }
+
     function handleTTSAudio(audioData) {
       hasTTSAudio = true;
       ttsDeliveryComplete = false;
@@ -1538,15 +1563,19 @@
 
       console.log("[TTS] Received audio chunk:", audioData.byteLength, "bytes");
 
-      // Clean up any previous playback
-      cleanupTTSAudio();
-
-      // Create a Blob URL from the audio data and play via <audio> element
+      // Create a Blob URL from the audio data
+      if (ttsBlobUrl) {
+        URL.revokeObjectURL(ttsBlobUrl);
+      }
       const blob = new Blob([audioData], { type: "audio/mpeg" });
       ttsBlobUrl = URL.createObjectURL(blob);
 
-      ttsAudioElement = new Audio(ttsBlobUrl);
-      ttsAudioElement.preload = "auto";
+      // Reuse the primed element if available, otherwise create a new one
+      if (!ttsAudioElement) {
+        ttsAudioElement = new Audio();
+        ttsAudioElement.preload = "auto";
+      }
+
       ttsPlaying = true;
 
       ttsAudioElement.onplay = function () {
@@ -1564,6 +1593,8 @@
         triggerTTSFailSafe();
       };
 
+      // Swap in the real audio source and play
+      ttsAudioElement.src = ttsBlobUrl;
       ttsAudioElement.play().then(function () {
         console.log("[TTS] play() promise resolved, audio is playing");
       }).catch(function (err) {
@@ -1942,6 +1973,11 @@
       // Echo prevention: hard-stop mic tracks before TTS delivery
       hardStopMic();
 
+      // Prime the audio element during the user gesture so the browser
+      // grants playback permission. The real TTS source is swapped in
+      // when the WebSocket delivers the audio data.
+      primeTTSAudioElement();
+
       // Send deliver_evaluation command to server
       wsSend({ type: "deliver_evaluation" });
 
@@ -1955,6 +1991,9 @@
 
       // Echo prevention: hard-stop mic before replay (same as initial delivery)
       hardStopMic();
+
+      // Prime the audio element during the user gesture (same as deliver)
+      primeTTSAudioElement();
 
       // Send replay_tts command to server
       wsSend({ type: "replay_tts" });

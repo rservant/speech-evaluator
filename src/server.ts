@@ -412,7 +412,21 @@ function handleStartRecording(
   // Cancel any pending auto-purge timer when starting a new recording
   clearPurgeTimer(connState);
 
-  sessionManager.startRecording(connState.sessionId);
+  sessionManager.startRecording(connState.sessionId, (segment) => {
+    // Push live transcript segments to the client as they arrive from Deepgram.
+    // Uses replaceFromIndex semantics: interim results replace the last segment,
+    // final results append.
+    const session = sessionManager.getSession(connState.sessionId);
+    if (segment.isFinal) {
+      // Final segment: append after all previously finalized segments
+      const finalCount = session.liveTranscript.filter((s) => s.isFinal).length;
+      sendTranscriptUpdate(ws, [segment], finalCount - 1);
+      connState.liveTranscriptLength = finalCount;
+    } else {
+      // Interim segment: replace from the current finalized count onward
+      sendTranscriptUpdate(ws, [segment], connState.liveTranscriptLength);
+    }
+  });
   logger.info(`Recording started for session ${connState.sessionId}`);
 
   // Reset connection state for new recording

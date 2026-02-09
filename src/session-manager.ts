@@ -257,42 +257,46 @@ export class SessionManager {
    *
    * @throws Error if the session is not in IDLE state.
    */
-  startRecording(sessionId: string): void {
-    const session = this.getSession(sessionId);
-    this.assertTransition(session, SessionState.RECORDING, "startRecording");
+  startRecording(sessionId: string, onLiveSegment?: (segment: TranscriptSegment) => void): void {
+      const session = this.getSession(sessionId);
+      this.assertTransition(session, SessionState.RECORDING, "startRecording");
 
-    session.runId++;
-    session.state = SessionState.RECORDING;
-    session.startedAt = new Date();
+      session.runId++;
+      session.state = SessionState.RECORDING;
+      session.startedAt = new Date();
 
-    // Clear previous session data for a fresh recording
-    session.transcript = [];
-    session.liveTranscript = [];
-    session.audioChunks = [];
-    session.metrics = null;
-    session.evaluation = null;
-    session.evaluationPublic = null;
-    session.evaluationScript = null;
-    session.qualityWarning = false;
-    session.outputsSaved = false;
-    session.ttsAudioCache = null;
-    session.stoppedAt = null;
+      // Clear previous session data for a fresh recording
+      session.transcript = [];
+      session.liveTranscript = [];
+      session.audioChunks = [];
+      session.metrics = null;
+      session.evaluation = null;
+      session.evaluationPublic = null;
+      session.evaluationScript = null;
+      session.qualityWarning = false;
+      session.outputsSaved = false;
+      session.ttsAudioCache = null;
+      session.stoppedAt = null;
 
-    // Start live transcription if engine is available
-    if (this.deps.transcriptionEngine) {
-      this.log("INFO", `Starting Deepgram live transcription for session ${sessionId}`);
-      const capturedRunId = session.runId;
-      this.deps.transcriptionEngine.startLive((segment: TranscriptSegment) => {
-        // Only commit live transcript if runId still matches (not cancelled)
-        if (session.runId === capturedRunId) {
-          session.liveTranscript.push(segment);
-        }
-      });
-      this.log("INFO", `Deepgram live connection opened for session ${sessionId}`);
-    } else {
-      this.log("WARN", `No TranscriptionEngine configured — live transcription disabled`);
+      // Start live transcription if engine is available
+      if (this.deps.transcriptionEngine) {
+        this.log("INFO", `Starting Deepgram live transcription for session ${sessionId}`);
+        const capturedRunId = session.runId;
+        this.deps.transcriptionEngine.startLive((segment: TranscriptSegment) => {
+          // Only commit live transcript if runId still matches (not cancelled)
+          if (session.runId === capturedRunId) {
+            session.liveTranscript.push(segment);
+            // Notify the server layer so it can push to the client
+            if (onLiveSegment) {
+              onLiveSegment(segment);
+            }
+          }
+        });
+        this.log("INFO", `Deepgram live connection opened for session ${sessionId}`);
+      } else {
+        this.log("WARN", `No TranscriptionEngine configured — live transcription disabled`);
+      }
     }
-  }
 
   /**
    * Forwards an audio chunk to the live transcription engine (Deepgram).
