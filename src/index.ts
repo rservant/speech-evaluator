@@ -14,6 +14,8 @@ import type { OpenAIClient } from "./evaluation-generator.js";
 import { TTSEngine } from "./tts-engine.js";
 import type { OpenAITTSClient } from "./tts-engine.js";
 import { FilePersistence } from "./file-persistence.js";
+import { VADMonitor } from "./vad-monitor.js";
+import type { VADConfig, VADEventCallback } from "./vad-monitor.js";
 
 export const APP_NAME = "AI Toastmasters Evaluator";
 export const APP_VERSION = "0.1.0";
@@ -71,6 +73,8 @@ const sessionManager = new SessionManager({
   evaluationGenerator,
   ttsEngine,
   filePersistence,
+  vadMonitorFactory: (config: VADConfig, callbacks: VADEventCallback) =>
+    new VADMonitor(config, callbacks),
 });
 
 // ─── Start server ───────────────────────────────────────────────────────────────
