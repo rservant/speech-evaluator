@@ -104,8 +104,9 @@ export class SessionManager {
   }
 
   constructor(deps: SessionManagerDeps = {}) {
-    this.deps = deps;
-  }
+      this.deps = deps;
+      this.log("INIT", `VAD: ${deps.vadMonitorFactory ? "enabled (factory provided)" : "disabled (no factory)"}`);
+    }
 
   /**
    * Creates a new session in the IDLE state.
