@@ -19,6 +19,7 @@ import {
   type TranscriptSegment,
   SessionState,
 } from "./types.js";
+import { VADMonitor, type VADStatus } from "./vad-monitor.js";
 
 // ─── Constants ──────────────────────────────────────────────────────────────────
 
@@ -107,7 +108,9 @@ export function createAppServer(options: CreateServerOptions = {}): AppServer {
   const {
     staticDir = path.resolve(process.cwd(), "public"),
     logger = defaultLogger,
-    sessionManager = new SessionManager(),
+    sessionManager = new SessionManager({
+      vadMonitorFactory: (config, callbacks) => new VADMonitor(config, callbacks),
+    }),
   } = options;
 
   const app = express();
@@ -347,6 +350,14 @@ function handleClientMessage(
       handleSetTimeLimit(ws, message, connState, sessionManager, logger);
       break;
 
+    case "set_project_context":
+      handleSetProjectContext(ws, message, connState, sessionManager, logger);
+      break;
+
+    case "set_vad_config":
+      handleSetVADConfig(ws, message, connState, sessionManager, logger);
+      break;
+
     default: {
       const exhaustiveCheck: never = message;
       sendMessage(ws, {
@@ -412,6 +423,26 @@ function handleStartRecording(
 
   // Cancel any pending auto-purge timer when starting a new recording
   clearPurgeTimer(connState);
+
+  // Register VAD callbacks BEFORE startRecording() so SessionManager can wire them
+  // into the VADMonitor when it creates one. Callbacks are wrapped in try/catch
+  // to prevent WebSocket errors from affecting recording.
+  sessionManager.registerVADCallbacks(connState.sessionId, {
+    onSpeechEnd: (silenceDuration: number) => {
+      try {
+        sendMessage(ws, { type: "vad_speech_end", silenceDurationSeconds: silenceDuration });
+      } catch {
+        // WebSocket send failure must not affect recording
+      }
+    },
+    onStatus: (status: VADStatus) => {
+      try {
+        sendMessage(ws, { type: "vad_status", energy: status.energy, isSpeech: status.isSpeech });
+      } catch {
+        // WebSocket send failure must not affect recording
+      }
+    },
+  });
 
   sessionManager.startRecording(connState.sessionId, (segment) => {
     // Push live transcript segments to the client as they arrive from Deepgram.
@@ -597,7 +628,7 @@ async function handleDeliverEvaluation(
     sendMessage(ws, { type: "state_change", state: SessionState.IDLE });
 
     // Start auto-purge timer (privacy: 10-minute retention after delivery)
-    startPurgeTimer(connState, sessionManager, logger);
+    startPurgeTimer(connState, sessionManager, logger, ws);
   } else if (sessionAfterGen.evaluation && sessionAfterGen.evaluationScript) {
     // TTS failure: evaluation and script are available but no audio (Req 7.4)
     logger.warn(`TTS synthesis failed for session ${connState.sessionId}, falling back to written evaluation`);
@@ -613,7 +644,7 @@ async function handleDeliverEvaluation(
     sendMessage(ws, { type: "state_change", state: SessionState.IDLE });
 
     // Start auto-purge timer
-    startPurgeTimer(connState, sessionManager, logger);
+    startPurgeTimer(connState, sessionManager, logger, ws);
   } else {
     // No evaluation generated (e.g., no transcript/metrics available)
     logger.warn(`No evaluation generated for session ${connState.sessionId}`);
@@ -667,7 +698,7 @@ function deliverFromCache(
 
   // Start auto-purge timer (privacy: 10-minute retention after delivery)
   // evaluationCache remains available for replay_tts until auto-purge fires (Req 5.7)
-  startPurgeTimer(connState, sessionManager, logger);
+  startPurgeTimer(connState, sessionManager, logger, ws);
 }
 
 
@@ -729,7 +760,7 @@ async function handleReplayTTS(
   logger.debug(`[handleReplayTTS] Transitioned to IDLE for session ${connState.sessionId}`);
 
   // Restart auto-purge timer (privacy: 10-minute retention after delivery)
-  startPurgeTimer(connState, sessionManager, logger);
+  startPurgeTimer(connState, sessionManager, logger, ws);
 }
 
 
@@ -883,6 +914,121 @@ function handleSetTimeLimit(
   }
 }
 
+// ─── Set Project Context (Phase 3 — Req 4.8, 6.1, 6.2, 6.3) ───────────────────
+
+function handleSetProjectContext(
+  ws: WebSocket,
+  message: Extract<ClientMessage, { type: "set_project_context" }>,
+  connState: ConnectionState,
+  sessionManager: SessionManager,
+  logger: ServerLogger,
+): void {
+  try {
+    // Validate input constraints (Req 4.8)
+    if (typeof message.speechTitle !== "string" || message.speechTitle.length > 200) {
+      sendMessage(ws, {
+        type: "error",
+        message: "speechTitle must be a string of at most 200 characters",
+        recoverable: true,
+      });
+      return;
+    }
+    if (typeof message.projectType !== "string" || message.projectType.length > 100) {
+      sendMessage(ws, {
+        type: "error",
+        message: "projectType must be a string of at most 100 characters",
+        recoverable: true,
+      });
+      return;
+    }
+    if (!Array.isArray(message.objectives) || message.objectives.length > 10) {
+      sendMessage(ws, {
+        type: "error",
+        message: "objectives must be an array of at most 10 items",
+        recoverable: true,
+      });
+      return;
+    }
+    for (const obj of message.objectives) {
+      if (typeof obj !== "string" || obj.length > 500) {
+        sendMessage(ws, {
+          type: "error",
+          message: "Each objective must be a string of at most 500 characters",
+          recoverable: true,
+        });
+        return;
+      }
+    }
+
+    sessionManager.setProjectContext(connState.sessionId, {
+      speechTitle: message.speechTitle || null,
+      projectType: message.projectType || null,
+      objectives: message.objectives,
+    });
+    logger.info(`Project context set for session ${connState.sessionId}: title="${message.speechTitle}", type="${message.projectType}", objectives=${message.objectives.length}`);
+  } catch (err) {
+    const errorMessage = err instanceof Error ? err.message : String(err);
+    logger.warn(`set_project_context failed for session ${connState.sessionId}: ${errorMessage}`);
+    sendMessage(ws, {
+      type: "error",
+      message: errorMessage,
+      recoverable: true,
+    });
+  }
+}
+
+// ─── Set VAD Config (Phase 3 — Req 3.1, 6.4, 6.5) ─────────────────────────────
+
+function handleSetVADConfig(
+  ws: WebSocket,
+  message: Extract<ClientMessage, { type: "set_vad_config" }>,
+  connState: ConnectionState,
+  sessionManager: SessionManager,
+  logger: ServerLogger,
+): void {
+  try {
+    // Validate input (Req 3.1)
+    if (typeof message.silenceThresholdSeconds !== "number" || !Number.isFinite(message.silenceThresholdSeconds)) {
+      sendMessage(ws, {
+        type: "error",
+        message: "silenceThresholdSeconds must be a finite number",
+        recoverable: true,
+      });
+      return;
+    }
+    if (message.silenceThresholdSeconds < 3 || message.silenceThresholdSeconds > 15) {
+      sendMessage(ws, {
+        type: "error",
+        message: "silenceThresholdSeconds must be between 3 and 15",
+        recoverable: true,
+      });
+      return;
+    }
+    if (typeof message.enabled !== "boolean") {
+      sendMessage(ws, {
+        type: "error",
+        message: "enabled must be a boolean",
+        recoverable: true,
+      });
+      return;
+    }
+
+    sessionManager.setVADConfig(connState.sessionId, {
+      silenceThresholdSeconds: message.silenceThresholdSeconds,
+      enabled: message.enabled,
+    });
+    logger.info(`VAD config set for session ${connState.sessionId}: threshold=${message.silenceThresholdSeconds}s, enabled=${message.enabled}`);
+  } catch (err) {
+    const errorMessage = err instanceof Error ? err.message : String(err);
+    logger.warn(`set_vad_config failed for session ${connState.sessionId}: ${errorMessage}`);
+    sendMessage(ws, {
+      type: "error",
+      message: errorMessage,
+      recoverable: true,
+    });
+  }
+}
+
 // ─── Elapsed Time Ticker ────────────────────────────────────────────────────────
 
 function startElapsedTimeTicker(
@@ -955,6 +1101,7 @@ export function startPurgeTimer(
   connState: ConnectionState,
   sessionManager: SessionManager,
   logger: ServerLogger,
+  ws?: WebSocket,
 ): void {
   clearPurgeTimer(connState);
 
@@ -963,6 +1110,12 @@ export function startPurgeTimer(
       const session = sessionManager.getSession(connState.sessionId);
       purgeSessionData(session);
       logger.info(`Auto-purge completed for session ${connState.sessionId}`);
+
+      // Notify client so UI can clear stale local state (project context form,
+      // VAD config, evaluation/transcript display)
+      if (ws) {
+        sendMessage(ws, { type: "data_purged", reason: "auto_purge" });
+      }
     } catch {
       // Session may already be gone
     }
@@ -981,7 +1134,11 @@ function clearPurgeTimer(connState: ConnectionState): void {
  * for UI state. This is used by the auto-purge timer and speaker opt-out.
  *
  * Privacy: Clears audio chunks, transcript, live transcript, metrics,
- * evaluation, and evaluation script.
+ * evaluation, evaluation script, project context, and telemetry data.
+ *
+ * Note: `session.consent` and `session.outputsSaved` are intentionally NOT
+ * cleared — consent is session metadata (not speech data), and `outputsSaved`
+ * tracks disk persistence status.
  */
 export function purgeSessionData(session: Session): void {
   session.audioChunks = [];
@@ -989,8 +1146,12 @@ export function purgeSessionData(session: Session): void {
   session.liveTranscript = [];
   session.metrics = null;
   session.evaluation = null;
+  session.evaluationPublic = null;
   session.evaluationScript = null;
   session.ttsAudioCache = null;
+  session.evaluationPassRate = null;
+  session.qualityWarning = false;
+  session.projectContext = null;
 
   // Clear eager pipeline state — pure reset only, no runId++ needed
   // (purge happens after delivery, no in-flight work to cancel)

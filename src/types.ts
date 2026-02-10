@@ -46,6 +46,26 @@ export interface ConsentRecord {
   consentTimestamp: Date;
 }
 
+// ─── Project Context (Phase 3 — Req 4, 5, 6) ───────────────────────────────────
+
+export interface ProjectContext {
+  /** Speech title, free text. Max 200 characters (Req 4.8). */
+  speechTitle: string | null;
+  /** Toastmasters Pathways project type. Max 100 characters (Req 4.8). */
+  projectType: string | null;
+  /** Project-specific evaluation objectives. Max 10 items, each max 500 characters (Req 4.8). */
+  objectives: string[];
+}
+
+// ─── VAD Configuration (Phase 3 — Req 1, 2, 3) ─────────────────────────────────
+
+export interface SessionVADConfig {
+  /** Silence duration threshold in seconds. Range: 3-15, default: 5 (Req 3.1). */
+  silenceThresholdSeconds: number;
+  /** Whether VAD is enabled. Default: true (Req 3.5). */
+  enabled: boolean;
+}
+
 // ─── Session ────────────────────────────────────────────────────────────────────
 
 export interface Session {
@@ -68,8 +88,12 @@ export interface Session {
   timeLimitSeconds: number; // Phase 2 (Req 6.1) — default: 120
   evaluationPassRate: number | null; // Phase 2 (Req 1.6) — telemetry
   speakerName?: string; // DEPRECATED — getter from consent (Req 8.4 backward compat)
+  /** @deprecated Use `projectContext.objectives` instead. Superseded by Phase 3 project awareness (Req 8.2). */
   evaluationObjectives?: string[]; // extensibility: future project-specific (Req 8.2)
   voiceConfig?: string; // extensibility: future voice selection (Req 8.3)
+  // ─── Phase 3 Fields ────────────────────────────────────────────────────────
+  projectContext: ProjectContext | null; // Phase 3 (Req 9.1) — project awareness metadata
+  vadConfig: SessionVADConfig; // Phase 3 (Req 9.2) — VAD configuration
   // ─── Eager Pipeline Fields ──────────────────────────────────────────────────
   eagerStatus: EagerStatus; // default: "idle"
   eagerRunId: number | null; // runId captured at eager pipeline start; null when idle
@@ -229,6 +253,8 @@ export interface ToneCheckResult {
 
 export interface EvaluationConfig {
   objectives?: string[]; // unused in Phase 1, extensibility hook (Req 8.2)
+  speechTitle?: string;    // Phase 3: speech title from ProjectContext
+  projectType?: string;    // Phase 3: Toastmasters project type from ProjectContext
 }
 
 export interface TTSConfig {
@@ -257,7 +283,9 @@ export type ClientMessage =
   | { type: "replay_tts" }
   | { type: "set_consent"; speakerName: string; consentConfirmed: boolean }
   | { type: "revoke_consent" }
-  | { type: "set_time_limit"; seconds: number };
+  | { type: "set_time_limit"; seconds: number }
+  | { type: "set_project_context"; speechTitle: string; projectType: string; objectives: string[] }
+  | { type: "set_vad_config"; silenceThresholdSeconds: number; enabled: boolean };
 
 // Server → Client messages
 export type ServerMessage =
@@ -284,5 +312,7 @@ export type ServerMessage =
       estimatedSeconds: number;
       timeLimitSeconds: number;
     }
+  | { type: "vad_speech_end"; silenceDurationSeconds: number }
+  | { type: "vad_status"; energy: number; isSpeech: boolean }
   | { type: "data_purged"; reason: "opt_out" | "auto_purge" }
   | { type: "pipeline_progress"; stage: PipelineStage; runId: number; message?: string };

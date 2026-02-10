@@ -2891,3 +2891,337 @@ describe("Feature: phase-2-stability-credibility, Property 19: Cosine Similarity
     );
   });
 });
+
+// ─── CTX-P3: Project context included in prompt when provided ───────────────────
+
+describe("Feature: phase-3-semi-automation, CTX-P3: Project context included in prompt when provided", () => {
+  // ── Generators ──────────────────────────────────────────────────────────────
+
+  /**
+   * Generate a non-empty project type string from realistic Toastmasters project types.
+   */
+  function arbitraryProjectType(): fc.Arbitrary<string> {
+    return fc.constantFrom(
+      "Ice Breaker",
+      "Evaluation and Feedback",
+      "Researching and Presenting",
+      "Introduction to Vocal Variety",
+      "Connect with Storytelling",
+      "Persuasive Speaking",
+      "Custom / Other",
+    );
+  }
+
+  /**
+   * Generate a non-empty speech title string from realistic title words.
+   */
+  function arbitrarySpeechTitle(): fc.Arbitrary<string> {
+    const TITLE_WORDS = [
+      "My", "Journey", "To", "Toastmasters", "Finding", "Voice", "The",
+      "Power", "Of", "Words", "Speaking", "Up", "A", "New", "Beginning",
+      "Lessons", "From", "Life", "Growth", "Through", "Challenge",
+    ];
+    return fc.array(fc.constantFrom(...TITLE_WORDS), { minLength: 1, maxLength: 8 })
+      .map((words) => words.join(" "));
+  }
+
+  /**
+   * Generate a non-empty objective string from realistic objective phrases.
+   */
+  function arbitraryObjective(): fc.Arbitrary<string> {
+    const OBJECTIVE_PARTS = [
+      "Introduce yourself and share your personal story",
+      "Organize your speech with an opening body and conclusion",
+      "Speak for 4 to 6 minutes",
+      "Use vocal variety to enhance your message",
+      "Vary pace pitch volume and pauses",
+      "Persuade the audience to adopt your viewpoint",
+      "Use logical arguments and emotional appeals",
+      "Research a topic and present your findings",
+      "Use credible sources to support your points",
+      "Share a personal story that connects with the audience",
+    ];
+    return fc.constantFrom(...OBJECTIVE_PARTS);
+  }
+
+  /**
+   * Generate an EvaluationConfig with a non-empty projectType and at least one objective.
+   * speechTitle is optionally present (non-null or undefined).
+   */
+  function arbitraryProjectConfig(): fc.Arbitrary<{
+    projectType: string;
+    speechTitle: string | undefined;
+    objectives: string[];
+  }> {
+    return fc.record({
+      projectType: arbitraryProjectType(),
+      speechTitle: fc.option(arbitrarySpeechTitle(), { nil: undefined }),
+      objectives: fc.array(arbitraryObjective(), { minLength: 1, maxLength: 10 }),
+    });
+  }
+
+  // ── Helpers ─────────────────────────────────────────────────────────────────
+
+  function createGenerator(): EvaluationGenerator {
+    const mockClient = makeMockClient(["{}"]);
+    return new EvaluationGenerator(mockClient);
+  }
+
+  /**
+   * Build minimal but valid transcript text and delivery metrics for prompt construction.
+   */
+  function buildMinimalInputs(): { transcriptText: string; metrics: DeliveryMetrics } {
+    const transcriptText = "Today I want to talk about the importance of public speaking.";
+    const metrics: DeliveryMetrics = {
+      durationSeconds: 60,
+      durationFormatted: "1:00",
+      totalWords: 11,
+      wordsPerMinute: 11,
+      fillerWords: [],
+      fillerWordCount: 0,
+      fillerWordFrequency: 0,
+      pauseCount: 0,
+      totalPauseDurationSeconds: 0,
+      averagePauseDurationSeconds: 0,
+      intentionalPauseCount: 0,
+      hesitationPauseCount: 0,
+      classifiedPauses: [],
+      energyVariationCoefficient: 0,
+      energyProfile: {
+        windowDurationMs: 250,
+        windows: [],
+        coefficientOfVariation: 0,
+        silenceThreshold: 0,
+      },
+      classifiedFillers: [],
+    };
+    return { transcriptText, metrics };
+  }
+
+  // ── Property Tests ──────────────────────────────────────────────────────────
+
+  /**
+   * **Validates: Requirements 5.1, 5.2, 5.5**
+   *
+   * CTX-P3: For any non-null ProjectContext with a non-empty projectType and
+   * at least one objective, the LLM prompt built by buildUserPrompt() SHALL
+   * contain the project type string, the speech title string (if non-null),
+   * and each objective string. The prompt SHALL also contain instructions to
+   * reference project objectives in the evaluation.
+   */
+  it("buildUserPrompt() contains project type, speech title, objectives, and project instructions", () => {
+    const generator = createGenerator();
+    const { transcriptText, metrics } = buildMinimalInputs();
+
+    fc.assert(
+      fc.property(
+        arbitraryProjectConfig(),
+        (config) => {
+          const prompt = (generator as any).buildUserPrompt(
+            transcriptText,
+            metrics,
+            config,
+          );
+
+          // The prompt SHALL contain the project type string
+          expect(prompt).toContain(config.projectType);
+
+          // The prompt SHALL contain the speech title string when non-null
+          if (config.speechTitle !== undefined) {
+            expect(prompt).toContain(config.speechTitle);
+          }
+
+          // The prompt SHALL contain each objective string
+          for (const objective of config.objectives) {
+            expect(prompt).toContain(objective);
+          }
+
+          // The prompt SHALL contain the "Project-Specific Evaluation" section header
+          expect(prompt).toContain("## Project-Specific Evaluation");
+
+          // The prompt SHALL contain instructions to reference project objectives
+          expect(prompt).toContain("Reference the project type and speech title in your opening");
+          expect(prompt).toContain("directly addresses a project objective");
+          expect(prompt).toContain("Balance project-specific feedback with general Toastmasters evaluation criteria");
+          expect(prompt).toContain("Project objectives supplement, not replace, evidence-based feedback");
+        },
+      ),
+      { numRuns: 100 },
+    );
+  });
+});
+
+// ─── CTX-P1: Absent project context produces no project prompt sections ─────────
+
+describe("Feature: phase-3-semi-automation, CTX-P1: Absent project context produces no project prompt sections", () => {
+  // ── Generators ──────────────────────────────────────────────────────────────
+
+  /**
+   * Generate an EvaluationConfig where projectType is undefined, speechTitle is
+   * undefined, and objectives is empty — representing absent project context.
+   * Three variants: config is undefined, config is an empty object, or config
+   * has explicit undefined/empty values.
+   */
+  function arbitraryAbsentProjectConfig(): fc.Arbitrary<
+    | undefined
+    | { speechTitle?: undefined; projectType?: undefined; objectives?: string[] }
+  > {
+    return fc.oneof(
+      // Case 1: config is entirely undefined
+      fc.constant(undefined),
+      // Case 2: config is an empty object (no fields set)
+      fc.constant({} as { speechTitle?: undefined; projectType?: undefined; objectives?: string[] }),
+      // Case 3: config has explicit undefined/empty values
+      fc.constant({
+        speechTitle: undefined,
+        projectType: undefined,
+        objectives: [] as string[],
+      }),
+    );
+  }
+
+  /**
+   * Generate random transcript text from the word pool to ensure the property
+   * holds regardless of transcript content.
+   */
+  function arbitraryTranscriptText(): fc.Arbitrary<string> {
+    return fc.array(fc.constantFrom(...WORD_POOL), { minLength: 5, maxLength: 30 })
+      .map((words) => words.join(" "));
+  }
+
+  /**
+   * Generate varied but valid DeliveryMetrics to ensure the property holds
+   * regardless of metrics values.
+   */
+  function arbitraryMetrics(): fc.Arbitrary<DeliveryMetrics> {
+    return fc.record({
+      durationSeconds: fc.double({ min: 10, max: 600, noNaN: true }),
+      totalWords: fc.integer({ min: 10, max: 2000 }),
+      wordsPerMinute: fc.double({ min: 50, max: 250, noNaN: true }),
+      fillerWordCount: fc.integer({ min: 0, max: 50 }),
+      pauseCount: fc.integer({ min: 0, max: 30 }),
+    }).map((r) => ({
+      durationSeconds: r.durationSeconds,
+      durationFormatted: `${Math.floor(r.durationSeconds / 60)}:${String(Math.floor(r.durationSeconds % 60)).padStart(2, "0")}`,
+      totalWords: r.totalWords,
+      wordsPerMinute: r.wordsPerMinute,
+      fillerWords: [],
+      fillerWordCount: r.fillerWordCount,
+      fillerWordFrequency: 0,
+      pauseCount: r.pauseCount,
+      totalPauseDurationSeconds: 0,
+      averagePauseDurationSeconds: 0,
+      intentionalPauseCount: 0,
+      hesitationPauseCount: 0,
+      classifiedPauses: [],
+      energyVariationCoefficient: 0,
+      energyProfile: {
+        windowDurationMs: 250,
+        windows: [],
+        coefficientOfVariation: 0,
+        silenceThreshold: 0,
+      },
+      classifiedFillers: [],
+    }));
+  }
+
+  // ── Helpers ─────────────────────────────────────────────────────────────────
+
+  function createGenerator(): EvaluationGenerator {
+    const mockClient = makeMockClient(["{}"]);
+    return new EvaluationGenerator(mockClient);
+  }
+
+  // ── Property Tests ──────────────────────────────────────────────────────────
+
+  /**
+   * **Validates: Requirements 4.6, 5.3**
+   *
+   * CTX-P1: For any EvaluationConfig where speechTitle is undefined/null and
+   * projectType is undefined/null and objectives is empty, the LLM prompt
+   * built by buildUserPrompt() SHALL NOT contain the strings
+   * "Project-Specific Evaluation", "Project Objectives", or any of the
+   * project-specific instruction text. The prompt SHALL be identical to the
+   * Phase 2 prompt.
+   */
+  it("buildUserPrompt() produces no project sections when project context is absent", () => {
+    const generator = createGenerator();
+
+    fc.assert(
+      fc.property(
+        arbitraryAbsentProjectConfig(),
+        arbitraryTranscriptText(),
+        arbitraryMetrics(),
+        (config, transcriptText, metrics) => {
+          const prompt = (generator as any).buildUserPrompt(
+            transcriptText,
+            metrics,
+            config,
+          );
+
+          // The prompt SHALL NOT contain the project-specific section header
+          expect(prompt).not.toContain("Project-Specific Evaluation");
+
+          // The prompt SHALL NOT contain the project objectives subsection header
+          expect(prompt).not.toContain("Project Objectives");
+
+          // The prompt SHALL NOT contain project-specific instruction text
+          expect(prompt).not.toContain("Reference the project type and speech title in your opening");
+          expect(prompt).not.toContain("directly addresses a project objective");
+          expect(prompt).not.toContain("Balance project-specific feedback with general Toastmasters evaluation criteria");
+          expect(prompt).not.toContain("Project objectives supplement, not replace, evidence-based feedback");
+
+          // The prompt SHALL NOT contain the Evaluation Objectives section
+          // (only rendered when objectives are present without projectType)
+          expect(prompt).not.toContain("## Evaluation Objectives");
+        },
+      ),
+      { numRuns: 100 },
+    );
+  });
+
+  /**
+   * **Validates: Requirements 4.6, 5.3**
+   *
+   * CTX-P1 (identity): For any transcript text and metrics, the prompt built
+   * with absent project context SHALL be identical to the prompt built with
+   * no config at all (undefined). This verifies Phase 2 behavioral equivalence.
+   */
+  it("buildUserPrompt() with absent project config is identical to buildUserPrompt() with undefined config", () => {
+    const generator = createGenerator();
+
+    fc.assert(
+      fc.property(
+        arbitraryTranscriptText(),
+        arbitraryMetrics(),
+        (transcriptText, metrics) => {
+          // Baseline: no config at all (Phase 2 behavior)
+          const baselinePrompt = (generator as any).buildUserPrompt(
+            transcriptText,
+            metrics,
+            undefined,
+          );
+
+          // Variant 1: empty object config
+          const emptyConfigPrompt = (generator as any).buildUserPrompt(
+            transcriptText,
+            metrics,
+            {},
+          );
+
+          // Variant 2: explicit undefined/empty values
+          const explicitAbsentPrompt = (generator as any).buildUserPrompt(
+            transcriptText,
+            metrics,
+            { speechTitle: undefined, projectType: undefined, objectives: [] },
+          );
+
+          // All three SHALL produce identical prompts
+          expect(emptyConfigPrompt).toBe(baselinePrompt);
+          expect(explicitAbsentPrompt).toBe(baselinePrompt);
+        },
+      ),
+      { numRuns: 100 },
+    );
+  });
+});

@@ -412,6 +412,7 @@ describe("SessionManager Pipeline Wiring", () => {
       expect(deps.evaluationGenerator!.generate).toHaveBeenCalledWith(
         session.transcript,
         session.metrics,
+        undefined, // no project context → config is undefined
       );
     });
 

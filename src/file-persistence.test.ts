@@ -20,6 +20,7 @@ import type {
   StructuredEvaluation,
   StructuredEvaluationPublic,
   ConsentRecord,
+  ProjectContext,
 } from "./types.js";
 import { SessionState } from "./types.js";
 
@@ -45,6 +46,12 @@ function makeSession(overrides: Partial<Session> = {}): Session {
     consent: null,
     timeLimitSeconds: 120,
     evaluationPassRate: null,
+    projectContext: null,
+    vadConfig: { silenceThresholdSeconds: 5, enabled: true },
+    eagerStatus: "idle",
+    eagerRunId: null,
+    eagerPromise: null,
+    evaluationCache: null,
     ...overrides,
   };
 }
@@ -800,6 +807,54 @@ describe("FilePersistence", () => {
 
       // Should use evaluationPublic (redacted) not internal evaluation
       expect(content).toContain("a fellow member made a great point");
+    });
+
+    // ─── Phase 3: Project context persistence (Req 5.4) ─────────────────
+
+    it("writes project-context.json when projectContext is present", async () => {
+      const projectContext: ProjectContext = {
+        speechTitle: "My Journey to Toastmasters",
+        projectType: "Ice Breaker",
+        objectives: ["Introduce yourself", "Speak for 4-6 minutes"],
+      };
+      const session = makeSession({
+        transcript: makeSegments(),
+        metrics: makeMetrics(),
+        evaluation: makeEvaluation(),
+        evaluationScript: "Great speech!",
+        projectContext,
+      });
+
+      const paths = await persistence.saveSession(session);
+
+      const projectContextPath = paths.find((p) => p.endsWith("project-context.json"));
+      expect(projectContextPath).toBeDefined();
+
+      const content = await readFile(projectContextPath!, "utf-8");
+      const parsed = JSON.parse(content);
+
+      expect(parsed.speechTitle).toBe("My Journey to Toastmasters");
+      expect(parsed.projectType).toBe("Ice Breaker");
+      expect(parsed.objectives).toEqual(["Introduce yourself", "Speak for 4-6 minutes"]);
+    });
+
+    it("does not write project-context.json when projectContext is null", async () => {
+      const session = makeSession({
+        transcript: makeSegments(),
+        metrics: makeMetrics(),
+        evaluation: makeEvaluation(),
+        evaluationScript: "Great speech!",
+        projectContext: null,
+      });
+
+      const paths = await persistence.saveSession(session);
+
+      expect(paths.some((p) => p.endsWith("project-context.json"))).toBe(false);
+
+      const entries = await readdir(tempDir);
+      const dirPath = join(tempDir, entries[0]);
+      const files = await readdir(dirPath);
+      expect(files).not.toContain("project-context.json");
     });
 
     // ─── TTS Audio File Persistence (Requirements 4.1, 4.2, 4.4) ─────────

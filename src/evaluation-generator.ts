@@ -573,7 +573,33 @@ The following transcript segments have high confidence (mean word confidence ≥
 ${highConfText}`;
     }
 
-    if (config?.objectives && config.objectives.length > 0) {
+    if (config?.projectType) {
+      // Project-Specific Evaluation section REPLACES the Evaluation Objectives section
+      // when projectType is provided (Req 5.1, 5.2, 5.5)
+      const titlePart = config.speechTitle
+        ? ` titled "${config.speechTitle}"`
+        : "";
+      prompt += `
+
+## Project-Specific Evaluation
+This speech is a ${config.projectType} project${titlePart}.`;
+
+      if (config.objectives && config.objectives.length > 0) {
+        prompt += `
+
+### Project Objectives
+${config.objectives.map((o, i) => `${i + 1}. ${o}`).join("\n")}`;
+      }
+
+      prompt += `
+
+### Instructions
+- Reference the project type and speech title in your opening.
+- Include at least one commendation or recommendation that directly addresses a project objective.
+- Balance project-specific feedback with general Toastmasters evaluation criteria.
+- Project objectives supplement, not replace, evidence-based feedback.`;
+    } else if (config?.objectives && config.objectives.length > 0) {
+      // Edge case: objectives present but no projectType — preserve existing rendering (Req 5.3)
       prompt += `
 
 ## Evaluation Objectives

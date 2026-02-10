@@ -1100,19 +1100,26 @@ describe("purgeSessionData", () => {
         classifiedFillers: [],
       },
       evaluation: { opening: "test", items: [], closing: "test", structure_commentary: { opening_comment: null, body_comment: null, closing_comment: null } },
-      evaluationPublic: null,
+      evaluationPublic: {
+        opening: "test public",
+        items: [],
+        closing: "test public",
+        structure_commentary: { opening_comment: null, body_comment: null, closing_comment: null },
+      },
       evaluationScript: "test script",
       ttsAudioCache: null,
-      qualityWarning: false,
-      outputsSaved: false,
+      qualityWarning: true,
+      outputsSaved: true,
       runId: 1,
-      consent: null,
+      consent: { speakerName: "Test Speaker", consentConfirmed: true, consentTimestamp: new Date() },
       timeLimitSeconds: 120,
-      evaluationPassRate: null,
+      evaluationPassRate: 0.85,
       eagerStatus: "idle",
       eagerRunId: null,
       eagerPromise: null,
       evaluationCache: null,
+      projectContext: { speechTitle: "My Speech", projectType: "Ice Breaker", objectives: ["Introduce yourself"] },
+      vadConfig: { silenceThresholdSeconds: 5, enabled: true },
     };
 
     purgeSessionData(session);
@@ -1122,10 +1129,19 @@ describe("purgeSessionData", () => {
     expect(session.liveTranscript).toEqual([]);
     expect(session.metrics).toBeNull();
     expect(session.evaluation).toBeNull();
+    expect(session.evaluationPublic).toBeNull();
     expect(session.evaluationScript).toBeNull();
+    expect(session.evaluationPassRate).toBeNull();
+    expect(session.qualityWarning).toBe(false);
+    expect(session.projectContext).toBeNull();
     // Session object itself should still exist with its ID and state
     expect(session.id).toBe("test-id");
     expect(session.state).toBe(SessionState.IDLE);
+    // consent and outputsSaved are intentionally NOT cleared
+    expect(session.consent).toEqual({ speakerName: "Test Speaker", consentConfirmed: true, consentTimestamp: expect.any(Date) });
+    expect(session.outputsSaved).toBe(true);
+    // vadConfig is NOT cleared (it's configuration, not speech data)
+    expect(session.vadConfig).toEqual({ silenceThresholdSeconds: 5, enabled: true });
   });
 });
 
@@ -1737,6 +1753,165 @@ describe("Eager pipeline delivery and invalidation edge cases", () => {
       await c.nextMessageOfType("tts_complete");
       const idleMsg = await c.nextMessageOfType("state_change");
       expect(idleMsg).toEqual({ type: "state_change", state: SessionState.IDLE });
+    });
+  });
+});
+
+// ─── Phase 3: VAD and Project Context Message Handling (Task 5.5) ─────────────
+
+describe("Phase 3 VAD and project context message handling", () => {
+  let server: AppServer;
+  let silentLogger: ReturnType<typeof createSilentLogger>;
+  let clients: TestClient[];
+
+  beforeEach(async () => {
+    silentLogger = createSilentLogger();
+    server = createAppServer({ logger: silentLogger });
+    await server.listen(TEST_PORT);
+    clients = [];
+  });
+
+  afterEach(async () => {
+    for (const c of clients) c.close();
+    await server.close();
+    vi.restoreAllMocks();
+  });
+
+  function track(client: TestClient): TestClient {
+    clients.push(client);
+    return client;
+  }
+
+  // ─── set_vad_config (Req 6.4, 6.5) ───────────────────────────────────────────
+
+  describe("set_vad_config", () => {
+    it("should accept set_vad_config in IDLE state", async () => {
+      const c = track(await createClient(server));
+
+      c.sendJson({ type: "set_vad_config", silenceThresholdSeconds: 7, enabled: true });
+
+      // Give time for message to be processed
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      // Verify session was updated
+      const sessions = Array.from(
+        (server.sessionManager as unknown as { sessions: Map<string, Session> }).sessions.values(),
+      );
+      const session = sessions[0];
+      expect(session.vadConfig).toEqual({ silenceThresholdSeconds: 7, enabled: true });
+    });
+
+    it("should reject set_vad_config in RECORDING state", async () => {
+      const c = track(await createClient(server));
+
+      await setConsentForRecording(c);
+      c.sendJson({ type: "start_recording" });
+      await c.nextMessageOfType("state_change"); // RECORDING
+
+      c.sendJson({ type: "set_vad_config", silenceThresholdSeconds: 10, enabled: false });
+      const errorMsg = await c.nextMessageOfType("error");
+
+      expect((errorMsg as { message: string }).message).toContain("idle");
+      expect((errorMsg as { recoverable: boolean }).recoverable).toBe(true);
+    });
+  });
+
+  // ─── set_project_context (Req 6.1, 6.2, 6.3) ────────────────────────────────
+
+  describe("set_project_context", () => {
+    it("should accept set_project_context in IDLE state", async () => {
+      const c = track(await createClient(server));
+
+      c.sendJson({
+        type: "set_project_context",
+        speechTitle: "My Journey",
+        projectType: "Ice Breaker",
+        objectives: ["Introduce yourself", "Speak for 4-6 minutes"],
+      });
+
+      // Give time for message to be processed
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      // Verify session was updated
+      const sessions = Array.from(
+        (server.sessionManager as unknown as { sessions: Map<string, Session> }).sessions.values(),
+      );
+      const session = sessions[0];
+      expect(session.projectContext).toEqual({
+        speechTitle: "My Journey",
+        projectType: "Ice Breaker",
+        objectives: ["Introduce yourself", "Speak for 4-6 minutes"],
+      });
+    });
+
+    it("should reject set_project_context in RECORDING state", async () => {
+      const c = track(await createClient(server));
+
+      await setConsentForRecording(c);
+      c.sendJson({ type: "start_recording" });
+      await c.nextMessageOfType("state_change"); // RECORDING
+
+      c.sendJson({
+        type: "set_project_context",
+        speechTitle: "Late Context",
+        projectType: "Ice Breaker",
+        objectives: [],
+      });
+      const errorMsg = await c.nextMessageOfType("error");
+
+      expect((errorMsg as { message: string }).message).toContain("idle");
+      expect((errorMsg as { recoverable: boolean }).recoverable).toBe(true);
+    });
+
+    it("should reject set_project_context in PROCESSING state", async () => {
+      const c = track(await createClient(server));
+
+      await setConsentForRecording(c);
+      c.sendJson({ type: "start_recording" });
+      await c.nextMessageOfType("state_change"); // RECORDING
+
+      c.sendJson({ type: "stop_recording" });
+      await c.nextMessageOfType("state_change"); // PROCESSING
+
+      c.sendJson({
+        type: "set_project_context",
+        speechTitle: "Late Context",
+        projectType: "Ice Breaker",
+        objectives: [],
+      });
+      const errorMsg = await c.nextMessageOfType("error");
+
+      expect((errorMsg as { message: string }).message).toContain("idle");
+      expect((errorMsg as { recoverable: boolean }).recoverable).toBe(true);
+    });
+  });
+
+  // ─── vad_speech_end message (Req 2.1) ─────────────────────────────────────────
+
+  describe("vad_speech_end via VAD callback", () => {
+    it("should send vad_speech_end message when VAD onSpeechEnd callback fires", async () => {
+      const c = track(await createClient(server));
+
+      // Capture the VAD callbacks registered by handleStartRecording
+      let capturedCallbacks: { onSpeechEnd: (d: number) => void; onStatus: (s: { energy: number; isSpeech: boolean }) => void } | null = null;
+      vi.spyOn(server.sessionManager, "registerVADCallbacks").mockImplementation(
+        (_sessionId: string, callbacks: { onSpeechEnd: (d: number) => void; onStatus: (s: { energy: number; isSpeech: boolean }) => void }) => {
+          capturedCallbacks = callbacks;
+        },
+      );
+
+      await setConsentForRecording(c);
+      c.sendJson({ type: "start_recording" });
+      await c.nextMessageOfType("state_change"); // RECORDING
+
+      // Verify callbacks were registered
+      expect(capturedCallbacks).not.toBeNull();
+
+      // Simulate VAD detecting speech end
+      capturedCallbacks!.onSpeechEnd(5.2);
+
+      const vadMsg = await c.nextMessageOfType("vad_speech_end");
+      expect(vadMsg).toEqual({ type: "vad_speech_end", silenceDurationSeconds: 5.2 });
     });
   });
 });

@@ -10,6 +10,7 @@ import type {
   TranscriptSegment,
   TranscriptWord,
   DeliveryMetrics,
+  ProjectContext,
 } from "./types.js";
 import type { EvaluationGenerator } from "./evaluation-generator.js";
 import type { TTSEngine } from "./tts-engine.js";
@@ -3048,6 +3049,302 @@ describe("Feature: eager-evaluation-pipeline, Coverage: runId mutation paths use
           // Eager state is cleared
           expect(session.eagerStatus).toBe("idle");
           expect(session.evaluationCache).toBeNull();
+        },
+      ),
+      { numRuns: 100 },
+    );
+  });
+});
+
+// ─── Phase 3: Project Context Property Tests ────────────────────────────────────
+
+describe("Feature: phase-3-semi-automation, CTX-P2: Project context immutability after recording starts", () => {
+  /**
+   * **Validates: Requirements 4.7, 6.3**
+   *
+   * For any session in a non-IDLE state (RECORDING, PROCESSING, DELIVERING),
+   * calling setProjectContext() SHALL throw an error. The session's projectContext
+   * field SHALL remain unchanged after the error.
+   */
+
+  /**
+   * Generator for arbitrary ProjectContext values.
+   * Produces valid project context objects with constrained field sizes.
+   */
+  const arbitraryProjectContext = (): fc.Arbitrary<ProjectContext> =>
+    fc.record({
+      speechTitle: fc.oneof(
+        fc.constant(null),
+        fc.string({ minLength: 1, maxLength: 200 }),
+      ),
+      projectType: fc.oneof(
+        fc.constant(null),
+        fc.constantFrom(
+          "Ice Breaker",
+          "Evaluation and Feedback",
+          "Researching and Presenting",
+          "Introduction to Vocal Variety",
+          "Connect with Storytelling",
+          "Persuasive Speaking",
+          "Custom / Other",
+        ),
+      ),
+      objectives: fc.array(fc.string({ minLength: 1, maxLength: 500 }), {
+        minLength: 0,
+        maxLength: 10,
+      }),
+    });
+
+  /**
+   * Generator for non-IDLE session states — these are the states where
+   * project context should be immutable.
+   */
+  const arbitraryNonIdleState = (): fc.Arbitrary<SessionState> =>
+    fc.constantFrom(
+      SessionState.RECORDING,
+      SessionState.PROCESSING,
+      SessionState.DELIVERING,
+    );
+
+  it("rejects setProjectContext() when session is not in IDLE state and preserves original context", async () => {
+    await fc.assert(
+      fc.asyncProperty(
+        arbitraryProjectContext(),
+        arbitraryProjectContext(),
+        arbitraryNonIdleState(),
+        async (initialContext, newContext, nonIdleState) => {
+          const sm = new SessionManager();
+          const session = sm.createSession();
+          const sessionId = session.id;
+
+          // Step 1: Set initial project context while in IDLE state
+          sm.setProjectContext(sessionId, initialContext);
+
+          // Capture the project context values after setting
+          const originalSpeechTitle = session.projectContext!.speechTitle;
+          const originalProjectType = session.projectContext!.projectType;
+          const originalObjectives = [...session.projectContext!.objectives];
+
+          // Step 2: Transition session to a non-IDLE state
+          // We directly set the state to simulate any non-IDLE condition
+          // (startRecording requires IDLE and clears data, so we set state directly
+          // to test all non-IDLE states uniformly)
+          session.state = nonIdleState;
+
+          // Step 3: Attempt to modify project context — should throw
+          expect(() => {
+            sm.setProjectContext(sessionId, newContext);
+          }).toThrow();
+
+          // Step 4: Verify the ProjectContext is unchanged
+          expect(session.projectContext).not.toBeNull();
+          expect(session.projectContext!.speechTitle).toBe(originalSpeechTitle);
+          expect(session.projectContext!.projectType).toBe(originalProjectType);
+          expect(session.projectContext!.objectives).toEqual(originalObjectives);
+        },
+      ),
+      { numRuns: 100 },
+    );
+  });
+
+  it("rejects setProjectContext() with null initial context when session is not in IDLE state", async () => {
+    await fc.assert(
+      fc.asyncProperty(
+        arbitraryProjectContext(),
+        arbitraryNonIdleState(),
+        async (newContext, nonIdleState) => {
+          const sm = new SessionManager();
+          const session = sm.createSession();
+          const sessionId = session.id;
+
+          // Step 1: Do NOT set project context — it starts as null (default)
+          expect(session.projectContext).toBeNull();
+
+          // Step 2: Transition session to a non-IDLE state
+          session.state = nonIdleState;
+
+          // Step 3: Attempt to set project context — should throw
+          expect(() => {
+            sm.setProjectContext(sessionId, newContext);
+          }).toThrow();
+
+          // Step 4: Verify projectContext remains null
+          expect(session.projectContext).toBeNull();
+        },
+      ),
+      { numRuns: 100 },
+    );
+  });
+
+  it("allows setProjectContext() when session is in IDLE state", async () => {
+    await fc.assert(
+      fc.asyncProperty(
+        arbitraryProjectContext(),
+        arbitraryProjectContext(),
+        async (firstContext, secondContext) => {
+          const sm = new SessionManager();
+          const session = sm.createSession();
+          const sessionId = session.id;
+
+          // Set initial project context in IDLE — should succeed
+          sm.setProjectContext(sessionId, firstContext);
+          expect(session.projectContext).not.toBeNull();
+          expect(session.projectContext!.speechTitle).toBe(firstContext.speechTitle);
+          expect(session.projectContext!.projectType).toBe(firstContext.projectType);
+          expect(session.projectContext!.objectives).toEqual(firstContext.objectives);
+
+          // Modify project context while still in IDLE — should also succeed
+          sm.setProjectContext(sessionId, secondContext);
+          expect(session.projectContext).not.toBeNull();
+          expect(session.projectContext!.speechTitle).toBe(secondContext.speechTitle);
+          expect(session.projectContext!.projectType).toBe(secondContext.projectType);
+          expect(session.projectContext!.objectives).toEqual(secondContext.objectives);
+        },
+      ),
+      { numRuns: 100 },
+    );
+  });
+});
+
+
+// ─── Phase 3: CTX-P4 — Project Context Purged on Speaker Opt-Out ────────────────
+
+describe("Feature: phase-3-semi-automation, CTX-P4: Project context purged on speaker opt-out", () => {
+  /**
+   * **Validates: Requirements 9.4**
+   *
+   * For any session that has a non-null `projectContext`, calling `revokeConsent()`
+   * SHALL set `projectContext` to null. After revocation, `session.projectContext`
+   * SHALL be null.
+   */
+
+  /**
+   * Generator for arbitrary ProjectContext values.
+   * Produces valid project context objects with constrained field sizes.
+   */
+  const arbitraryProjectContext = (): fc.Arbitrary<ProjectContext> =>
+    fc.record({
+      speechTitle: fc.oneof(
+        fc.constant(null),
+        fc.string({ minLength: 1, maxLength: 200 }),
+      ),
+      projectType: fc.oneof(
+        fc.constant(null),
+        fc.constantFrom(
+          "Ice Breaker",
+          "Evaluation and Feedback",
+          "Researching and Presenting",
+          "Introduction to Vocal Variety",
+          "Connect with Storytelling",
+          "Persuasive Speaking",
+          "Custom / Other",
+        ),
+      ),
+      objectives: fc.array(fc.string({ minLength: 1, maxLength: 500 }), {
+        minLength: 0,
+        maxLength: 10,
+      }),
+    });
+
+  /**
+   * Generator for any session state — revokeConsent() can be called from any state.
+   */
+  const arbitrarySessionState = (): fc.Arbitrary<SessionState> =>
+    fc.constantFrom(
+      SessionState.IDLE,
+      SessionState.RECORDING,
+      SessionState.PROCESSING,
+      SessionState.DELIVERING,
+    );
+
+  /**
+   * Generator for non-empty speaker names (trimmed, printable strings).
+   */
+  const arbitrarySpeakerName = (): fc.Arbitrary<string> =>
+    fc.string({ minLength: 1, maxLength: 50 }).filter((s) => s.trim().length > 0);
+
+  it("purges projectContext to null after revokeConsent() from any session state", async () => {
+    await fc.assert(
+      fc.asyncProperty(
+        arbitraryProjectContext(),
+        arbitrarySessionState(),
+        arbitrarySpeakerName(),
+        async (projectContext, sessionState, speakerName) => {
+          const sm = new SessionManager();
+          const session = sm.createSession();
+          const sessionId = session.id;
+
+          // Step 1: Set consent and project context while in IDLE state
+          sm.setConsent(sessionId, speakerName, true);
+          sm.setProjectContext(sessionId, projectContext);
+
+          // Verify project context is set (non-null)
+          expect(session.projectContext).not.toBeNull();
+          expect(session.projectContext!.speechTitle).toBe(projectContext.speechTitle);
+          expect(session.projectContext!.projectType).toBe(projectContext.projectType);
+          expect(session.projectContext!.objectives).toEqual(projectContext.objectives);
+
+          // Step 2: Transition session to the target state
+          session.state = sessionState;
+
+          // Step 3: Call revokeConsent — should purge projectContext
+          sm.revokeConsent(sessionId);
+
+          // PROPERTY ASSERTION: projectContext is null after revocation
+          expect(session.projectContext).toBeNull();
+
+          // Session should be in IDLE state after revocation
+          expect(session.state).toBe(SessionState.IDLE);
+        },
+      ),
+      { numRuns: 100 },
+    );
+  });
+
+  it("purges projectContext to null even when projectContext has all fields populated", async () => {
+    await fc.assert(
+      fc.asyncProperty(
+        // Generate project contexts where all fields are non-null/non-empty
+        fc.record({
+          speechTitle: fc.string({ minLength: 1, maxLength: 200 }),
+          projectType: fc.constantFrom(
+            "Ice Breaker",
+            "Evaluation and Feedback",
+            "Researching and Presenting",
+            "Introduction to Vocal Variety",
+            "Connect with Storytelling",
+            "Persuasive Speaking",
+          ),
+          objectives: fc.array(fc.string({ minLength: 1, maxLength: 500 }), {
+            minLength: 1,
+            maxLength: 10,
+          }),
+        }) as fc.Arbitrary<ProjectContext>,
+        arbitrarySessionState(),
+        arbitrarySpeakerName(),
+        async (projectContext, sessionState, speakerName) => {
+          const sm = new SessionManager();
+          const session = sm.createSession();
+          const sessionId = session.id;
+
+          // Set consent and project context while in IDLE
+          sm.setConsent(sessionId, speakerName, true);
+          sm.setProjectContext(sessionId, projectContext);
+
+          // Verify all fields are populated
+          expect(session.projectContext).not.toBeNull();
+          expect(session.projectContext!.speechTitle).not.toBeNull();
+          expect(session.projectContext!.projectType).not.toBeNull();
+          expect(session.projectContext!.objectives.length).toBeGreaterThan(0);
+
+          // Transition to target state
+          session.state = sessionState;
+
+          // Revoke consent
+          sm.revokeConsent(sessionId);
+
+          // PROPERTY ASSERTION: projectContext is null — complete purge
+          expect(session.projectContext).toBeNull();
         },
       ),
       { numRuns: 100 },
