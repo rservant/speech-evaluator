@@ -15,6 +15,11 @@ This document defines the WebSocket protocol, message schemas, audio streaming c
 4. `deliver_evaluation` is only valid after `stop_recording` completes (session in PROCESSING state).
 5. `save_outputs` is only valid after evaluation delivery completes (session back in IDLE with evaluation data present).
 6. `panic_mute` is valid at any time.
+7. `set_project_context` is only valid in IDLE state and must precede `start_recording`. The server rejects it with a recoverable error in any other state. Project context becomes immutable once recording starts.
+8. `set_vad_config` is only valid in IDLE state and must precede `start_recording`. The server rejects it with a recoverable error in any other state. VAD configuration is locked for the duration of the recording session.
+9. `vad_speech_end` is sent by the server during RECORDING state when the VAD monitor detects sustained silence exceeding the configured threshold. It is a suggestion — the operator must confirm via `stop_recording`.
+10. `vad_status` is sent by the server periodically (at most 4 per second) during RECORDING state, providing real-time audio energy and speech/silence classification.
+11. `data_purged` is sent by the server after session data is purged, either due to speaker opt-out (`reason: "opt_out"`) or auto-purge timeout (`reason: "auto_purge"`). The client must clear stale local state (project context form, VAD config, evaluation/transcript display) upon receipt.
 
 ## Client → Server Messages
 
@@ -26,7 +31,9 @@ type ClientMessage =
   | { type: "stop_recording" }
   | { type: "deliver_evaluation" }
   | { type: "save_outputs" }
-  | { type: "panic_mute" };
+  | { type: "panic_mute" }
+  | { type: "set_project_context"; speechTitle: string; projectType: string; objectives: string[] }
+  | { type: "set_vad_config"; silenceThresholdSeconds: number; enabled: boolean };
 ```
 
 ## Server → Client Messages
@@ -41,7 +48,10 @@ type ServerMessage =
   | { type: "tts_complete" }
   | { type: "outputs_saved"; paths: string[] }
   | { type: "error"; message: string; recoverable: boolean }
-  | { type: "audio_format_error"; message: string };
+  | { type: "audio_format_error"; message: string }
+  | { type: "vad_speech_end"; silenceDurationSeconds: number }
+  | { type: "vad_status"; energy: number; isSpeech: boolean }
+  | { type: "data_purged"; reason: "opt_out" | "auto_purge" };
 ```
 
 ## Audio Chunk Contract

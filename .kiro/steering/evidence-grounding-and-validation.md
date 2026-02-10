@@ -1,3 +1,8 @@
+---
+inclusion: fileMatch
+fileMatchPattern: "{**/evaluation-generator*,**/evidence-validator*}"
+---
+
 # Evidence Grounding and Validation
 
 This document defines the contract that all LLM-generated evaluation content must satisfy. "Evidence-based only" is the product's core invariant. Every commendation and recommendation must be traceable to the speaker's actual words.

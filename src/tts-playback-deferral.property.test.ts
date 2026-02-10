@@ -151,6 +151,13 @@ function modelHandleTTSAudio(state: DeferralState): void {
     }
   }
 
+  // Adopt existing deferral: if a deferredIdleTransition was created for a
+  // previous playback, update its token to the current playback so the new
+  // onended handler can resolve it. Without this, the deferral becomes dead.
+  if (state.deferredIdleTransition !== null && state.deferredIdleTransition.token !== currentToken) {
+    state.deferredIdleTransition = { token: currentToken };
+  }
+
   state.ttsPlaying = true;
 }
 

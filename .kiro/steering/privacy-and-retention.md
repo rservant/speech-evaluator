@@ -1,3 +1,8 @@
+---
+inclusion: fileMatch
+fileMatchPattern: "{**/session-manager*,**/server*,**/file-persistence*}"
+---
+
 # Privacy and Retention
 
 This document defines the data handling, retention, and privacy invariants for the AI Toastmasters Evaluator. Treat these as compliance requirements, not feature suggestions.

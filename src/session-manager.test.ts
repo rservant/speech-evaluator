@@ -1,7 +1,7 @@
 // Unit tests for SessionManager
 // Validates: Requirements 1.1, 1.2, 1.4, 1.6, 1.8
 
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect, beforeEach, vi } from "vitest";
 import { SessionManager } from "./session-manager.js";
 import { SessionState } from "./types.js";
 import type { StructureCommentary } from "./types.js";
@@ -1061,5 +1061,560 @@ describe("assessTranscriptQuality (via stopRecording)", () => {
 
     // Speech words avg confidence = (0.9 + 0.85) / 2 = 0.875 → above 0.5
     expect(session.qualityWarning).toBe(false);
+  });
+});
+
+// ─── Phase 3: setProjectContext() ─────────────────────────────────────────────
+// Validates: Requirements 4.5, 4.7, 6.2, 6.3
+
+describe("setProjectContext()", () => {
+  let manager: SessionManager;
+
+  beforeEach(() => {
+    manager = new SessionManager();
+  });
+
+  it("stores project context on the session in IDLE state", () => {
+    const session = manager.createSession();
+    const context = {
+      speechTitle: "My Journey",
+      projectType: "Ice Breaker",
+      objectives: ["Introduce yourself", "Speak for 4-6 minutes"],
+    };
+
+    manager.setProjectContext(session.id, context);
+
+    expect(session.projectContext).toEqual(context);
+  });
+
+  it("stores project context with null speechTitle and projectType", () => {
+    const session = manager.createSession();
+    const context = {
+      speechTitle: null,
+      projectType: null,
+      objectives: [],
+    };
+
+    manager.setProjectContext(session.id, context);
+
+    expect(session.projectContext).toEqual(context);
+  });
+
+  it("allows updating project context while in IDLE state", () => {
+    const session = manager.createSession();
+
+    manager.setProjectContext(session.id, {
+      speechTitle: "First Title",
+      projectType: "Ice Breaker",
+      objectives: ["Objective 1"],
+    });
+
+    manager.setProjectContext(session.id, {
+      speechTitle: "Updated Title",
+      projectType: "Vocal Variety",
+      objectives: ["Objective A", "Objective B"],
+    });
+
+    expect(session.projectContext!.speechTitle).toBe("Updated Title");
+    expect(session.projectContext!.projectType).toBe("Vocal Variety");
+    expect(session.projectContext!.objectives).toEqual(["Objective A", "Objective B"]);
+  });
+
+  it("throws when setting project context in RECORDING state", () => {
+    const session = manager.createSession();
+    manager.startRecording(session.id);
+
+    expect(() =>
+      manager.setProjectContext(session.id, {
+        speechTitle: "Test",
+        projectType: "Ice Breaker",
+        objectives: [],
+      }),
+    ).toThrow(/Cannot set project context/);
+    expect(() =>
+      manager.setProjectContext(session.id, {
+        speechTitle: "Test",
+        projectType: "Ice Breaker",
+        objectives: [],
+      }),
+    ).toThrow(/recording/);
+
+    // Project context should remain unchanged (null from initialization)
+    expect(session.projectContext).toBeNull();
+  });
+
+  it("throws when setting project context in PROCESSING state", async () => {
+    const session = manager.createSession();
+    manager.startRecording(session.id);
+    await manager.stopRecording(session.id);
+
+    expect(() =>
+      manager.setProjectContext(session.id, {
+        speechTitle: "Test",
+        projectType: "Ice Breaker",
+        objectives: [],
+      }),
+    ).toThrow(/Cannot set project context/);
+    expect(() =>
+      manager.setProjectContext(session.id, {
+        speechTitle: "Test",
+        projectType: "Ice Breaker",
+        objectives: [],
+      }),
+    ).toThrow(/processing/);
+  });
+
+  it("throws when setting project context in DELIVERING state", async () => {
+    const session = manager.createSession();
+    manager.startRecording(session.id);
+    await manager.stopRecording(session.id);
+    await manager.generateEvaluation(session.id);
+
+    expect(() =>
+      manager.setProjectContext(session.id, {
+        speechTitle: "Test",
+        projectType: "Ice Breaker",
+        objectives: [],
+      }),
+    ).toThrow(/Cannot set project context/);
+    expect(() =>
+      manager.setProjectContext(session.id, {
+        speechTitle: "Test",
+        projectType: "Ice Breaker",
+        objectives: [],
+      }),
+    ).toThrow(/delivering/);
+  });
+
+  it("allows setting project context again after returning to IDLE via panicMute", () => {
+    const session = manager.createSession();
+    manager.setProjectContext(session.id, {
+      speechTitle: "Original",
+      projectType: "Ice Breaker",
+      objectives: [],
+    });
+    manager.startRecording(session.id);
+    manager.panicMute(session.id);
+
+    // Back in IDLE — should be able to update project context
+    manager.setProjectContext(session.id, {
+      speechTitle: "New Title",
+      projectType: "Vocal Variety",
+      objectives: ["New objective"],
+    });
+
+    expect(session.projectContext!.speechTitle).toBe("New Title");
+  });
+
+  it("throws for non-existent session", () => {
+    expect(() =>
+      manager.setProjectContext("non-existent", {
+        speechTitle: "Test",
+        projectType: "Ice Breaker",
+        objectives: [],
+      }),
+    ).toThrow(/Session not found/);
+  });
+});
+
+// ─── Phase 3: setVADConfig() ──────────────────────────────────────────────────
+// Validates: Requirements 6.5
+
+describe("setVADConfig()", () => {
+  let manager: SessionManager;
+
+  beforeEach(() => {
+    manager = new SessionManager();
+  });
+
+  it("stores VAD config on the session in IDLE state", () => {
+    const session = manager.createSession();
+
+    manager.setVADConfig(session.id, { silenceThresholdSeconds: 7, enabled: true });
+
+    expect(session.vadConfig).toEqual({ silenceThresholdSeconds: 7, enabled: true });
+  });
+
+  it("allows disabling VAD", () => {
+    const session = manager.createSession();
+
+    manager.setVADConfig(session.id, { silenceThresholdSeconds: 5, enabled: false });
+
+    expect(session.vadConfig.enabled).toBe(false);
+  });
+
+  it("allows updating VAD config while in IDLE state", () => {
+    const session = manager.createSession();
+
+    manager.setVADConfig(session.id, { silenceThresholdSeconds: 3, enabled: true });
+    manager.setVADConfig(session.id, { silenceThresholdSeconds: 15, enabled: false });
+
+    expect(session.vadConfig).toEqual({ silenceThresholdSeconds: 15, enabled: false });
+  });
+
+  it("throws when setting VAD config in RECORDING state", () => {
+    const session = manager.createSession();
+    manager.startRecording(session.id);
+
+    expect(() =>
+      manager.setVADConfig(session.id, { silenceThresholdSeconds: 10, enabled: true }),
+    ).toThrow(/Cannot set VAD config/);
+    expect(() =>
+      manager.setVADConfig(session.id, { silenceThresholdSeconds: 10, enabled: true }),
+    ).toThrow(/recording/);
+
+    // VAD config should remain at default
+    expect(session.vadConfig).toEqual({ silenceThresholdSeconds: 5, enabled: true });
+  });
+
+  it("throws when setting VAD config in PROCESSING state", async () => {
+    const session = manager.createSession();
+    manager.startRecording(session.id);
+    await manager.stopRecording(session.id);
+
+    expect(() =>
+      manager.setVADConfig(session.id, { silenceThresholdSeconds: 10, enabled: true }),
+    ).toThrow(/Cannot set VAD config/);
+    expect(() =>
+      manager.setVADConfig(session.id, { silenceThresholdSeconds: 10, enabled: true }),
+    ).toThrow(/processing/);
+  });
+
+  it("throws when setting VAD config in DELIVERING state", async () => {
+    const session = manager.createSession();
+    manager.startRecording(session.id);
+    await manager.stopRecording(session.id);
+    await manager.generateEvaluation(session.id);
+
+    expect(() =>
+      manager.setVADConfig(session.id, { silenceThresholdSeconds: 10, enabled: true }),
+    ).toThrow(/Cannot set VAD config/);
+    expect(() =>
+      manager.setVADConfig(session.id, { silenceThresholdSeconds: 10, enabled: true }),
+    ).toThrow(/delivering/);
+  });
+
+  it("allows setting VAD config again after returning to IDLE via panicMute", () => {
+    const session = manager.createSession();
+    manager.setVADConfig(session.id, { silenceThresholdSeconds: 3, enabled: true });
+    manager.startRecording(session.id);
+    manager.panicMute(session.id);
+
+    // Back in IDLE — should be able to update VAD config
+    manager.setVADConfig(session.id, { silenceThresholdSeconds: 12, enabled: false });
+
+    expect(session.vadConfig).toEqual({ silenceThresholdSeconds: 12, enabled: false });
+  });
+
+  it("throws for non-existent session", () => {
+    expect(() =>
+      manager.setVADConfig("non-existent", { silenceThresholdSeconds: 5, enabled: true }),
+    ).toThrow(/Session not found/);
+  });
+});
+
+// ─── VAD Integration Tests (Task 5.1) ─────────────────────────────────────────
+
+import type { VADConfig, VADEventCallback } from "./vad-monitor.js";
+import { VADMonitor } from "./vad-monitor.js";
+import type { SessionManagerDeps } from "./session-manager.js";
+
+describe("VAD Integration in SessionManager", () => {
+  // Helper: create a mock VADMonitor factory that tracks calls
+  function createMockVADFactory() {
+    const createdMonitors: { config: VADConfig; callbacks: VADEventCallback; monitor: VADMonitor }[] = [];
+    const factory = (config: VADConfig, callbacks: VADEventCallback): VADMonitor => {
+      const monitor = new VADMonitor(config, callbacks);
+      createdMonitors.push({ config, callbacks, monitor });
+      return monitor;
+    };
+    return { factory, createdMonitors };
+  }
+
+  // Helper: create a simple PCM audio chunk with a given amplitude
+  function createAudioChunk(amplitude: number, sampleCount = 800): Buffer {
+    const buf = Buffer.alloc(sampleCount * 2);
+    for (let i = 0; i < sampleCount; i++) {
+      buf.writeInt16LE(amplitude, i * 2);
+    }
+    return buf;
+  }
+
+  describe("registerVADCallbacks()", () => {
+    it("stores callbacks for a session without throwing", () => {
+      const manager = new SessionManager();
+      const session = manager.createSession();
+      const callbacks: VADEventCallback = {
+        onSpeechEnd: () => {},
+        onStatus: () => {},
+      };
+
+      // Should not throw
+      manager.registerVADCallbacks(session.id, callbacks);
+    });
+
+    it("allows registering callbacks for non-existent session IDs (no validation)", () => {
+      const manager = new SessionManager();
+      const callbacks: VADEventCallback = {
+        onSpeechEnd: () => {},
+        onStatus: () => {},
+      };
+
+      // registerVADCallbacks does not validate session existence — it's a simple map set
+      expect(() => manager.registerVADCallbacks("any-id", callbacks)).not.toThrow();
+    });
+  });
+
+  describe("startRecording() — VAD monitor creation", () => {
+    it("creates a VADMonitor when vadConfig.enabled is true and factory is available", () => {
+      const { factory, createdMonitors } = createMockVADFactory();
+      const manager = new SessionManager({ vadMonitorFactory: factory } as SessionManagerDeps);
+      const session = manager.createSession();
+
+      manager.startRecording(session.id);
+
+      expect(createdMonitors.length).toBe(1);
+      expect(createdMonitors[0].config.silenceThresholdSeconds).toBe(5); // default
+      expect(createdMonitors[0].config.enabled).toBe(true);
+    });
+
+    it("does NOT create a VADMonitor when vadConfig.enabled is false", () => {
+      const { factory, createdMonitors } = createMockVADFactory();
+      const manager = new SessionManager({ vadMonitorFactory: factory } as SessionManagerDeps);
+      const session = manager.createSession();
+      manager.setVADConfig(session.id, { silenceThresholdSeconds: 5, enabled: false });
+
+      manager.startRecording(session.id);
+
+      expect(createdMonitors.length).toBe(0);
+    });
+
+    it("does NOT create a VADMonitor when factory is not provided", () => {
+      const manager = new SessionManager();
+      const session = manager.createSession();
+
+      // Should not throw — VAD is silently disabled
+      manager.startRecording(session.id);
+    });
+
+    it("uses the session's configured silenceThresholdSeconds", () => {
+      const { factory, createdMonitors } = createMockVADFactory();
+      const manager = new SessionManager({ vadMonitorFactory: factory } as SessionManagerDeps);
+      const session = manager.createSession();
+      manager.setVADConfig(session.id, { silenceThresholdSeconds: 10, enabled: true });
+
+      manager.startRecording(session.id);
+
+      expect(createdMonitors[0].config.silenceThresholdSeconds).toBe(10);
+    });
+
+    it("wires registered callbacks to the VADMonitor", () => {
+      const { factory, createdMonitors } = createMockVADFactory();
+      const manager = new SessionManager({ vadMonitorFactory: factory } as SessionManagerDeps);
+      const session = manager.createSession();
+
+      const speechEndCalls: number[] = [];
+      const callbacks: VADEventCallback = {
+        onSpeechEnd: (dur) => speechEndCalls.push(dur),
+        onStatus: () => {},
+      };
+      manager.registerVADCallbacks(session.id, callbacks);
+      manager.startRecording(session.id);
+
+      // The factory should have received the registered callbacks
+      expect(createdMonitors.length).toBe(1);
+      // Trigger the callback through the monitor's callbacks
+      createdMonitors[0].callbacks.onSpeechEnd(5.2);
+      expect(speechEndCalls).toEqual([5.2]);
+    });
+
+    it("uses no-op callbacks when none are registered (silently discards events)", () => {
+      const { factory, createdMonitors } = createMockVADFactory();
+      const manager = new SessionManager({ vadMonitorFactory: factory } as SessionManagerDeps);
+      const session = manager.createSession();
+
+      // Do NOT register callbacks
+      manager.startRecording(session.id);
+
+      expect(createdMonitors.length).toBe(1);
+      // Should not throw when callbacks fire
+      expect(() => createdMonitors[0].callbacks.onSpeechEnd(5.0)).not.toThrow();
+      expect(() => createdMonitors[0].callbacks.onStatus({ energy: 0.5, isSpeech: true })).not.toThrow();
+    });
+
+    it("populates VADConfig with correct defaults", () => {
+      const { factory, createdMonitors } = createMockVADFactory();
+      const manager = new SessionManager({ vadMonitorFactory: factory } as SessionManagerDeps);
+      const session = manager.createSession();
+
+      manager.startRecording(session.id);
+
+      const config = createdMonitors[0].config;
+      expect(config.silenceFactor).toBe(0.15);
+      expect(config.minSpeechSeconds).toBe(3);
+      expect(config.suppressionSeconds).toBe(10);
+      expect(config.statusIntervalMs).toBe(250);
+      expect(config.speechEnergyWindowChunks).toBe(6000);
+      expect(config.noiseFloorBootstrapChunks).toBe(40);
+      expect(config.thresholdMultiplier).toBe(0.15);
+    });
+  });
+
+  describe("feedAudio() — VAD HARD GUARD", () => {
+    it("forwards chunks to VADMonitor when session is RECORDING", () => {
+      const { factory, createdMonitors } = createMockVADFactory();
+      const manager = new SessionManager({ vadMonitorFactory: factory } as SessionManagerDeps);
+      const session = manager.createSession();
+      manager.startRecording(session.id);
+
+      const chunk = createAudioChunk(1000);
+      const feedChunkSpy = vi.spyOn(createdMonitors[0].monitor, "feedChunk");
+
+      manager.feedAudio(session.id, chunk);
+
+      expect(feedChunkSpy).toHaveBeenCalledOnce();
+    });
+
+    it("does NOT forward chunks to VADMonitor when session is not RECORDING", async () => {
+      const { factory, createdMonitors } = createMockVADFactory();
+      const manager = new SessionManager({ vadMonitorFactory: factory } as SessionManagerDeps);
+      const session = manager.createSession();
+      manager.startRecording(session.id);
+
+      // Stop recording — transitions to PROCESSING
+      await manager.stopRecording(session.id);
+
+      // VAD monitor should have been removed, but even if we manually check,
+      // the HARD GUARD should prevent forwarding
+      const chunk = createAudioChunk(1000);
+      // feedAudio should not throw even though state is PROCESSING
+      expect(() => manager.feedAudio(session.id, chunk)).not.toThrow();
+    });
+
+    it("silently ignores chunks when no VADMonitor exists (factory not provided)", () => {
+      const manager = new SessionManager();
+      const session = manager.createSession();
+      manager.startRecording(session.id);
+
+      const chunk = createAudioChunk(1000);
+      // Should not throw
+      expect(() => manager.feedAudio(session.id, chunk)).not.toThrow();
+    });
+  });
+
+  describe("stopRecording() — VAD cleanup", () => {
+    it("stops and removes the VADMonitor", async () => {
+      const { factory, createdMonitors } = createMockVADFactory();
+      const manager = new SessionManager({ vadMonitorFactory: factory } as SessionManagerDeps);
+      const session = manager.createSession();
+      manager.startRecording(session.id);
+
+      const stopSpy = vi.spyOn(createdMonitors[0].monitor, "stop");
+
+      await manager.stopRecording(session.id);
+
+      expect(stopSpy).toHaveBeenCalledOnce();
+    });
+
+    it("does not throw when no VADMonitor exists", async () => {
+      const manager = new SessionManager();
+      const session = manager.createSession();
+      manager.startRecording(session.id);
+
+      // No factory — no monitor to clean up
+      await expect(manager.stopRecording(session.id)).resolves.not.toThrow();
+    });
+  });
+
+  describe("panicMute() — VAD cleanup", () => {
+    it("stops and removes the VADMonitor", () => {
+      const { factory, createdMonitors } = createMockVADFactory();
+      const manager = new SessionManager({ vadMonitorFactory: factory } as SessionManagerDeps);
+      const session = manager.createSession();
+      manager.startRecording(session.id);
+
+      const stopSpy = vi.spyOn(createdMonitors[0].monitor, "stop");
+
+      manager.panicMute(session.id);
+
+      expect(stopSpy).toHaveBeenCalledOnce();
+    });
+
+    it("is a no-op for VAD when already IDLE", () => {
+      const { factory, createdMonitors } = createMockVADFactory();
+      const manager = new SessionManager({ vadMonitorFactory: factory } as SessionManagerDeps);
+      const session = manager.createSession();
+
+      // No recording started — no monitor created
+      manager.panicMute(session.id);
+
+      expect(createdMonitors.length).toBe(0);
+    });
+  });
+
+  describe("revokeConsent() — VAD cleanup", () => {
+    it("stops and removes the VADMonitor", () => {
+      const { factory, createdMonitors } = createMockVADFactory();
+      const manager = new SessionManager({ vadMonitorFactory: factory } as SessionManagerDeps);
+      const session = manager.createSession();
+      manager.startRecording(session.id);
+
+      const stopSpy = vi.spyOn(createdMonitors[0].monitor, "stop");
+
+      manager.revokeConsent(session.id);
+
+      expect(stopSpy).toHaveBeenCalledOnce();
+    });
+
+    it("removes VAD callbacks on revokeConsent", () => {
+      const { factory } = createMockVADFactory();
+      const manager = new SessionManager({ vadMonitorFactory: factory } as SessionManagerDeps);
+      const session = manager.createSession();
+
+      const callbacks: VADEventCallback = {
+        onSpeechEnd: () => {},
+        onStatus: () => {},
+      };
+      manager.registerVADCallbacks(session.id, callbacks);
+      manager.startRecording(session.id);
+      manager.revokeConsent(session.id);
+
+      // After revokeConsent, starting a new recording should use no-op callbacks
+      // (since vadCallbacksMap was cleared)
+      const { factory: factory2, createdMonitors: monitors2 } = createMockVADFactory();
+      const manager2 = new SessionManager({ vadMonitorFactory: factory2 } as SessionManagerDeps);
+      const session2 = manager2.createSession();
+      manager2.startRecording(session2.id);
+
+      // The new monitor should have no-op callbacks (not the old ones)
+      expect(monitors2.length).toBe(1);
+      expect(() => monitors2[0].callbacks.onSpeechEnd(5.0)).not.toThrow();
+    });
+
+    it("does not throw when no VADMonitor exists (IDLE state)", () => {
+      const manager = new SessionManager();
+      const session = manager.createSession();
+
+      // No recording started — no monitor to clean up
+      expect(() => manager.revokeConsent(session.id)).not.toThrow();
+    });
+  });
+
+  describe("VAD monitor not created for subsequent recordings after cleanup", () => {
+    it("creates a new VADMonitor for each recording session", () => {
+      const { factory, createdMonitors } = createMockVADFactory();
+      const manager = new SessionManager({ vadMonitorFactory: factory } as SessionManagerDeps);
+      const session = manager.createSession();
+
+      // First recording
+      manager.startRecording(session.id);
+      expect(createdMonitors.length).toBe(1);
+
+      manager.panicMute(session.id);
+
+      // Second recording — should create a new monitor
+      manager.startRecording(session.id);
+      expect(createdMonitors.length).toBe(2);
+    });
   });
 });

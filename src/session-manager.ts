@@ -17,6 +17,9 @@ import type {
   StructuredEvaluationPublic,
   PipelineStage,
   EvaluationCache,
+  EvaluationConfig,
+  ProjectContext,
+  SessionVADConfig,
 } from "./types.js";
 import { createDeferred } from "./utils/deferred.js";
 import type { TranscriptionEngine } from "./transcription-engine.js";
@@ -25,6 +28,7 @@ import type { EvaluationGenerator } from "./evaluation-generator.js";
 import type { TTSEngine } from "./tts-engine.js";
 import type { ToneChecker } from "./tone-checker.js";
 import type { FilePersistence } from "./file-persistence.js";
+import type { VADMonitor, VADConfig, VADEventCallback } from "./vad-monitor.js";
 
 // ─── Quality thresholds (matching EvaluationGenerator's internal thresholds) ────
 
@@ -69,6 +73,7 @@ export interface SessionManagerDeps {
   ttsEngine?: TTSEngine;
   toneChecker?: ToneChecker;
   filePersistence?: FilePersistence;
+  vadMonitorFactory?: (config: VADConfig, callbacks: VADEventCallback) => VADMonitor;
 }
 
 /**
@@ -91,14 +96,17 @@ const VALID_TRANSITIONS: ReadonlyMap<SessionState, SessionState> = new Map([
 export class SessionManager {
   private sessions: Map<string, Session> = new Map();
   private readonly deps: SessionManagerDeps;
+  private vadMonitors: Map<string, VADMonitor> = new Map();
+  private vadCallbacksMap: Map<string, VADEventCallback> = new Map();
 
   private log(level: string, msg: string): void {
     console.log(`[${level}] [SessionManager] ${msg}`);
   }
 
   constructor(deps: SessionManagerDeps = {}) {
-    this.deps = deps;
-  }
+      this.deps = deps;
+      this.log("INIT", `VAD: ${deps.vadMonitorFactory ? "enabled (factory provided)" : "disabled (no factory)"}`);
+    }
 
   /**
    * Creates a new session in the IDLE state.
@@ -132,6 +140,8 @@ export class SessionManager {
         eagerRunId: null,
         eagerPromise: null,
         evaluationCache: null,
+        projectContext: null,
+        vadConfig: { silenceThresholdSeconds: 5, enabled: true },
       };
 
       this.sessions.set(session.id, session);
@@ -188,6 +198,71 @@ export class SessionManager {
   }
 
   /**
+   * Store project context on the session. Only valid in IDLE state.
+   *
+   * Project context carries speech title, Toastmasters project type, and
+   * project-specific objectives. Once recording starts, the context becomes
+   * immutable for that session (consistent with ConsentRecord immutability).
+   *
+   * @param sessionId - The session to set project context on
+   * @param context - The project context to store
+   * @throws Error if the session does not exist
+   * @throws Error if the session is not in IDLE state
+   */
+  setProjectContext(sessionId: string, context: ProjectContext): void {
+    const session = this.getSession(sessionId);
+
+    if (session.state !== SessionState.IDLE) {
+      throw new Error(
+        `Cannot set project context: session is in "${session.state}" state. ` +
+        `Project context can only be set while the session is in "idle" state.`
+      );
+    }
+
+    session.projectContext = context;
+
+    this.log("INFO", `Project context set for session ${sessionId}: type="${context.projectType}", title="${context.speechTitle}"`);
+  }
+
+  /**
+   * Store VAD configuration on the session. Only valid in IDLE state.
+   *
+   * VAD config controls silence detection behavior during recording.
+   * The configuration is read when recording starts and passed to the VADMonitor.
+   *
+   * @param sessionId - The session to set VAD config on
+   * @param config - The VAD configuration to store
+   * @throws Error if the session does not exist
+   * @throws Error if the session is not in IDLE state
+   */
+  setVADConfig(sessionId: string, config: SessionVADConfig): void {
+    const session = this.getSession(sessionId);
+
+    if (session.state !== SessionState.IDLE) {
+      throw new Error(
+        `Cannot set VAD config: session is in "${session.state}" state. ` +
+        `VAD configuration can only be set while the session is in "idle" state.`
+      );
+    }
+
+    session.vadConfig = config;
+
+    this.log("INFO", `VAD config set for session ${sessionId}: threshold=${config.silenceThresholdSeconds}s, enabled=${config.enabled}`);
+  }
+
+  /**
+   * Register per-session VAD callbacks. Called by the server layer BEFORE startRecording().
+   * When startRecording() creates the VADMonitor, it looks up callbacks from this map.
+   * If no callbacks are registered, VAD events are silently discarded.
+   *
+   * @param sessionId - The session to register callbacks for
+   * @param callbacks - The VAD event callbacks (onSpeechEnd, onStatus)
+   */
+  registerVADCallbacks(sessionId: string, callbacks: VADEventCallback): void {
+    this.vadCallbacksMap.set(sessionId, callbacks);
+  }
+
+  /**
    * Revokes consent and purges ALL session data immediately and irrecoverably.
    * This implements the speaker opt-out flow per the privacy retention policy.
    *
@@ -221,6 +296,14 @@ export class SessionManager {
       session.runId++;
     }
 
+    // Stop and remove VAD monitor (Req 11.2)
+    const vadMonitor = this.vadMonitors.get(sessionId);
+    if (vadMonitor) {
+      vadMonitor.stop();
+      this.vadMonitors.delete(sessionId);
+    }
+    this.vadCallbacksMap.delete(sessionId);
+
     // Clear eager pipeline state — runId already incremented above,
     // so use clearEagerState() (pure reset), not cancelEagerGeneration().
     // Per privacy-and-retention rule: opt-out purges all session data immediately and irrecoverably.
@@ -247,6 +330,7 @@ export class SessionManager {
     session.consent = null;
     session.qualityWarning = false;
     session.evaluationPassRate = null;
+    session.projectContext = null;
 
     // Backward compatibility: clear deprecated speakerName
     session.speakerName = undefined;
@@ -312,6 +396,32 @@ export class SessionManager {
       } else {
         this.log("WARN", `No TranscriptionEngine configured — live transcription disabled`);
       }
+
+      // Create VADMonitor when VAD is enabled and factory is available
+      if (session.vadConfig.enabled && this.deps.vadMonitorFactory) {
+        const vadFullConfig: VADConfig = {
+          silenceThresholdSeconds: session.vadConfig.silenceThresholdSeconds,
+          enabled: session.vadConfig.enabled,
+          silenceFactor: 0.15,
+          minSpeechSeconds: 3,
+          suppressionSeconds: 10,
+          statusIntervalMs: 250,
+          speechEnergyWindowChunks: 6000,
+          noiseFloorBootstrapChunks: 40,
+          thresholdMultiplier: 0.15,
+        };
+
+        // Look up registered callbacks; if none, use no-op callbacks (silently discard events)
+        const registeredCallbacks = this.vadCallbacksMap.get(sessionId);
+        const vadCallbacks: VADEventCallback = registeredCallbacks ?? {
+          onSpeechEnd: () => {},
+          onStatus: () => {},
+        };
+
+        const vadMonitor = this.deps.vadMonitorFactory(vadFullConfig, vadCallbacks);
+        this.vadMonitors.set(sessionId, vadMonitor);
+        this.log("INFO", `VAD monitor created for session ${sessionId} (threshold=${vadFullConfig.silenceThresholdSeconds}s)`);
+      }
     }
 
   /**
@@ -336,6 +446,16 @@ export class SessionManager {
       } catch (err) {
         const errMsg = err instanceof Error ? err.message : String(err);
         this.log("WARN", `feedAudio failed for session ${sessionId}: ${errMsg}`);
+      }
+    }
+
+    // Forward to VAD monitor (HARD GUARD: only when RECORDING and monitor exists)
+    // This prevents late chunks (network jitter) from reaching a stopped/removed monitor
+    // and prevents resurrection of a monitor after stop.
+    if (session.state === SessionState.RECORDING) {
+      const vadMonitor = this.vadMonitors.get(sessionId);
+      if (vadMonitor) {
+        vadMonitor.feedChunk(chunk);
       }
     }
   }
@@ -383,6 +503,14 @@ export class SessionManager {
       session.stoppedAt = new Date();
 
       const capturedRunId = session.runId;
+
+      // Stop and remove VAD monitor (Req 11.3)
+      const vadMonitor = this.vadMonitors.get(sessionId);
+      if (vadMonitor) {
+        vadMonitor.stop();
+        this.vadMonitors.delete(sessionId);
+      }
+      this.vadCallbacksMap.delete(sessionId);
 
       // Stop live transcription
       if (this.deps.transcriptionEngine) {
@@ -516,10 +644,20 @@ export class SessionManager {
     let evaluation: StructuredEvaluation;
 
     try {
+      // Build EvaluationConfig from session.projectContext (Req 4.5, 5.1, 5.5)
+      const config: EvaluationConfig | undefined = session.projectContext
+        ? {
+            objectives: session.projectContext.objectives,
+            speechTitle: session.projectContext.speechTitle ?? undefined,
+            projectType: session.projectContext.projectType ?? undefined,
+          }
+        : undefined;
+
       this.log("INFO", `Generating evaluation via GPT-4o for session ${sessionId} (${session.transcript.length} segments, ${metrics.totalWords} words)`);
       const generateResult = await this.deps.evaluationGenerator.generate(
         session.transcript,
         metrics,
+        config,
       );
       evaluation = generateResult.evaluation;
       session.evaluationPassRate = generateResult.passRate;
@@ -888,10 +1026,20 @@ export class SessionManager {
         const metrics = session.metrics;
 
         // ── Stage 1: LLM Generation ──
+        // Build EvaluationConfig from session.projectContext (Req 4.5, 5.1, 5.5)
+        const config: EvaluationConfig | undefined = session.projectContext
+          ? {
+              objectives: session.projectContext.objectives,
+              speechTitle: session.projectContext.speechTitle ?? undefined,
+              projectType: session.projectContext.projectType ?? undefined,
+            }
+          : undefined;
+
         this.log("INFO", `[eager] Generating evaluation for session ${sessionId}`);
         const generateResult = await this.deps.evaluationGenerator.generate(
           session.transcript,
           metrics,
+          config,
         );
 
         // RunId check after LLM generation
@@ -901,6 +1049,7 @@ export class SessionManager {
         }
 
         const evaluation = generateResult.evaluation;
+        session.evaluationPassRate = generateResult.passRate;
 
         // ── Stage 2: Compute energy profile from audio chunks ──
         if (this.deps.metricsExtractor && session.audioChunks.length > 0) {
@@ -1109,6 +1258,14 @@ export class SessionManager {
 
     session.runId++;
     session.state = SessionState.IDLE;
+
+    // Stop and remove VAD monitor (Req 11.1)
+    const vadMonitor = this.vadMonitors.get(sessionId);
+    if (vadMonitor) {
+      vadMonitor.stop();
+      this.vadMonitors.delete(sessionId);
+    }
+    this.vadCallbacksMap.delete(sessionId);
 
     // Clear eager pipeline state — runId already incremented above,
     // so use clearEagerState() (pure reset), not cancelEagerGeneration()

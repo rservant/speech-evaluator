@@ -200,10 +200,13 @@ export class FilePersistence {
     savedPaths.push(evaluationPath);
 
     // Write evaluation_audio.mp3 (if TTS audio was cached)
-    if (session.ttsAudioCache) {
+    // Check ttsAudioCache first, then fall back to evaluationCache.ttsAudio
+    // (eager-cache-hit delivery path stores audio in evaluationCache.ttsAudio rather than ttsAudioCache)
+    const ttsAudioBuffer = session.ttsAudioCache ?? session.evaluationCache?.ttsAudio ?? null;
+    if (ttsAudioBuffer) {
       try {
         const audioPath = join(dirPath, "evaluation_audio.mp3");
-        await writeFile(audioPath, session.ttsAudioCache);
+        await writeFile(audioPath, ttsAudioBuffer);
         savedPaths.push(audioPath);
       } catch (err) {
         console.warn("Failed to save TTS audio file:", err);
@@ -223,6 +226,18 @@ export class FilePersistence {
       }, null, 2);
       await writeFile(consentPath, consentContent, "utf-8");
       savedPaths.push(consentPath);
+    }
+
+    // Write project-context.json (if project context exists) — Req 5.4
+    if (session.projectContext) {
+      const projectContextPath = join(dirPath, "project-context.json");
+      const projectContextContent = JSON.stringify({
+        speechTitle: session.projectContext.speechTitle,
+        projectType: session.projectContext.projectType,
+        objectives: session.projectContext.objectives,
+      }, null, 2);
+      await writeFile(projectContextPath, projectContextContent, "utf-8");
+      savedPaths.push(projectContextPath);
     }
 
     // Mark session as saved
