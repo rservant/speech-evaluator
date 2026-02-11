@@ -20,6 +20,10 @@ import type { VADConfig, VADEventCallback } from "./vad-monitor.js";
 export const APP_NAME = "AI Toastmasters Evaluator";
 export const APP_VERSION = "0.1.0";
 
+const ts = () => new Date().toISOString();
+const logInit = (msg: string) => console.log(`[INIT] [${ts()}] ${msg}`);
+const logFatal = (msg: string) => console.error(`[FATAL] [${ts()}] ${msg}`);
+
 const port = parseInt(process.env.PORT || "3000", 10);
 
 // ─── Validate API keys ─────────────────────────────────────────────────────────
@@ -28,45 +32,45 @@ const deepgramKey = process.env.DEEPGRAM_API_KEY;
 const openaiKey = process.env.OPENAI_API_KEY;
 
 if (!deepgramKey) {
-  console.error("[FATAL] DEEPGRAM_API_KEY is not set. Add it to your .env file.");
+  logFatal("DEEPGRAM_API_KEY is not set. Add it to your .env file.");
   process.exit(1);
 }
 
 if (!openaiKey) {
-  console.error("[FATAL] OPENAI_API_KEY is not set. Add it to your .env file.");
+  logFatal("OPENAI_API_KEY is not set. Add it to your .env file.");
   process.exit(1);
 }
 
-console.log("[INIT] API keys loaded");
+logInit("API keys loaded");
 
 // ─── Initialize API clients ─────────────────────────────────────────────────────
 
-console.log("[INIT] Creating Deepgram client...");
+logInit("Creating Deepgram client...");
 const deepgramClient = createDeepgramClient(deepgramKey);
 
-console.log("[INIT] Creating OpenAI client...");
+logInit("Creating OpenAI client...");
 const openaiClient = new OpenAI({ apiKey: openaiKey });
 
 // ─── Initialize pipeline components ─────────────────────────────────────────────
 
-console.log("[INIT] Initializing TranscriptionEngine (Deepgram live + OpenAI post-speech)...");
+logInit("Initializing TranscriptionEngine (Deepgram live + OpenAI post-speech)...");
 const transcriptionEngine = new TranscriptionEngine(deepgramClient, openaiClient as unknown as OpenAITranscriptionClient);
 
-console.log("[INIT] Initializing MetricsExtractor...");
+logInit("Initializing MetricsExtractor...");
 const metricsExtractor = new MetricsExtractor();
 
-console.log("[INIT] Initializing EvaluationGenerator (GPT-4o)...");
+logInit("Initializing EvaluationGenerator (GPT-4o)...");
 const evaluationGenerator = new EvaluationGenerator(openaiClient as unknown as OpenAIClient);
 
-console.log("[INIT] Initializing TTSEngine (OpenAI TTS)...");
+logInit("Initializing TTSEngine (OpenAI TTS)...");
 const ttsEngine = new TTSEngine(openaiClient as unknown as OpenAITTSClient);
 
-console.log("[INIT] Initializing FilePersistence (output/)...");
+logInit("Initializing FilePersistence (output/)...");
 const filePersistence = new FilePersistence("output");
 
 // ─── Create SessionManager with all dependencies ────────────────────────────────
 
-console.log("[INIT] Wiring SessionManager pipeline...");
+logInit("Wiring SessionManager pipeline...");
 const sessionManager = new SessionManager({
   transcriptionEngine,
   metricsExtractor,
@@ -82,7 +86,7 @@ const sessionManager = new SessionManager({
 const server = createAppServer({ sessionManager });
 
 server.listen(port).then(() => {
-  console.log(`[INIT] ${APP_NAME} v${APP_VERSION} running at http://localhost:${port}`);
-  console.log("[INIT] Pipeline: Deepgram → OpenAI Transcribe → MetricsExtractor → GPT-4o → TTS");
-  console.log("[INIT] Ready for connections");
+  logInit(`${APP_NAME} v${APP_VERSION} running at http://localhost:${port}`);
+  logInit("Pipeline: Deepgram → OpenAI Transcribe → MetricsExtractor → GPT-4o → TTS");
+  logInit("Ready for connections");
 });

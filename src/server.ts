@@ -63,6 +63,8 @@ interface ConnectionState {
   liveTranscriptLength: number;
   /** Periodic video_status sender interval (≤1/sec during RECORDING) */
   videoStatusInterval: ReturnType<typeof setInterval> | null;
+  /** Promise tracking the in-flight stopRecording async operation */
+  stopRecordingPromise: Promise<void> | null;
 }
 
 // ─── Logging ────────────────────────────────────────────────────────────────────
@@ -77,11 +79,11 @@ export interface ServerLogger {
 const isDebug = process.env.NODE_ENV === "development" || process.env.LOG_LEVEL === "debug";
 
 const defaultLogger: ServerLogger = {
-  info: (msg, ...args) => console.log(`[INFO] ${msg}`, ...args),
-  warn: (msg, ...args) => console.warn(`[WARN] ${msg}`, ...args),
-  error: (msg, ...args) => console.error(`[ERROR] ${msg}`, ...args),
+  info: (msg, ...args) => console.log(`[INFO] [${new Date().toISOString()}] ${msg}`, ...args),
+  warn: (msg, ...args) => console.warn(`[WARN] [${new Date().toISOString()}] ${msg}`, ...args),
+  error: (msg, ...args) => console.error(`[ERROR] [${new Date().toISOString()}] ${msg}`, ...args),
   debug: (msg, ...args) => {
-    if (isDebug) console.log(`[DEBUG] ${msg}`, ...args);
+    if (isDebug) console.log(`[DEBUG] [${new Date().toISOString()}] ${msg}`, ...args);
   },
 };
 
@@ -188,6 +190,7 @@ function handleConnection(
     purgeTimer: null,
     liveTranscriptLength: 0,
     videoStatusInterval: null,
+    stopRecordingPromise: null,
   };
 
   logger.info(`New WebSocket connection, session ${session.id}`);
@@ -357,9 +360,17 @@ function handleClientMessage(
       handleStartRecording(ws, connState, sessionManager, logger);
       break;
 
-    case "stop_recording":
-      catchAsync(handleStopRecording(ws, connState, sessionManager, logger));
+    case "stop_recording": {
+      const stopPromise = handleStopRecording(ws, connState, sessionManager, logger);
+      connState.stopRecordingPromise = stopPromise;
+      catchAsync(stopPromise.finally(() => {
+        // Clear the reference once complete so we don't hold stale promises
+        if (connState.stopRecordingPromise === stopPromise) {
+          connState.stopRecordingPromise = null;
+        }
+      }));
       break;
+    }
 
     case "deliver_evaluation":
       catchAsync(handleDeliverEvaluation(ws, connState, sessionManager, logger));
@@ -623,6 +634,14 @@ async function handleDeliverEvaluation(
   }
 
   logger.debug(`[handleDeliverEvaluation] Starting delivery for session ${connState.sessionId}`);
+
+  // Await in-flight stopRecording if it hasn't completed yet.
+  // This prevents a race where deliver_evaluation arrives before post-speech
+  // transcription finishes, which would cause "No transcript available".
+  if (connState.stopRecordingPromise) {
+    logger.debug(`[handleDeliverEvaluation] Awaiting in-flight stopRecording for session ${connState.sessionId}`);
+    await connState.stopRecordingPromise;
+  }
 
   // ── Branch 1: Cache hit — deliver from eager cache immediately ──
   if (sessionManager.isEagerCacheValid(connState.sessionId)) {

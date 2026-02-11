@@ -1611,8 +1611,7 @@
         hide(dom.videoFpsConfig);
         // Disable video consent checkbox during recording (Req 1.4)
         disable(dom.videoConsentCheckbox);
-        // Hide video preview thumbnail during recording (shown only in IDLE)
-        hide(videoDom.previewContainer);
+        // Keep video preview visible during recording so operator can verify camera is working
         hide(dom.durationEstimate);
 
         hide(dom.btnStart);
@@ -1668,12 +1667,12 @@
         hide(dom.btnSave);
         hide(dom.btnReplay);
         // Deliver button gating based on pipeline stage (Req 4.1-4.4)
-        // Disable during in-progress stages; enable on terminal/actionable stages
+        // Disable during in-progress stages and initial idle; enable only on terminal/actionable stages
         // Server remains authoritative — UI gating is advisory only (Req 4.4)
-        if (pipelineStage === "processing_speech" || pipelineStage === "generating_evaluation" || pipelineStage === "synthesizing_audio") {
-          disable(dom.btnDeliver);
-        } else {
+        if (pipelineStage === "ready" || pipelineStage === "failed" || pipelineStage === "invalidated") {
           enable(dom.btnDeliver);
+        } else {
+          disable(dom.btnDeliver);
         }
         enable(dom.btnPanic);
 
@@ -1893,10 +1892,10 @@
      */
     function updateDeliverButtonState(stage) {
       if (currentState !== SessionState.PROCESSING) return;
-      if (stage === "processing_speech" || stage === "generating_evaluation" || stage === "synthesizing_audio") {
-        disable(dom.btnDeliver);
-      } else if (stage === "ready" || stage === "failed" || stage === "invalidated") {
+      if (stage === "ready" || stage === "failed" || stage === "invalidated") {
         enable(dom.btnDeliver);
+      } else {
+        disable(dom.btnDeliver);
       }
     }
 
@@ -1957,7 +1956,8 @@
           // Send video consent to server (Req 1.2)
           wsSend({
             type: "set_video_consent",
-            consentTimestamp: new Date().toISOString(),
+            consentGranted: true,
+            timestamp: new Date().toISOString(),
           });
 
           // Send video_stream_ready to server (Req 1.5)
