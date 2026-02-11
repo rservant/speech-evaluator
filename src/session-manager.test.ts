@@ -634,6 +634,7 @@ describe("revokeConsent()", () => {
       energyVariationCoefficient: 0,
       energyProfile: { windowDurationMs: 250, windows: [], coefficientOfVariation: 0, silenceThreshold: 0 },
       classifiedFillers: [],
+      visualMetrics: null,
     };
     session.evaluation = {
       opening: "Great speech!",
@@ -917,6 +918,7 @@ describe("assessTranscriptQuality (via stopRecording)", () => {
       energyVariationCoefficient: 0,
       energyProfile: { windowDurationMs: 250, windows: [], coefficientOfVariation: 0, silenceThreshold: 0 },
       classifiedFillers: [],
+      visualMetrics: null,
     };
 
     await manager.stopRecording(session.id);
@@ -962,6 +964,7 @@ describe("assessTranscriptQuality (via stopRecording)", () => {
       energyVariationCoefficient: 0,
       energyProfile: { windowDurationMs: 250, windows: [], coefficientOfVariation: 0, silenceThreshold: 0 },
       classifiedFillers: [],
+      visualMetrics: null,
     };
 
     await manager.stopRecording(session.id);
@@ -1010,6 +1013,7 @@ describe("assessTranscriptQuality (via stopRecording)", () => {
       energyVariationCoefficient: 0,
       energyProfile: { windowDurationMs: 250, windows: [], coefficientOfVariation: 0, silenceThreshold: 0 },
       classifiedFillers: [],
+      visualMetrics: null,
     };
 
     await manager.stopRecording(session.id);
@@ -1055,6 +1059,7 @@ describe("assessTranscriptQuality (via stopRecording)", () => {
       energyVariationCoefficient: 0,
       energyProfile: { windowDurationMs: 250, windows: [], coefficientOfVariation: 0, silenceThreshold: 0 },
       classifiedFillers: [],
+      visualMetrics: null,
     };
 
     await manager.stopRecording(session.id);
@@ -1615,6 +1620,754 @@ describe("VAD Integration in SessionManager", () => {
       // Second recording — should create a new monitor
       manager.startRecording(session.id);
       expect(createdMonitors.length).toBe(2);
+    });
+  });
+});
+
+// ─── Phase 4: Video Lifecycle Methods ─────────────────────────────────────────
+// Validates: Requirements 1.3, 1.4, 1.9, 2.9, 10.6, 10.7
+
+describe("Video Lifecycle Methods", () => {
+  let manager: SessionManager;
+
+  beforeEach(() => {
+    manager = new SessionManager();
+  });
+
+  describe("setVideoConsent()", () => {
+    it("sets video consent in IDLE state", () => {
+      const session = manager.createSession();
+      const consent = { consentGranted: true, timestamp: new Date() };
+
+      manager.setVideoConsent(session.id, consent);
+
+      expect(session.videoConsent).toEqual(consent);
+    });
+
+    it("allows setting consent to false", () => {
+      const session = manager.createSession();
+      const consent = { consentGranted: false, timestamp: new Date() };
+
+      manager.setVideoConsent(session.id, consent);
+
+      expect(session.videoConsent).toEqual(consent);
+      expect(session.videoConsent!.consentGranted).toBe(false);
+    });
+
+    it("throws when session is in RECORDING state", () => {
+      const session = manager.createSession();
+      manager.startRecording(session.id);
+
+      expect(() =>
+        manager.setVideoConsent(session.id, { consentGranted: true, timestamp: new Date() })
+      ).toThrow(/Cannot set video consent.*recording/i);
+    });
+
+    it("throws when session is in PROCESSING state", async () => {
+      const session = manager.createSession();
+      manager.startRecording(session.id);
+      await manager.stopRecording(session.id);
+
+      expect(() =>
+        manager.setVideoConsent(session.id, { consentGranted: true, timestamp: new Date() })
+      ).toThrow(/Cannot set video consent.*processing/i);
+    });
+
+    it("throws for non-existent session", () => {
+      expect(() =>
+        manager.setVideoConsent("bad-id", { consentGranted: true, timestamp: new Date() })
+      ).toThrow(/Session not found/);
+    });
+
+    it("is independent from audio consent", () => {
+      const session = manager.createSession();
+
+      manager.setConsent(session.id, "Alice", true);
+      manager.setVideoConsent(session.id, { consentGranted: false, timestamp: new Date() });
+
+      expect(session.consent!.consentConfirmed).toBe(true);
+      expect(session.videoConsent!.consentGranted).toBe(false);
+    });
+  });
+
+  describe("setVideoStreamReady()", () => {
+    it("sets videoStreamReady to true in IDLE state", () => {
+      const session = manager.createSession();
+
+      manager.setVideoStreamReady(session.id);
+
+      expect(session.videoStreamReady).toBe(true);
+    });
+
+    it("accepts optional deviceLabel without storing it", () => {
+      const session = manager.createSession();
+
+      manager.setVideoStreamReady(session.id, "FaceTime HD Camera");
+
+      expect(session.videoStreamReady).toBe(true);
+      // deviceLabel must NOT be stored anywhere on the session (Req 11.7)
+      const sessionJson = JSON.stringify(session);
+      expect(sessionJson).not.toContain("FaceTime HD Camera");
+    });
+
+    it("throws when session is in RECORDING state", () => {
+      const session = manager.createSession();
+      manager.startRecording(session.id);
+
+      expect(() =>
+        manager.setVideoStreamReady(session.id)
+      ).toThrow(/Cannot set video stream ready.*recording/i);
+    });
+
+    it("throws when session is in PROCESSING state", async () => {
+      const session = manager.createSession();
+      manager.startRecording(session.id);
+      await manager.stopRecording(session.id);
+
+      expect(() =>
+        manager.setVideoStreamReady(session.id)
+      ).toThrow(/Cannot set video stream ready.*processing/i);
+    });
+
+    it("throws for non-existent session", () => {
+      expect(() =>
+        manager.setVideoStreamReady("bad-id")
+      ).toThrow(/Session not found/);
+    });
+  });
+
+  describe("setVideoConfig()", () => {
+    it("sets video config with valid frameRate in IDLE state", () => {
+      const session = manager.createSession();
+
+      manager.setVideoConfig(session.id, { frameRate: 3 });
+
+      expect(session.videoConfig).toEqual({ frameRate: 3 });
+    });
+
+    it("accepts frameRate of 1 (lower bound)", () => {
+      const session = manager.createSession();
+
+      manager.setVideoConfig(session.id, { frameRate: 1 });
+
+      expect(session.videoConfig.frameRate).toBe(1);
+    });
+
+    it("accepts frameRate of 5 (upper bound)", () => {
+      const session = manager.createSession();
+
+      manager.setVideoConfig(session.id, { frameRate: 5 });
+
+      expect(session.videoConfig.frameRate).toBe(5);
+    });
+
+    it("throws for frameRate of 0", () => {
+      const session = manager.createSession();
+
+      expect(() =>
+        manager.setVideoConfig(session.id, { frameRate: 0 })
+      ).toThrow(/Invalid frameRate.*0.*Must be between 1 and 5/);
+    });
+
+    it("throws for frameRate of 6", () => {
+      const session = manager.createSession();
+
+      expect(() =>
+        manager.setVideoConfig(session.id, { frameRate: 6 })
+      ).toThrow(/Invalid frameRate.*6.*Must be between 1 and 5/);
+    });
+
+    it("throws for negative frameRate", () => {
+      const session = manager.createSession();
+
+      expect(() =>
+        manager.setVideoConfig(session.id, { frameRate: -1 })
+      ).toThrow(/Invalid frameRate.*-1.*Must be between 1 and 5/);
+    });
+
+    it("throws when session is in RECORDING state", () => {
+      const session = manager.createSession();
+      manager.startRecording(session.id);
+
+      expect(() =>
+        manager.setVideoConfig(session.id, { frameRate: 3 })
+      ).toThrow(/Cannot set video config.*recording/i);
+    });
+
+    it("throws when session is in PROCESSING state", async () => {
+      const session = manager.createSession();
+      manager.startRecording(session.id);
+      await manager.stopRecording(session.id);
+
+      expect(() =>
+        manager.setVideoConfig(session.id, { frameRate: 3 })
+      ).toThrow(/Cannot set video config.*processing/i);
+    });
+
+    it("throws for non-existent session", () => {
+      expect(() =>
+        manager.setVideoConfig("bad-id", { frameRate: 2 })
+      ).toThrow(/Session not found/);
+    });
+  });
+
+  describe("feedVideoFrame()", () => {
+    const mockHeader = { timestamp: 1.0, seq: 1, width: 640, height: 480 };
+    const mockJpeg = Buffer.from([0xff, 0xd8, 0xff, 0xe0]);
+
+    function createMockVideoProcessor() {
+      return {
+        enqueueFrame: vi.fn(),
+        startDrainLoop: vi.fn(),
+        finalize: vi.fn(),
+        stop: vi.fn(),
+        getStatus: vi.fn().mockReturnValue({ framesProcessed: 0, framesDropped: 0, processingLatencyMs: 0 }),
+      };
+    }
+
+    it("enqueues frame when RECORDING with consent and stream ready", () => {
+      const mockProcessor = createMockVideoProcessor();
+      const mockFactory = vi.fn().mockReturnValue(mockProcessor);
+      const mgr = new SessionManager({ videoProcessorFactory: mockFactory } as unknown as SessionManagerDeps);
+      const session = mgr.createSession();
+
+      // Set up video prerequisites
+      mgr.setVideoConsent(session.id, { consentGranted: true, timestamp: new Date() });
+      mgr.setVideoStreamReady(session.id);
+
+      // Manually put processor in the map and transition to RECORDING
+      mgr.startRecording(session.id);
+
+      // Manually inject the processor since startRecording doesn't wire it yet (task 7.2)
+      (mgr as any).videoProcessors.set(session.id, mockProcessor);
+
+      mgr.feedVideoFrame(session.id, mockHeader, mockJpeg);
+
+      expect(mockProcessor.enqueueFrame).toHaveBeenCalledWith(mockHeader, mockJpeg);
+    });
+
+    it("silently ignores when videoConsent is not granted", () => {
+      const mockProcessor = createMockVideoProcessor();
+      const mgr = new SessionManager();
+      const session = mgr.createSession();
+
+      mgr.setVideoConsent(session.id, { consentGranted: false, timestamp: new Date() });
+      mgr.setVideoStreamReady(session.id);
+      mgr.startRecording(session.id);
+      (mgr as any).videoProcessors.set(session.id, mockProcessor);
+
+      mgr.feedVideoFrame(session.id, mockHeader, mockJpeg);
+
+      expect(mockProcessor.enqueueFrame).not.toHaveBeenCalled();
+    });
+
+    it("silently ignores when videoConsent is null", () => {
+      const mockProcessor = createMockVideoProcessor();
+      const mgr = new SessionManager();
+      const session = mgr.createSession();
+
+      mgr.setVideoStreamReady(session.id);
+      mgr.startRecording(session.id);
+      (mgr as any).videoProcessors.set(session.id, mockProcessor);
+
+      mgr.feedVideoFrame(session.id, mockHeader, mockJpeg);
+
+      expect(mockProcessor.enqueueFrame).not.toHaveBeenCalled();
+    });
+
+    it("silently ignores when videoStreamReady is false", () => {
+      const mockProcessor = createMockVideoProcessor();
+      const mgr = new SessionManager();
+      const session = mgr.createSession();
+
+      mgr.setVideoConsent(session.id, { consentGranted: true, timestamp: new Date() });
+      mgr.startRecording(session.id);
+      (mgr as any).videoProcessors.set(session.id, mockProcessor);
+
+      mgr.feedVideoFrame(session.id, mockHeader, mockJpeg);
+
+      expect(mockProcessor.enqueueFrame).not.toHaveBeenCalled();
+    });
+
+    it("silently ignores when session is in IDLE state", () => {
+      const mockProcessor = createMockVideoProcessor();
+      const mgr = new SessionManager();
+      const session = mgr.createSession();
+
+      mgr.setVideoConsent(session.id, { consentGranted: true, timestamp: new Date() });
+      mgr.setVideoStreamReady(session.id);
+      (mgr as any).videoProcessors.set(session.id, mockProcessor);
+
+      mgr.feedVideoFrame(session.id, mockHeader, mockJpeg);
+
+      expect(mockProcessor.enqueueFrame).not.toHaveBeenCalled();
+    });
+
+    it("silently ignores when session is in PROCESSING state", async () => {
+      const mockProcessor = createMockVideoProcessor();
+      const mgr = new SessionManager();
+      const session = mgr.createSession();
+
+      mgr.setVideoConsent(session.id, { consentGranted: true, timestamp: new Date() });
+      mgr.setVideoStreamReady(session.id);
+      mgr.startRecording(session.id);
+      await mgr.stopRecording(session.id);
+      (mgr as any).videoProcessors.set(session.id, mockProcessor);
+
+      mgr.feedVideoFrame(session.id, mockHeader, mockJpeg);
+
+      expect(mockProcessor.enqueueFrame).not.toHaveBeenCalled();
+    });
+
+    it("silently ignores when no VideoProcessor exists for session", () => {
+      const mgr = new SessionManager();
+      const session = mgr.createSession();
+
+      mgr.setVideoConsent(session.id, { consentGranted: true, timestamp: new Date() });
+      mgr.setVideoStreamReady(session.id);
+      mgr.startRecording(session.id);
+
+      // No processor in the map — should not throw
+      expect(() =>
+        mgr.feedVideoFrame(session.id, mockHeader, mockJpeg)
+      ).not.toThrow();
+    });
+
+    it("does not await the enqueueFrame call (fire-and-forget)", () => {
+      const mockProcessor = createMockVideoProcessor();
+      const mgr = new SessionManager();
+      const session = mgr.createSession();
+
+      mgr.setVideoConsent(session.id, { consentGranted: true, timestamp: new Date() });
+      mgr.setVideoStreamReady(session.id);
+      mgr.startRecording(session.id);
+      (mgr as any).videoProcessors.set(session.id, mockProcessor);
+
+      // feedVideoFrame returns void (not a Promise)
+      const result = mgr.feedVideoFrame(session.id, mockHeader, mockJpeg);
+      expect(result).toBeUndefined();
+    });
+  });
+
+  // ─── Phase 4 Task 7.2: Video Recording Lifecycle ─────────────────────────────
+
+  describe("createSession() video field initialization", () => {
+    it("initializes video fields with defaults", () => {
+      const session = manager.createSession();
+
+      expect(session.videoConsent).toBeNull();
+      expect(session.videoStreamReady).toBe(false);
+      expect(session.visualObservations).toBeNull();
+      expect(session.videoConfig).toEqual({ frameRate: 5 });
+    });
+  });
+
+  describe("startRecording() video integration", () => {
+    function createMockVideoProcessorForStart() {
+      return {
+        enqueueFrame: vi.fn(),
+        startDrainLoop: vi.fn(),
+        finalize: vi.fn().mockResolvedValue(makeMockVisualObservations()),
+        stop: vi.fn(),
+        getStatus: vi.fn().mockReturnValue({ framesProcessed: 0, framesDropped: 0, processingLatencyMs: 0 }),
+      };
+    }
+
+    function makeMockVisualObservations() {
+      return {
+        gazeBreakdown: { audienceFacing: 70, notesFacing: 20, other: 10 },
+        faceNotDetectedCount: 2, totalGestureCount: 5, gestureFrequency: 2.5,
+        gesturePerSentenceRatio: 0.6, handsDetectedFrames: 40, handsNotDetectedFrames: 10,
+        meanBodyStabilityScore: 0.85, stageCrossingCount: 1, movementClassification: "stationary" as const,
+        meanFacialEnergyScore: 0.45, facialEnergyVariation: 0.3, facialEnergyLowSignal: false,
+        framesAnalyzed: 50, framesReceived: 60, framesSkippedBySampler: 5, framesErrored: 1,
+        framesDroppedByBackpressure: 2, framesDroppedByTimestamp: 1,
+        framesDroppedByFinalizationBudget: 0, resolutionChangeCount: 0,
+        videoQualityGrade: "good" as const, videoQualityWarning: false, finalizationLatencyMs: 500,
+        videoProcessingVersion: { tfjsVersion: "4.0.0", tfjsBackend: "cpu", modelVersions: { blazeface: "1.0", movenet: "1.0" }, configHash: "abc123" },
+        gazeReliable: true, gestureReliable: true, stabilityReliable: true, facialEnergyReliable: true,
+      };
+    }
+
+    it("creates VideoProcessor when consent granted and stream ready", () => {
+      const mockProcessor = createMockVideoProcessorForStart();
+      const mockFactory = vi.fn().mockReturnValue(mockProcessor);
+      const mgr = new SessionManager({ videoProcessorFactory: mockFactory } as unknown as SessionManagerDeps);
+      const session = mgr.createSession();
+
+      mgr.setVideoConsent(session.id, { consentGranted: true, timestamp: new Date() });
+      mgr.setVideoStreamReady(session.id);
+      mgr.startRecording(session.id);
+
+      expect(mockFactory).toHaveBeenCalledTimes(1);
+      expect(mockProcessor.startDrainLoop).toHaveBeenCalledTimes(1);
+      expect((mgr as any).videoProcessors.get(session.id)).toBe(mockProcessor);
+    });
+
+    it("proceeds audio-only when no video consent", () => {
+      const mockFactory = vi.fn();
+      const mgr = new SessionManager({ videoProcessorFactory: mockFactory } as unknown as SessionManagerDeps);
+      const session = mgr.createSession();
+
+      mgr.startRecording(session.id);
+
+      expect(mockFactory).not.toHaveBeenCalled();
+      expect(session.state).toBe(SessionState.RECORDING);
+    });
+
+    it("proceeds audio-only when consent granted but stream not ready (Req 1.6)", () => {
+      const mockFactory = vi.fn();
+      const mgr = new SessionManager({ videoProcessorFactory: mockFactory } as unknown as SessionManagerDeps);
+      const session = mgr.createSession();
+
+      mgr.setVideoConsent(session.id, { consentGranted: true, timestamp: new Date() });
+      mgr.startRecording(session.id);
+
+      expect(mockFactory).not.toHaveBeenCalled();
+      expect(session.state).toBe(SessionState.RECORDING);
+    });
+
+    it("proceeds audio-only when consent is false", () => {
+      const mockFactory = vi.fn();
+      const mgr = new SessionManager({ videoProcessorFactory: mockFactory } as unknown as SessionManagerDeps);
+      const session = mgr.createSession();
+
+      mgr.setVideoConsent(session.id, { consentGranted: false, timestamp: new Date() });
+      mgr.setVideoStreamReady(session.id);
+      mgr.startRecording(session.id);
+
+      expect(mockFactory).not.toHaveBeenCalled();
+      expect(session.state).toBe(SessionState.RECORDING);
+    });
+
+    it("proceeds audio-only when no videoProcessorFactory configured", () => {
+      const mgr = new SessionManager();
+      const session = mgr.createSession();
+
+      mgr.setVideoConsent(session.id, { consentGranted: true, timestamp: new Date() });
+      mgr.setVideoStreamReady(session.id);
+
+      expect(() => mgr.startRecording(session.id)).not.toThrow();
+      expect(session.state).toBe(SessionState.RECORDING);
+    });
+
+    it("handles VideoProcessor creation failure gracefully (audio-only fallback)", () => {
+      const mockFactory = vi.fn().mockImplementation(() => {
+        throw new Error("Model loading failed");
+      });
+      const mgr = new SessionManager({ videoProcessorFactory: mockFactory } as unknown as SessionManagerDeps);
+      const session = mgr.createSession();
+
+      mgr.setVideoConsent(session.id, { consentGranted: true, timestamp: new Date() });
+      mgr.setVideoStreamReady(session.id);
+
+      expect(() => mgr.startRecording(session.id)).not.toThrow();
+      expect(session.state).toBe(SessionState.RECORDING);
+      expect((mgr as any).videoProcessors.has(session.id)).toBe(false);
+    });
+  });
+
+  describe("stopRecording() video integration", () => {
+    function createMockVideoProcessorForStop(observations?: any) {
+      return {
+        enqueueFrame: vi.fn(),
+        startDrainLoop: vi.fn(),
+        finalize: vi.fn().mockResolvedValue(observations ?? makeMockObservationsForStop()),
+        stop: vi.fn(),
+        getStatus: vi.fn().mockReturnValue({ framesProcessed: 0, framesDropped: 0, processingLatencyMs: 0 }),
+      };
+    }
+
+    function makeMockObservationsForStop(overrides?: any) {
+      return {
+        gazeBreakdown: { audienceFacing: 70, notesFacing: 20, other: 10 },
+        faceNotDetectedCount: 2, totalGestureCount: 5, gestureFrequency: 2.5,
+        gesturePerSentenceRatio: 0.6, handsDetectedFrames: 40, handsNotDetectedFrames: 10,
+        meanBodyStabilityScore: 0.85, stageCrossingCount: 1, movementClassification: "stationary" as const,
+        meanFacialEnergyScore: 0.45, facialEnergyVariation: 0.3, facialEnergyLowSignal: false,
+        framesAnalyzed: 50, framesReceived: 60, framesSkippedBySampler: 5, framesErrored: 1,
+        framesDroppedByBackpressure: 2, framesDroppedByTimestamp: 1,
+        framesDroppedByFinalizationBudget: 0, resolutionChangeCount: 0,
+        videoQualityGrade: "good" as const, videoQualityWarning: false, finalizationLatencyMs: 500,
+        videoProcessingVersion: { tfjsVersion: "4.0.0", tfjsBackend: "cpu", modelVersions: { blazeface: "1.0", movenet: "1.0" }, configHash: "abc123" },
+        gazeReliable: true, gestureReliable: true, stabilityReliable: true, facialEnergyReliable: true,
+        ...overrides,
+      };
+    }
+
+    function makeMockMetricsExtractor() {
+      return {
+        extract: vi.fn().mockReturnValue({
+          durationSeconds: 60, durationFormatted: "1:00", totalWords: 100, wordsPerMinute: 100,
+          fillerWords: [], fillerWordCount: 0, fillerWordFrequency: 0, pauseCount: 0,
+          totalPauseDurationSeconds: 0, averagePauseDurationSeconds: 0, intentionalPauseCount: 0,
+          hesitationPauseCount: 0, classifiedPauses: [], energyVariationCoefficient: 0,
+          energyProfile: { windowDurationMs: 250, windows: [], coefficientOfVariation: 0, silenceThreshold: 0 },
+          classifiedFillers: [], visualMetrics: null,
+        }),
+        computeEnergyProfile: vi.fn(),
+      };
+    }
+
+    it("finalizes VideoProcessor and attaches visualMetrics to DeliveryMetrics", async () => {
+      const observations = makeMockObservationsForStop();
+      const mockProcessor = createMockVideoProcessorForStop(observations);
+      const mockFactory = vi.fn().mockReturnValue(mockProcessor);
+      const mgr = new SessionManager({
+        videoProcessorFactory: mockFactory,
+        metricsExtractor: makeMockMetricsExtractor(),
+      } as unknown as SessionManagerDeps);
+      const session = mgr.createSession();
+
+      mgr.setVideoConsent(session.id, { consentGranted: true, timestamp: new Date() });
+      mgr.setVideoStreamReady(session.id);
+      mgr.startRecording(session.id);
+      session.transcript = [{ text: "hello", startTime: 0, endTime: 1, words: [{ word: "hello", startTime: 0, endTime: 1, confidence: 0.9 }], isFinal: true }];
+
+      await mgr.stopRecording(session.id);
+
+      expect(mockProcessor.finalize).toHaveBeenCalledTimes(1);
+      expect(session.visualObservations).toBe(observations);
+      expect(session.metrics!.visualMetrics).not.toBeNull();
+      expect(session.metrics!.visualMetrics!.gazeBreakdown).toEqual({ audienceFacing: 70, notesFacing: 20, other: 10 });
+      expect(session.metrics!.visualMetrics!.videoQualityWarning).toBe(false);
+      expect(session.metrics!.visualMetrics!.videoQualityGrade).toBe("good");
+      expect((mgr as any).videoProcessors.has(session.id)).toBe(false);
+    });
+
+    it("derives videoQualityWarning from grade (not 'good' → true)", async () => {
+      const observations = makeMockObservationsForStop({ videoQualityGrade: "degraded" });
+      const mockProcessor = createMockVideoProcessorForStop(observations);
+      const mockFactory = vi.fn().mockReturnValue(mockProcessor);
+      const mgr = new SessionManager({
+        videoProcessorFactory: mockFactory,
+        metricsExtractor: makeMockMetricsExtractor(),
+      } as unknown as SessionManagerDeps);
+      const session = mgr.createSession();
+
+      mgr.setVideoConsent(session.id, { consentGranted: true, timestamp: new Date() });
+      mgr.setVideoStreamReady(session.id);
+      mgr.startRecording(session.id);
+      session.transcript = [{ text: "hello", startTime: 0, endTime: 1, words: [{ word: "hello", startTime: 0, endTime: 1, confidence: 0.9 }], isFinal: true }];
+
+      await mgr.stopRecording(session.id);
+
+      expect(session.metrics!.visualMetrics!.videoQualityWarning).toBe(true);
+    });
+
+    it("sets visualMetrics to null when no VideoProcessor exists", async () => {
+      const mgr = new SessionManager({
+        metricsExtractor: makeMockMetricsExtractor(),
+      } as unknown as SessionManagerDeps);
+      const session = mgr.createSession();
+
+      mgr.startRecording(session.id);
+      session.transcript = [{ text: "hello", startTime: 0, endTime: 1, words: [{ word: "hello", startTime: 0, endTime: 1, confidence: 0.9 }], isFinal: true }];
+
+      await mgr.stopRecording(session.id);
+
+      expect(session.metrics!.visualMetrics).toBeNull();
+    });
+  });
+
+  describe("panicMute() video integration", () => {
+    it("stops and removes VideoProcessor", () => {
+      const mockProcessor = {
+        enqueueFrame: vi.fn(), startDrainLoop: vi.fn(), finalize: vi.fn(),
+        stop: vi.fn(), getStatus: vi.fn().mockReturnValue({ framesProcessed: 0, framesDropped: 0, processingLatencyMs: 0 }),
+      };
+      const mockFactory = vi.fn().mockReturnValue(mockProcessor);
+      const mgr = new SessionManager({ videoProcessorFactory: mockFactory } as unknown as SessionManagerDeps);
+      const session = mgr.createSession();
+
+      mgr.setVideoConsent(session.id, { consentGranted: true, timestamp: new Date() });
+      mgr.setVideoStreamReady(session.id);
+      mgr.startRecording(session.id);
+
+      expect((mgr as any).videoProcessors.has(session.id)).toBe(true);
+
+      mgr.panicMute(session.id);
+
+      expect(mockProcessor.stop).toHaveBeenCalledTimes(1);
+      expect((mgr as any).videoProcessors.has(session.id)).toBe(false);
+      expect(session.state).toBe(SessionState.IDLE);
+    });
+
+    it("is a no-op for video when no processor exists", () => {
+      const mgr = new SessionManager();
+      const session = mgr.createSession();
+      mgr.startRecording(session.id);
+
+      expect(() => mgr.panicMute(session.id)).not.toThrow();
+      expect(session.state).toBe(SessionState.IDLE);
+    });
+  });
+
+  describe("revokeConsent() video integration", () => {
+    it("purges all video data and stops VideoProcessor", () => {
+      const mockProcessor = {
+        enqueueFrame: vi.fn(), startDrainLoop: vi.fn(), finalize: vi.fn(),
+        stop: vi.fn(), getStatus: vi.fn().mockReturnValue({ framesProcessed: 0, framesDropped: 0, processingLatencyMs: 0 }),
+      };
+      const mockFactory = vi.fn().mockReturnValue(mockProcessor);
+      const mgr = new SessionManager({ videoProcessorFactory: mockFactory } as unknown as SessionManagerDeps);
+      const session = mgr.createSession();
+
+      mgr.setVideoConsent(session.id, { consentGranted: true, timestamp: new Date() });
+      mgr.setVideoStreamReady(session.id);
+      mgr.startRecording(session.id);
+
+      session.visualObservations = {
+        gazeBreakdown: { audienceFacing: 70, notesFacing: 20, other: 10 },
+        faceNotDetectedCount: 0, totalGestureCount: 0, gestureFrequency: 0,
+        gesturePerSentenceRatio: null, handsDetectedFrames: 0, handsNotDetectedFrames: 0,
+        meanBodyStabilityScore: 0, stageCrossingCount: 0, movementClassification: "stationary",
+        meanFacialEnergyScore: 0, facialEnergyVariation: 0, facialEnergyLowSignal: false,
+        framesAnalyzed: 0, framesReceived: 0, framesSkippedBySampler: 0, framesErrored: 0,
+        framesDroppedByBackpressure: 0, framesDroppedByTimestamp: 0,
+        framesDroppedByFinalizationBudget: 0, resolutionChangeCount: 0,
+        videoQualityGrade: "good", videoQualityWarning: false, finalizationLatencyMs: 0,
+        videoProcessingVersion: { tfjsVersion: "4.0.0", tfjsBackend: "cpu", modelVersions: { blazeface: "1.0", movenet: "1.0" }, configHash: "abc" },
+        gazeReliable: true, gestureReliable: true, stabilityReliable: true, facialEnergyReliable: true,
+      };
+
+      mgr.revokeConsent(session.id);
+
+      expect(mockProcessor.stop).toHaveBeenCalledTimes(1);
+      expect((mgr as any).videoProcessors.has(session.id)).toBe(false);
+      expect(session.videoConsent).toBeNull();
+      expect(session.videoStreamReady).toBe(false);
+      expect(session.visualObservations).toBeNull();
+      expect(session.state).toBe(SessionState.IDLE);
+    });
+  });
+
+  describe("generateEvaluation() video integration", () => {
+    function makeMockObservationsForEval(overrides?: any) {
+      return {
+        gazeBreakdown: { audienceFacing: 70, notesFacing: 20, other: 10 },
+        faceNotDetectedCount: 2, totalGestureCount: 5, gestureFrequency: 2.5,
+        gesturePerSentenceRatio: 0.6, handsDetectedFrames: 40, handsNotDetectedFrames: 10,
+        meanBodyStabilityScore: 0.85, stageCrossingCount: 1, movementClassification: "stationary" as const,
+        meanFacialEnergyScore: 0.45, facialEnergyVariation: 0.3, facialEnergyLowSignal: false,
+        framesAnalyzed: 50, framesReceived: 60, framesSkippedBySampler: 5, framesErrored: 1,
+        framesDroppedByBackpressure: 2, framesDroppedByTimestamp: 1,
+        framesDroppedByFinalizationBudget: 0, resolutionChangeCount: 0,
+        videoQualityGrade: "good" as const, videoQualityWarning: false, finalizationLatencyMs: 500,
+        videoProcessingVersion: { tfjsVersion: "4.0.0", tfjsBackend: "cpu", modelVersions: { blazeface: "1.0", movenet: "1.0" }, configHash: "abc123" },
+        gazeReliable: true, gestureReliable: true, stabilityReliable: true, facialEnergyReliable: true,
+        ...overrides,
+      };
+    }
+
+    function createMockEvalGenerator(capturedCalls: any[]) {
+      return {
+        generate: vi.fn().mockImplementation((...args: any[]) => {
+          capturedCalls.push(args);
+          return Promise.resolve({
+            evaluation: { opening: "Hello", items: [], closing: "Goodbye", structure_commentary: { opening_comment: null, body_comment: null, closing_comment: null } },
+            passRate: 1.0,
+          });
+        }),
+        renderScript: vi.fn().mockReturnValue("Test script"),
+        redact: vi.fn().mockReturnValue({ scriptRedacted: "Test script", evaluationPublic: { opening: "Hello", items: [], closing: "Goodbye", structure_commentary: { opening_comment: null, body_comment: null, closing_comment: null } } }),
+        logConsistencyTelemetry: vi.fn().mockResolvedValue(undefined),
+      };
+    }
+
+    function makeBasicMetrics() {
+      return {
+        durationSeconds: 60, durationFormatted: "1:00", totalWords: 100, wordsPerMinute: 100,
+        fillerWords: [], fillerWordCount: 0, fillerWordFrequency: 0, pauseCount: 0,
+        totalPauseDurationSeconds: 0, averagePauseDurationSeconds: 0, intentionalPauseCount: 0,
+        hesitationPauseCount: 0, classifiedPauses: [], energyVariationCoefficient: 0,
+        energyProfile: { windowDurationMs: 250, windows: [], coefficientOfVariation: 0, silenceThreshold: 0 },
+        classifiedFillers: [], visualMetrics: null,
+      };
+    }
+
+    function makeBasicTranscript() {
+      return [{ text: "hello", startTime: 0, endTime: 1, words: [{ word: "hello", startTime: 0, endTime: 1, confidence: 0.9 }], isFinal: true }];
+    }
+
+    it("passes visualObservations to EvaluationGenerator when quality is not 'poor'", async () => {
+      const capturedCalls: any[] = [];
+      const mockEvalGen = createMockEvalGenerator(capturedCalls);
+      const mockToneChecker = {
+        check: vi.fn().mockReturnValue({ passed: true, violations: [] }),
+        stripViolations: vi.fn().mockImplementation((s: string) => s),
+        stripMarkers: vi.fn().mockImplementation((s: string) => s),
+        appendScopeAcknowledgment: vi.fn().mockImplementation((s: string) => s),
+      };
+      const mgr = new SessionManager({
+        evaluationGenerator: mockEvalGen,
+        toneChecker: mockToneChecker,
+      } as unknown as SessionManagerDeps);
+      const session = mgr.createSession();
+      mgr.startRecording(session.id);
+      await mgr.stopRecording(session.id);
+
+      session.transcript = makeBasicTranscript();
+      session.metrics = makeBasicMetrics();
+      session.visualObservations = makeMockObservationsForEval({ videoQualityGrade: "good" });
+
+      await mgr.generateEvaluation(session.id);
+
+      expect(capturedCalls.length).toBe(1);
+      expect(capturedCalls[0][3]).toBe(session.visualObservations);
+    });
+
+    it("suppresses visual data when videoQualityGrade is 'poor'", async () => {
+      const capturedCalls: any[] = [];
+      const mockEvalGen = createMockEvalGenerator(capturedCalls);
+      const mockToneChecker = {
+        check: vi.fn().mockReturnValue({ passed: true, violations: [] }),
+        stripViolations: vi.fn().mockImplementation((s: string) => s),
+        stripMarkers: vi.fn().mockImplementation((s: string) => s),
+        appendScopeAcknowledgment: vi.fn().mockImplementation((s: string) => s),
+      };
+      const mgr = new SessionManager({
+        evaluationGenerator: mockEvalGen,
+        toneChecker: mockToneChecker,
+      } as unknown as SessionManagerDeps);
+      const session = mgr.createSession();
+      mgr.startRecording(session.id);
+      await mgr.stopRecording(session.id);
+
+      session.transcript = makeBasicTranscript();
+      session.metrics = makeBasicMetrics();
+      session.visualObservations = makeMockObservationsForEval({ videoQualityGrade: "poor" });
+
+      await mgr.generateEvaluation(session.id);
+
+      expect(capturedCalls.length).toBe(1);
+      expect(capturedCalls[0][3]).toBeNull();
+    });
+
+    it("passes null when no visual observations exist", async () => {
+      const capturedCalls: any[] = [];
+      const mockEvalGen = createMockEvalGenerator(capturedCalls);
+      const mockToneChecker = {
+        check: vi.fn().mockReturnValue({ passed: true, violations: [] }),
+        stripViolations: vi.fn().mockImplementation((s: string) => s),
+        stripMarkers: vi.fn().mockImplementation((s: string) => s),
+        appendScopeAcknowledgment: vi.fn().mockImplementation((s: string) => s),
+      };
+      const mgr = new SessionManager({
+        evaluationGenerator: mockEvalGen,
+        toneChecker: mockToneChecker,
+      } as unknown as SessionManagerDeps);
+      const session = mgr.createSession();
+      mgr.startRecording(session.id);
+      await mgr.stopRecording(session.id);
+
+      session.transcript = makeBasicTranscript();
+      session.metrics = makeBasicMetrics();
+
+      await mgr.generateEvaluation(session.id);
+
+      expect(capturedCalls.length).toBe(1);
+      expect(capturedCalls[0][3]).toBeNull();
     });
   });
 });

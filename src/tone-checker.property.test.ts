@@ -11,7 +11,7 @@
 
 import { describe, it, expect } from "vitest";
 import * as fc from "fast-check";
-import { ToneChecker } from "./tone-checker.js";
+import { ToneChecker, hasMetricAnchoredNumber, validateMetricKeyExists } from "./tone-checker.js";
 import type {
   StructuredEvaluation,
   DeliveryMetrics,
@@ -54,6 +54,7 @@ const STUB_METRICS: DeliveryMetrics = {
     silenceThreshold: 0,
   },
   classifiedFillers: [],
+  visualMetrics: null,
 };
 
 const checker = new ToneChecker();
@@ -1015,6 +1016,1183 @@ describe("Feature: phase-2-stability-credibility, Property 20: Marker Eliminatio
         },
       ),
       { numRuns: 100 },
+    );
+  });
+});
+
+
+// ─── Property 18: Tone checker flags visual emotion inference and intent attribution ─
+// Feature: phase-4-multimodal-video, Property 18
+//
+// **Validates: Requirements 6.5, 7.1**
+//
+// For any sentence containing a visual emotion inference pattern (e.g.,
+// "you looked nervous", "your expression showed anxiety", "you were trying
+// to appear confident"), the Tone_Checker SHALL produce a violation with
+// category `visual_emotion_inference`. For any sentence that does not match
+// any visual emotion inference pattern, the Tone_Checker SHALL NOT produce
+// a `visual_emotion_inference` violation for that sentence.
+
+// ─── Generators for Property 18 ─────────────────────────────────────────────────
+
+/**
+ * Emotion/state words used in visual emotion inference patterns.
+ * These are the adjectives/nouns that appear in the actual regex patterns.
+ */
+const EMOTION_ADJECTIVES = [
+  "nervous", "uncomfortable", "distracted", "confident", "anxious",
+  "worried", "stressed", "tense", "frustrated", "bored", "excited",
+  "happy", "sad", "angry", "scared", "shy", "timid", "overwhelmed",
+] as const;
+
+const EMOTION_NOUNS = [
+  "nervousness", "anxiety", "confidence", "discomfort",
+  "frustration", "tension", "stress",
+] as const;
+
+const EMOTION_SIGNS = [
+  "fear", "anxiety", "nervousness", "stress",
+  "discomfort", "frustration", "tension", "confidence",
+] as const;
+
+/**
+ * Generator: "you looked/seemed/appeared <emotion>" pattern.
+ * Matches VISUAL_EMOTION_INFERENCE_PATTERNS[0].
+ */
+function arbitraryLookedEmotion(): fc.Arbitrary<string> {
+  return fc.tuple(
+    fc.constantFrom("looked", "seemed", "appeared"),
+    fc.constantFrom(...EMOTION_ADJECTIVES),
+  ).map(([verb, emotion]) => `you ${verb} ${emotion}`);
+}
+
+/**
+ * Generator: "your face/expression/... showed/revealed/..." pattern.
+ * Matches VISUAL_EMOTION_INFERENCE_PATTERNS[1].
+ */
+function arbitraryExpressionShowed(): fc.Arbitrary<string> {
+  return fc.tuple(
+    fc.constantFrom("face", "expression", "eyes", "body language", "gesture", "gestures"),
+    fc.constantFrom("showed", "revealed", "indicated", "suggested", "betrayed"),
+  ).map(([part, verb]) => `your ${part} ${verb}`);
+}
+
+/**
+ * Generator: "you were trying to appear/look/seem" pattern.
+ * Matches VISUAL_EMOTION_INFERENCE_PATTERNS[2].
+ */
+function arbitraryTryingToAppear(): fc.Arbitrary<string> {
+  return fc.constantFrom("appear", "look", "seem")
+    .map((verb) => `you were trying to ${verb}`);
+}
+
+/**
+ * Generator: "your <emotion noun>" pattern.
+ * Matches VISUAL_EMOTION_INFERENCE_PATTERNS[4].
+ */
+function arbitraryYourEmotionNoun(): fc.Arbitrary<string> {
+  return fc.constantFrom(...EMOTION_NOUNS)
+    .map((noun) => `your ${noun}`);
+}
+
+/**
+ * Emotion adjectives in the "you were ..." pattern (pattern [5]).
+ * This is a subset of EMOTION_ADJECTIVES — "worried" and "distracted"
+ * are only in the "looked/seemed/appeared" pattern, not the "you were" pattern.
+ */
+const YOU_WERE_EMOTIONS = [
+  "nervous", "uncomfortable", "confident", "anxious",
+  "stressed", "tense", "frustrated", "bored", "excited",
+  "happy", "sad", "angry", "scared", "shy", "timid", "overwhelmed",
+] as const;
+
+/**
+ * Generator: "you were (clearly|obviously)? <emotion>" pattern.
+ * Matches VISUAL_EMOTION_INFERENCE_PATTERNS[5].
+ */
+function arbitraryYouWereEmotion(): fc.Arbitrary<string> {
+  return fc.tuple(
+    fc.constantFrom("", "clearly ", "obviously "),
+    fc.constantFrom(...YOU_WERE_EMOTIONS),
+  ).map(([adverb, emotion]) => `you were ${adverb}${emotion}`);
+}
+
+/**
+ * Generator: "showed signs of <emotion>" pattern.
+ * Matches VISUAL_EMOTION_INFERENCE_PATTERNS[6].
+ */
+function arbitraryShowedSignsOf(): fc.Arbitrary<string> {
+  return fc.constantFrom(...EMOTION_SIGNS)
+    .map((sign) => `showed signs of ${sign}`);
+}
+
+/**
+ * Generator: "was clearly <emotion>" pattern.
+ * Matches VISUAL_EMOTION_INFERENCE_PATTERNS[7].
+ */
+function arbitraryWasClearly(): fc.Arbitrary<string> {
+  return fc.constantFrom(
+    "stressed", "nervous", "anxious", "uncomfortable",
+    "confident", "frustrated", "tense", "overwhelmed",
+  ).map((emotion) => `was clearly ${emotion}`);
+}
+
+/**
+ * Generator that picks any visual emotion inference phrase from all pattern groups.
+ */
+function arbitraryVisualEmotionPhrase(): fc.Arbitrary<string> {
+  return fc.oneof(
+    arbitraryLookedEmotion(),
+    arbitraryExpressionShowed(),
+    arbitraryTryingToAppear(),
+    fc.constant("you felt"),
+    arbitraryYourEmotionNoun(),
+    arbitraryYouWereEmotion(),
+    arbitraryShowedSignsOf(),
+    arbitraryWasClearly(),
+  );
+}
+
+/**
+ * Generator for clean filler text that does NOT trigger any tone checker patterns.
+ * Uses safe words that won't accidentally match visual emotion inference,
+ * psychological inference, visual scope, punitive, or numerical score patterns.
+ */
+function arbitraryEmotionSafeText(): fc.Arbitrary<string> {
+  const safeWords = [
+    "the", "speech", "had", "a", "well", "organized",
+    "topic", "interesting", "with", "clear", "message",
+    "and", "strong", "delivery", "overall", "this",
+    "is", "an", "excellent", "presentation", "thank",
+    "for", "sharing", "that", "wonderful", "story",
+    "during", "the", "opening", "section", "of",
+  ];
+  return fc
+    .array(fc.constantFrom(...safeWords), { minLength: 2, maxLength: 6 })
+    .map((words) => words.join(" "));
+}
+
+/**
+ * Build a full sentence containing a visual emotion inference phrase
+ * embedded in safe filler text.
+ */
+function arbitraryVisualEmotionSentence(): fc.Arbitrary<{
+  phrase: string;
+  sentence: string;
+}> {
+  return fc.tuple(
+    arbitraryVisualEmotionPhrase(),
+    arbitraryEmotionSafeText(),
+    arbitraryEmotionSafeText(),
+  ).map(([phrase, prefix, suffix]) => {
+    const sentence = `${capitalize(prefix)} ${phrase} ${suffix}.`;
+    return { phrase, sentence };
+  });
+}
+
+/**
+ * Generator for sentences that should NOT trigger visual_emotion_inference.
+ * Uses purely observational, metric-based language.
+ */
+function arbitraryNonEmotionSentence(): fc.Arbitrary<string> {
+  const safeSentences = [
+    "I observed audience-facing gaze at 65% of the speech.",
+    "The total gesture count was 12 during the presentation.",
+    "Your speech had a clear and well-organized structure.",
+    "The opening section was engaging and set the tone well.",
+    "I noticed a steady pace throughout the delivery.",
+    "The transitions between points were smooth and natural.",
+    "Your closing left a lasting impression on the audience.",
+    "The use of examples strengthened the overall message.",
+    "Your vocal variety kept the audience engaged throughout.",
+    "The main points were easy to follow and well supported.",
+    "I observed a mean body stability score of 0.85.",
+    "The facial energy variation coefficient was 0.32.",
+  ];
+  return fc.constantFrom(...safeSentences);
+}
+
+// ─── Property 18 Tests ──────────────────────────────────────────────────────────
+
+describe("Feature: phase-4-multimodal-video, Property 18: Tone checker flags visual emotion inference and intent attribution", () => {
+  /**
+   * **Validates: Requirements 6.5, 7.1**
+   *
+   * For any sentence containing a visual emotion inference pattern,
+   * the ToneChecker SHALL produce a violation with category `visual_emotion_inference`.
+   */
+  it("flags sentences containing visual emotion inference patterns", () => {
+    fc.assert(
+      fc.property(arbitraryVisualEmotionSentence(), ({ phrase, sentence }) => {
+        const script = sentence;
+        const result = checker.check(script, STUB_EVALUATION, STUB_METRICS);
+
+        // Must have at least one visual_emotion_inference violation
+        const emotionViolations = result.violations.filter(
+          (v) => v.category === "visual_emotion_inference",
+        );
+        expect(emotionViolations.length).toBeGreaterThanOrEqual(1);
+
+        // The violation sentence must contain the offending phrase
+        const hasMatch = emotionViolations.some(
+          (v) => v.sentence.toLowerCase().includes(phrase.toLowerCase()),
+        );
+        expect(hasMatch).toBe(true);
+      }),
+      { numRuns: 200 },
+    );
+  });
+
+  /**
+   * **Validates: Requirements 6.5, 7.1**
+   *
+   * For any sentence that does NOT match any visual emotion inference pattern,
+   * the ToneChecker SHALL NOT produce a `visual_emotion_inference` violation.
+   */
+  it("does not flag sentences without visual emotion inference patterns", () => {
+    fc.assert(
+      fc.property(arbitraryNonEmotionSentence(), (sentence) => {
+        const result = checker.check(sentence, STUB_EVALUATION, STUB_METRICS);
+
+        const emotionViolations = result.violations.filter(
+          (v) => v.category === "visual_emotion_inference",
+        );
+        expect(emotionViolations).toHaveLength(0);
+      }),
+      { numRuns: 100 },
+    );
+  });
+
+  /**
+   * **Validates: Requirements 6.5, 7.1**
+   *
+   * Visual emotion inference detection works in multi-sentence scripts:
+   * a prohibited phrase in one sentence causes a violation even when
+   * surrounded by clean sentences.
+   */
+  it("detects visual emotion inference in multi-sentence scripts with clean surrounding text", () => {
+    fc.assert(
+      fc.property(
+        arbitraryVisualEmotionSentence(),
+        fc.integer({ min: 0, max: 2 }),
+        ({ phrase, sentence }, insertPos) => {
+          const cleanSentences = [
+            "Great speech today.",
+            "The topic was interesting.",
+            "Well done overall.",
+          ];
+          const pos = Math.min(insertPos, cleanSentences.length);
+          const allSentences = [...cleanSentences];
+          allSentences.splice(pos, 0, sentence);
+
+          const script = allSentences.join(" ");
+          const result = checker.check(script, STUB_EVALUATION, STUB_METRICS);
+
+          const emotionViolations = result.violations.filter(
+            (v) => v.category === "visual_emotion_inference",
+          );
+          expect(emotionViolations.length).toBeGreaterThanOrEqual(1);
+
+          const hasMatch = emotionViolations.some(
+            (v) => v.sentence.toLowerCase().includes(phrase.toLowerCase()),
+          );
+          expect(hasMatch).toBe(true);
+        },
+      ),
+      { numRuns: 100 },
+    );
+  });
+
+  /**
+   * **Validates: Requirements 6.5, 7.1**
+   *
+   * Visual emotion inference is detected regardless of hasVideo flag —
+   * emotion/intent attribution from visual data is always prohibited.
+   */
+  it("flags visual emotion inference regardless of hasVideo option", () => {
+    fc.assert(
+      fc.property(
+        arbitraryVisualEmotionSentence(),
+        fc.boolean(),
+        ({ phrase, sentence }, hasVideo) => {
+          const result = checker.check(
+            sentence,
+            STUB_EVALUATION,
+            STUB_METRICS,
+            { hasVideo },
+          );
+
+          const emotionViolations = result.violations.filter(
+            (v) => v.category === "visual_emotion_inference",
+          );
+          expect(emotionViolations.length).toBeGreaterThanOrEqual(1);
+
+          const hasMatch = emotionViolations.some(
+            (v) => v.sentence.toLowerCase().includes(phrase.toLowerCase()),
+          );
+          expect(hasMatch).toBe(true);
+        },
+      ),
+      { numRuns: 100 },
+    );
+  });
+});
+
+// ─── Property 19 Generators ─────────────────────────────────────────────────────
+
+/**
+ * Adjectives in VISUAL_JUDGMENT_PATTERNS[0]: "<adjective> <visual noun>".
+ * This pattern has the full set including wonderful/fantastic/amazing.
+ */
+const JUDGMENT_ADJECTIVES_PREFIX = [
+  "great", "good", "excellent", "wonderful", "fantastic", "amazing",
+  "poor", "bad", "weak", "awkward", "terrible", "impressive",
+  "effective", "strong", "natural",
+] as const;
+
+/**
+ * Adjectives in VISUAL_JUDGMENT_PATTERNS[1]: "<visual noun> was/were <adjective>".
+ * This pattern has a smaller set — no wonderful/fantastic/amazing.
+ */
+const JUDGMENT_ADJECTIVES_SUFFIX = [
+  "great", "good", "excellent", "poor", "bad", "weak", "awkward",
+  "effective", "strong", "natural", "impressive", "terrible",
+] as const;
+
+/**
+ * Visual delivery nouns that appear in VISUAL_JUDGMENT_PATTERNS.
+ */
+const VISUAL_DELIVERY_NOUNS = [
+  "eye contact", "posture", "gestures", "gesture",
+  "stage presence", "body language", "movement",
+] as const;
+
+/**
+ * Generator: "<adjective> <visual noun>" pattern.
+ * Matches VISUAL_JUDGMENT_PATTERNS[0]: e.g., "great eye contact", "poor posture".
+ */
+function arbitraryAdjectiveVisualNoun(): fc.Arbitrary<string> {
+  return fc.tuple(
+    fc.constantFrom(...JUDGMENT_ADJECTIVES_PREFIX),
+    fc.constantFrom(...VISUAL_DELIVERY_NOUNS),
+  ).map(([adj, noun]) => `${adj} ${noun}`);
+}
+
+/**
+ * Generator: "<visual noun> was/were <adjective>" pattern.
+ * Matches VISUAL_JUDGMENT_PATTERNS[1]: e.g., "eye contact was great".
+ */
+function arbitraryVisualNounWasAdjective(): fc.Arbitrary<string> {
+  return fc.tuple(
+    fc.constantFrom(...VISUAL_DELIVERY_NOUNS),
+    fc.constantFrom("was", "were"),
+    fc.constantFrom(...JUDGMENT_ADJECTIVES_SUFFIX),
+  ).map(([noun, verb, adj]) => `${noun} ${verb} ${adj}`);
+}
+
+/**
+ * Visual nouns that appear in the "lacked" pattern (VISUAL_JUDGMENT_PATTERNS[2]).
+ */
+const LACKED_VISUAL_NOUNS = [
+  "eye contact", "gestures", "gesture", "stage presence", "movement",
+] as const;
+
+/**
+ * Generator: "lacked <visual noun>" pattern.
+ * Matches VISUAL_JUDGMENT_PATTERNS[2]: e.g., "lacked eye contact".
+ */
+function arbitraryLackedVisualNoun(): fc.Arbitrary<string> {
+  return fc.constantFrom(...LACKED_VISUAL_NOUNS)
+    .map((noun) => `lacked ${noun}`);
+}
+
+/**
+ * Generator that picks any visual judgment phrase from all pattern groups.
+ */
+function arbitraryVisualJudgmentPhrase(): fc.Arbitrary<string> {
+  return fc.oneof(
+    arbitraryAdjectiveVisualNoun(),
+    arbitraryVisualNounWasAdjective(),
+    arbitraryLackedVisualNoun(),
+  );
+}
+
+/**
+ * Generator for clean filler text that does NOT trigger any tone checker patterns.
+ * Reuses the same safe word set as the emotion tests.
+ */
+function arbitraryJudgmentSafeText(): fc.Arbitrary<string> {
+  const safeWords = [
+    "the", "speech", "had", "a", "well", "organized",
+    "topic", "interesting", "with", "clear", "message",
+    "and", "delivery", "overall", "this",
+    "is", "an", "presentation", "thank",
+    "for", "sharing", "that", "story",
+    "during", "opening", "section", "of",
+  ];
+  return fc
+    .array(fc.constantFrom(...safeWords), { minLength: 2, maxLength: 6 })
+    .map((words) => words.join(" "));
+}
+
+/**
+ * Build a full sentence containing a visual judgment phrase
+ * embedded in safe filler text.
+ */
+function arbitraryVisualJudgmentSentence(): fc.Arbitrary<{
+  phrase: string;
+  sentence: string;
+}> {
+  return fc.tuple(
+    arbitraryVisualJudgmentPhrase(),
+    arbitraryJudgmentSafeText(),
+    arbitraryJudgmentSafeText(),
+  ).map(([phrase, prefix, suffix]) => {
+    const sentence = `${capitalize(prefix)} ${phrase} ${suffix}.`;
+    return { phrase, sentence };
+  });
+}
+
+/**
+ * Generator for sentences with visual terms AND metric-anchored numbers.
+ * These should NOT trigger visual_judgment violations because they
+ * reference specific measurements rather than making subjective claims.
+ */
+function arbitraryMetricAnchoredVisualSentence(): fc.Arbitrary<string> {
+  const metricSentences = [
+    "I observed audience-facing gaze at 65% of the speech.",
+    "The total gesture count was 12 during the presentation.",
+    "I observed a mean body stability score of 0.85.",
+    "The facial energy variation coefficient was 0.32.",
+    "Audience-facing gaze was measured at 78%.",
+    "I observed 8 gestures per minute during the speech.",
+    "The stability score of 0.72 indicates moderate movement.",
+    "I noted 3 stage crossings during the presentation.",
+    "Gaze was audience-facing for 82% of analyzed frames.",
+    "The gesture frequency was 5.2 gestures per minute.",
+  ];
+  return fc.constantFrom(...metricSentences);
+}
+
+// ─── Property 19 Tests ──────────────────────────────────────────────────────────
+
+describe("Feature: phase-4-multimodal-video, Property 19: Tone checker flags visual judgment without metric-anchored measurement", () => {
+  /**
+   * **Validates: Requirements 7.2**
+   *
+   * For any sentence containing a subjective visual quality judgment
+   * without a metric-anchored numeric measurement, the ToneChecker SHALL
+   * produce a violation with category `visual_judgment`.
+   */
+  it("flags sentences containing subjective visual quality judgments", () => {
+    fc.assert(
+      fc.property(arbitraryVisualJudgmentSentence(), ({ phrase, sentence }) => {
+        const script = sentence;
+        const result = checker.check(script, STUB_EVALUATION, STUB_METRICS);
+
+        const judgmentViolations = result.violations.filter(
+          (v) => v.category === "visual_judgment",
+        );
+        expect(judgmentViolations.length).toBeGreaterThanOrEqual(1);
+
+        // The violation sentence must contain the offending phrase
+        const hasMatch = judgmentViolations.some(
+          (v) => v.sentence.toLowerCase().includes(phrase.toLowerCase()),
+        );
+        expect(hasMatch).toBe(true);
+      }),
+      { numRuns: 200 },
+    );
+  });
+
+  /**
+   * **Validates: Requirements 7.2**
+   *
+   * For any sentence containing a visual term accompanied by a
+   * metric-anchored numeric measurement, the ToneChecker SHALL NOT
+   * produce a `visual_judgment` violation.
+   */
+  it("does not flag metric-anchored visual observation sentences", () => {
+    fc.assert(
+      fc.property(arbitraryMetricAnchoredVisualSentence(), (sentence) => {
+        const result = checker.check(sentence, STUB_EVALUATION, STUB_METRICS);
+
+        const judgmentViolations = result.violations.filter(
+          (v) => v.category === "visual_judgment",
+        );
+        expect(judgmentViolations).toHaveLength(0);
+      }),
+      { numRuns: 100 },
+    );
+  });
+
+  /**
+   * **Validates: Requirements 7.2**
+   *
+   * Visual judgment detection works in multi-sentence scripts:
+   * a subjective judgment in one sentence causes a violation even when
+   * surrounded by clean sentences.
+   */
+  it("detects visual judgment in multi-sentence scripts with clean surrounding text", () => {
+    fc.assert(
+      fc.property(
+        arbitraryVisualJudgmentSentence(),
+        fc.integer({ min: 0, max: 2 }),
+        ({ phrase, sentence }, insertPos) => {
+          const cleanSentences = [
+            "Your speech was well structured.",
+            "The topic was interesting.",
+            "Well done overall.",
+          ];
+          const pos = Math.min(insertPos, cleanSentences.length);
+          const allSentences = [...cleanSentences];
+          allSentences.splice(pos, 0, sentence);
+
+          const script = allSentences.join(" ");
+          const result = checker.check(script, STUB_EVALUATION, STUB_METRICS);
+
+          const judgmentViolations = result.violations.filter(
+            (v) => v.category === "visual_judgment",
+          );
+          expect(judgmentViolations.length).toBeGreaterThanOrEqual(1);
+
+          const hasMatch = judgmentViolations.some(
+            (v) => v.sentence.toLowerCase().includes(phrase.toLowerCase()),
+          );
+          expect(hasMatch).toBe(true);
+        },
+      ),
+      { numRuns: 100 },
+    );
+  });
+
+  /**
+   * **Validates: Requirements 7.2**
+   *
+   * Visual judgment is detected regardless of hasVideo flag —
+   * subjective quality judgments about visual delivery are always prohibited.
+   */
+  it("flags visual judgment regardless of hasVideo option", () => {
+    fc.assert(
+      fc.property(
+        arbitraryVisualJudgmentSentence(),
+        fc.boolean(),
+        ({ phrase, sentence }, hasVideo) => {
+          const result = checker.check(
+            sentence,
+            STUB_EVALUATION,
+            STUB_METRICS,
+            { hasVideo },
+          );
+
+          const judgmentViolations = result.violations.filter(
+            (v) => v.category === "visual_judgment",
+          );
+          expect(judgmentViolations.length).toBeGreaterThanOrEqual(1);
+
+          const hasMatch = judgmentViolations.some(
+            (v) => v.sentence.toLowerCase().includes(phrase.toLowerCase()),
+          );
+          expect(hasMatch).toBe(true);
+        },
+      ),
+      { numRuns: 100 },
+    );
+  });
+});
+
+// ─── Property 20 Generators ─────────────────────────────────────────────────────
+
+/**
+ * Visual scope terms that trigger VISUAL_SCOPE_PATTERNS.
+ * These are the terms that are context-dependent based on hasVideo.
+ */
+const VISUAL_SCOPE_TERMS = [
+  "eye contact",
+  "body language",
+  "facial expression",
+  "gesture",
+  "gestures",
+  "posture",
+  "looked at",
+  "smiled",
+  "nodded",
+  "hand movement",
+  "stood",
+  "walked",
+  "paced",
+  "fidgeted",
+  "leaned",
+  "crossed arms",
+  "made eye contact",
+  "your face",
+  "your eyes",
+  "your hands",
+  "your stance",
+] as const;
+
+/**
+ * Safe filler words that won't trigger any tone checker patterns.
+ */
+function arbitraryScopeSafeText(): fc.Arbitrary<string> {
+  const safeWords = [
+    "the", "speech", "had", "a", "well", "organized",
+    "topic", "interesting", "with", "clear", "message",
+    "and", "delivery", "overall", "this",
+    "is", "an", "presentation", "thank",
+    "for", "sharing", "that", "story",
+    "during", "opening", "section", "of",
+  ];
+  return fc
+    .array(fc.constantFrom(...safeWords), { minLength: 2, maxLength: 5 })
+    .map((words) => words.join(" "));
+}
+
+/**
+ * Generator for sentences containing a visual scope term WITHOUT any
+ * metric-anchored number. These should trigger visual_scope violations
+ * regardless of hasVideo.
+ */
+function arbitraryUnanchoredVisualSentence(): fc.Arbitrary<{
+  term: string;
+  sentence: string;
+}> {
+  return fc.tuple(
+    fc.constantFrom(...VISUAL_SCOPE_TERMS),
+    arbitraryScopeSafeText(),
+    arbitraryScopeSafeText(),
+  ).map(([term, prefix, suffix]) => {
+    const sentence = `${capitalize(prefix)} ${term} ${suffix}.`;
+    return { term, sentence };
+  });
+}
+
+/**
+ * Recognized visual metric keys from the VisualObservations schema.
+ */
+const RECOGNIZED_METRIC_KEYS = [
+  "gazeBreakdown.audienceFacing",
+  "gazeBreakdown.notesFacing",
+  "gazeBreakdown.other",
+  "faceNotDetectedCount",
+  "totalGestureCount",
+  "gestureFrequency",
+  "gesturePerSentenceRatio",
+  "meanBodyStabilityScore",
+  "stageCrossingCount",
+  "movementClassification",
+  "meanFacialEnergyScore",
+  "facialEnergyVariation",
+] as const;
+
+/**
+ * Non-existent metric keys that should fail validateMetricKeyExists.
+ */
+const FAKE_METRIC_KEYS = [
+  "gazeBreakdown.leftFacing",
+  "emotionScore",
+  "confidenceLevel",
+  "handShakeCount",
+  "blinkRate",
+  "smileFrequency",
+  "headTiltAngle",
+  "shoulderWidth",
+  "fakeMetric",
+  "totalBlinks",
+] as const;
+
+/**
+ * Generator for sentences with visual scope terms (matching VISUAL_SCOPE_PATTERNS)
+ * AND metric-anchored numbers. These should be permitted when hasVideo is true
+ * but flagged when hasVideo is false.
+ *
+ * Each sentence uses a term from VISUAL_SCOPE_PATTERNS (e.g., "eye contact",
+ * "gesture", "posture") combined with a metric-anchored number.
+ */
+function arbitraryAnchoredVisualSentence(): fc.Arbitrary<string> {
+  return fc.oneof(
+    // "eye contact" + percentage
+    fc.integer({ min: 1, max: 99 }).map(
+      (n) => `I observed audience-facing gaze with eye contact at ${n}% of the speech.`,
+    ),
+    // "gesture" + count with unit
+    fc.integer({ min: 1, max: 50 }).map(
+      (n) => `The gesture count was ${n} gestures during the speech.`,
+    ),
+    // "gestures" + frequency
+    fc.integer({ min: 1, max: 20 }).map(
+      (n) => `I observed ${n} gestures per minute during the speech.`,
+    ),
+    // "body language" + stability score
+    fc.integer({ min: 10, max: 99 }).map(
+      (n) => `I observed body language with a stability score of 0.${n} overall.`,
+    ),
+    // "posture" + stability score
+    fc.integer({ min: 10, max: 99 }).map(
+      (n) => `The posture showed a stability score of 0.${n} throughout.`,
+    ),
+    // "hand movement" + count
+    fc.integer({ min: 1, max: 30 }).map(
+      (n) => `I observed hand movement with ${n} gestures during the speech.`,
+    ),
+  );
+}
+
+/**
+ * Generator for valid observation_data strings referencing real metric keys.
+ */
+function arbitraryValidObservationData(): fc.Arbitrary<string> {
+  return fc.tuple(
+    fc.constantFrom(...RECOGNIZED_METRIC_KEYS),
+    fc.integer({ min: 0, max: 100 }),
+  ).map(([key, value]) => `metric=${key}; value=${value}; source=visualObservations`);
+}
+
+/**
+ * Generator for invalid observation_data strings referencing fake metric keys.
+ */
+function arbitraryInvalidObservationData(): fc.Arbitrary<string> {
+  return fc.tuple(
+    fc.constantFrom(...FAKE_METRIC_KEYS),
+    fc.integer({ min: 0, max: 100 }),
+  ).map(([key, value]) => `metric=${key}; value=${value}; source=visualObservations`);
+}
+
+// ─── Property 20 Tests ──────────────────────────────────────────────────────────
+
+describe("Feature: phase-4-multimodal-video, Property 20: Context-dependent visual scope enforcement with metric-anchored numbers", () => {
+  /**
+   * **Validates: Requirements 7.5, 7.7**
+   *
+   * When hasVideo is false, any sentence containing a visual scope term
+   * SHALL trigger a visual_scope violation regardless of whether it
+   * contains metric-anchored numbers.
+   */
+  it("flags visual terms as visual_scope violations when hasVideo is false", () => {
+    fc.assert(
+      fc.property(arbitraryUnanchoredVisualSentence(), ({ term, sentence }) => {
+        const result = checker.check(
+          sentence,
+          STUB_EVALUATION,
+          STUB_METRICS,
+          { hasVideo: false },
+        );
+
+        const scopeViolations = result.violations.filter(
+          (v) => v.category === "visual_scope",
+        );
+        expect(scopeViolations.length).toBeGreaterThanOrEqual(1);
+
+        const hasMatch = scopeViolations.some(
+          (v) => v.sentence.toLowerCase().includes(term.toLowerCase()),
+        );
+        expect(hasMatch).toBe(true);
+      }),
+      { numRuns: 200 },
+    );
+  });
+
+  /**
+   * **Validates: Requirements 7.5, 7.7**
+   *
+   * When hasVideo is false, even metric-anchored visual sentences
+   * SHALL trigger visual_scope violations — video is not available,
+   * so visual terms are always out of scope.
+   */
+  it("flags metric-anchored visual sentences as visual_scope violations when hasVideo is false", () => {
+    fc.assert(
+      fc.property(arbitraryAnchoredVisualSentence(), (sentence) => {
+        const result = checker.check(
+          sentence,
+          STUB_EVALUATION,
+          STUB_METRICS,
+          { hasVideo: false },
+        );
+
+        const scopeViolations = result.violations.filter(
+          (v) => v.category === "visual_scope",
+        );
+        expect(scopeViolations.length).toBeGreaterThanOrEqual(1);
+      }),
+      { numRuns: 200 },
+    );
+  });
+
+  /**
+   * **Validates: Requirements 7.5, 7.7**
+   *
+   * When hasVideo is true, visual terms WITHOUT metric-anchored numbers
+   * SHALL trigger visual_scope violations.
+   */
+  it("flags unanchored visual terms as visual_scope violations when hasVideo is true", () => {
+    fc.assert(
+      fc.property(arbitraryUnanchoredVisualSentence(), ({ term, sentence }) => {
+        const result = checker.check(
+          sentence,
+          STUB_EVALUATION,
+          STUB_METRICS,
+          { hasVideo: true },
+        );
+
+        const scopeViolations = result.violations.filter(
+          (v) => v.category === "visual_scope",
+        );
+        expect(scopeViolations.length).toBeGreaterThanOrEqual(1);
+
+        const hasMatch = scopeViolations.some(
+          (v) => v.sentence.toLowerCase().includes(term.toLowerCase()),
+        );
+        expect(hasMatch).toBe(true);
+      }),
+      { numRuns: 200 },
+    );
+  });
+
+  /**
+   * **Validates: Requirements 7.5, 7.7**
+   *
+   * When hasVideo is true, visual terms WITH metric-anchored numbers
+   * SHALL be permitted (no visual_scope violation).
+   */
+  it("permits metric-anchored visual sentences when hasVideo is true", () => {
+    fc.assert(
+      fc.property(arbitraryAnchoredVisualSentence(), (sentence) => {
+        const result = checker.check(
+          sentence,
+          STUB_EVALUATION,
+          STUB_METRICS,
+          { hasVideo: true },
+        );
+
+        const scopeViolations = result.violations.filter(
+          (v) => v.category === "visual_scope",
+        );
+        expect(scopeViolations).toHaveLength(0);
+      }),
+      { numRuns: 200 },
+    );
+  });
+
+  /**
+   * **Validates: Requirements 7.5, 7.7**
+   *
+   * The hasMetricAnchoredNumber helper requires BOTH a recognized visual
+   * metric term AND a numeric value. A sentence with a visual metric term
+   * but no number, or a number but no metric term, should not pass.
+   */
+  it("hasMetricAnchoredNumber requires both metric term and numeric value", () => {
+    fc.assert(
+      fc.property(
+        fc.constantFrom(
+          // Has metric term but no number
+          "The gaze was directed at the audience.",
+          "Stability was maintained throughout.",
+          "Gestures were used during the speech.",
+          "Facial energy was observed.",
+          "Movement was noted on stage.",
+          // Has number but no metric term
+          "The speech lasted 120 seconds.",
+          "There were 5 main points.",
+          "The speaker used 3 examples.",
+          "A score of 0.85 was recorded.",
+        ),
+        (sentence) => {
+          expect(hasMetricAnchoredNumber(sentence)).toBe(false);
+        },
+      ),
+      { numRuns: 50 },
+    );
+  });
+
+  /**
+   * **Validates: Requirements 7.5, 7.7**
+   *
+   * The validateMetricKeyExists helper validates that observation_data
+   * references an actual metric field from the VisualObservations schema.
+   * Valid keys pass; non-existent keys fail.
+   */
+  it("validateMetricKeyExists accepts recognized metric keys", () => {
+    fc.assert(
+      fc.property(arbitraryValidObservationData(), (observationData) => {
+        expect(validateMetricKeyExists(observationData)).toBe(true);
+      }),
+      { numRuns: 100 },
+    );
+  });
+
+  /**
+   * **Validates: Requirements 7.5, 7.7**
+   *
+   * The validateMetricKeyExists helper rejects observation_data strings
+   * that reference non-existent metric fields.
+   */
+  it("validateMetricKeyExists rejects non-existent metric keys", () => {
+    fc.assert(
+      fc.property(arbitraryInvalidObservationData(), (observationData) => {
+        expect(validateMetricKeyExists(observationData)).toBe(false);
+      }),
+      { numRuns: 100 },
+    );
+  });
+
+  /**
+   * **Validates: Requirements 7.5, 7.7**
+   *
+   * Context-dependent behavior in multi-sentence scripts: when hasVideo is true,
+   * an unanchored visual sentence triggers a violation even when surrounded by
+   * clean sentences, while metric-anchored visual sentences do not.
+   */
+  it("enforces context-dependent scope in multi-sentence scripts", () => {
+    fc.assert(
+      fc.property(
+        arbitraryUnanchoredVisualSentence(),
+        arbitraryAnchoredVisualSentence(),
+        fc.integer({ min: 0, max: 2 }),
+        ({ term, sentence: unanchored }, anchored, insertPos) => {
+          const cleanSentences = [
+            "Your speech was well structured.",
+            anchored,
+            "Well done overall.",
+          ];
+          const pos = Math.min(insertPos, cleanSentences.length);
+          const allSentences = [...cleanSentences];
+          allSentences.splice(pos, 0, unanchored);
+
+          const script = allSentences.join(" ");
+          const result = checker.check(
+            script,
+            STUB_EVALUATION,
+            STUB_METRICS,
+            { hasVideo: true },
+          );
+
+          // The unanchored sentence should trigger a visual_scope violation
+          const scopeViolations = result.violations.filter(
+            (v) => v.category === "visual_scope",
+          );
+          expect(scopeViolations.length).toBeGreaterThanOrEqual(1);
+
+          // The violation should be for the unanchored sentence
+          const hasMatch = scopeViolations.some(
+            (v) => v.sentence.toLowerCase().includes(term.toLowerCase()),
+          );
+          expect(hasMatch).toBe(true);
+        },
+      ),
+      { numRuns: 100 },
+    );
+  });
+
+  /**
+   * **Validates: Requirements 7.5, 7.7**
+   *
+   * Default behavior (no options): visual terms trigger visual_scope
+   * violations, matching the audio-only behavior.
+   */
+  it("defaults to audio-only scope when no options provided", () => {
+    fc.assert(
+      fc.property(arbitraryUnanchoredVisualSentence(), ({ term, sentence }) => {
+        // No options = default = audio-only = visual terms are violations
+        const result = checker.check(sentence, STUB_EVALUATION, STUB_METRICS);
+
+        const scopeViolations = result.violations.filter(
+          (v) => v.category === "visual_scope",
+        );
+        expect(scopeViolations.length).toBeGreaterThanOrEqual(1);
+
+        const hasMatch = scopeViolations.some(
+          (v) => v.sentence.toLowerCase().includes(term.toLowerCase()),
+        );
+        expect(hasMatch).toBe(true);
+      }),
+      { numRuns: 100 },
+    );
+  });
+});
+
+
+// ─── Property 25: Scope Acknowledgment Matches Video Availability ────────────
+// Feature: phase-4-multimodal-video, Property 25: Scope acknowledgment matches video availability
+//
+// **Validates: Requirements 13.1, 13.2, 13.3**
+//
+// The ToneChecker's appendScopeAcknowledgment() method SHALL produce scope
+// acknowledgment text that correctly reflects video availability:
+// - When hasVideo is true: mentions audio and video content
+// - When hasVideo is false or not specified: mentions audio content only
+// - The acknowledgment is always appended as the final sentence
+
+// ─── Property 25 Tests ──────────────────────────────────────────────────────────
+
+describe("Feature: phase-4-multimodal-video, Property 25: Scope acknowledgment matches video availability", () => {
+  /**
+   * **Validates: Requirements 13.1, 13.2, 13.3**
+   *
+   * When hasVideo is true and the append condition is met, the scope
+   * acknowledgment SHALL mention "audio and video content".
+   */
+  it("appends video scope acknowledgment when hasVideo is true", () => {
+    fc.assert(
+      fc.property(
+        arbitraryCleanScript(),
+        arbitraryAppendCondition(),
+        (script, { qualityWarning, hasStructureCommentary }) => {
+          const result = checker.appendScopeAcknowledgment(
+            script,
+            qualityWarning,
+            hasStructureCommentary,
+            { hasVideo: true },
+          );
+
+          expect(result.toLowerCase()).toContain("based on audio and video content");
+          expect(result.toLowerCase()).not.toContain("audio content only");
+        },
+      ),
+      { numRuns: 200 },
+    );
+  });
+
+  /**
+   * **Validates: Requirements 13.1, 13.2, 13.3**
+   *
+   * When hasVideo is false and the append condition is met, the scope
+   * acknowledgment SHALL mention "audio content only" and NOT mention video.
+   */
+  it("appends audio-only scope acknowledgment when hasVideo is false", () => {
+    fc.assert(
+      fc.property(
+        arbitraryCleanScript(),
+        arbitraryAppendCondition(),
+        (script, { qualityWarning, hasStructureCommentary }) => {
+          const result = checker.appendScopeAcknowledgment(
+            script,
+            qualityWarning,
+            hasStructureCommentary,
+            { hasVideo: false },
+          );
+
+          expect(result.toLowerCase()).toContain("based on audio content only");
+          expect(result.toLowerCase()).not.toContain("audio and video content");
+        },
+      ),
+      { numRuns: 200 },
+    );
+  });
+
+  /**
+   * **Validates: Requirements 13.2, 13.3**
+   *
+   * When no options are provided (hasVideo not specified), the scope
+   * acknowledgment SHALL default to audio-only behavior.
+   */
+  it("defaults to audio-only scope acknowledgment when no options provided", () => {
+    fc.assert(
+      fc.property(
+        arbitraryCleanScript(),
+        arbitraryAppendCondition(),
+        (script, { qualityWarning, hasStructureCommentary }) => {
+          const result = checker.appendScopeAcknowledgment(
+            script,
+            qualityWarning,
+            hasStructureCommentary,
+          );
+
+          expect(result.toLowerCase()).toContain("based on audio content only");
+          expect(result.toLowerCase()).not.toContain("audio and video content");
+        },
+      ),
+      { numRuns: 200 },
+    );
+  });
+
+  /**
+   * **Validates: Requirements 13.1, 13.2**
+   *
+   * The hasVideo flag determines which acknowledgment text is used.
+   * For any script and append condition, the two variants produce
+   * different acknowledgment text.
+   */
+  it("produces different acknowledgment text based on hasVideo flag", () => {
+    fc.assert(
+      fc.property(
+        arbitraryCleanScript(),
+        arbitraryAppendCondition(),
+        (script, { qualityWarning, hasStructureCommentary }) => {
+          const withVideo = checker.appendScopeAcknowledgment(
+            script,
+            qualityWarning,
+            hasStructureCommentary,
+            { hasVideo: true },
+          );
+          const withoutVideo = checker.appendScopeAcknowledgment(
+            script,
+            qualityWarning,
+            hasStructureCommentary,
+            { hasVideo: false },
+          );
+
+          expect(withVideo).not.toBe(withoutVideo);
+        },
+      ),
+      { numRuns: 200 },
+    );
+  });
+
+  /**
+   * **Validates: Requirements 13.3**
+   *
+   * Idempotency: calling appendScopeAcknowledgment twice with hasVideo=true
+   * produces the same result as calling it once.
+   */
+  it("is idempotent with hasVideo=true", () => {
+    fc.assert(
+      fc.property(
+        arbitraryCleanScript(),
+        arbitraryAppendCondition(),
+        (script, { qualityWarning, hasStructureCommentary }) => {
+          const firstCall = checker.appendScopeAcknowledgment(
+            script,
+            qualityWarning,
+            hasStructureCommentary,
+            { hasVideo: true },
+          );
+          const secondCall = checker.appendScopeAcknowledgment(
+            firstCall,
+            qualityWarning,
+            hasStructureCommentary,
+            { hasVideo: true },
+          );
+
+          expect(secondCall).toBe(firstCall);
+        },
+      ),
+      { numRuns: 200 },
+    );
+  });
+
+  /**
+   * **Validates: Requirements 13.3**
+   *
+   * When both qualityWarning and hasStructureCommentary are false,
+   * the script is returned unchanged regardless of hasVideo.
+   */
+  it("returns script unchanged when append condition is not met, regardless of hasVideo", () => {
+    fc.assert(
+      fc.property(
+        arbitraryCleanScript(),
+        fc.boolean(),
+        (script, hasVideo) => {
+          const result = checker.appendScopeAcknowledgment(
+            script,
+            false,
+            false,
+            { hasVideo },
+          );
+
+          expect(result).toBe(script);
+        },
+      ),
+      { numRuns: 200 },
     );
   });
 });

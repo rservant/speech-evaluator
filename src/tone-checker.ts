@@ -12,6 +12,27 @@ import type {
 } from "./types.js";
 import { splitSentences } from "./utils.js";
 
+// ─── Visual Metric Key Allowlist ────────────────────────────────────────────────
+
+/**
+ * Recognized visual metric keys from the VisualObservations schema.
+ * Used by hasMetricAnchoredNumber() and validateMetricKeyExists().
+ */
+const VISUAL_METRIC_KEYS = new Set([
+  "gazeBreakdown.audienceFacing",
+  "gazeBreakdown.notesFacing",
+  "gazeBreakdown.other",
+  "faceNotDetectedCount",
+  "totalGestureCount",
+  "gestureFrequency",
+  "gesturePerSentenceRatio",
+  "meanBodyStabilityScore",
+  "stageCrossingCount",
+  "movementClassification",
+  "meanFacialEnergyScore",
+  "facialEnergyVariation",
+]);
+
 // ─── Pattern Definitions ────────────────────────────────────────────────────────
 
 /**
@@ -77,6 +98,39 @@ const VISUAL_SCOPE_PATTERNS: RegExp[] = [
   /\byour hands\b/i,
   /\byour stance\b/i,
 ];
+
+/**
+ * Visual emotion inference patterns (Req 6.5, 7.1)
+ * Detect sentences attributing emotions, psychological states, or intent
+ * to visual observations.
+ */
+const VISUAL_EMOTION_INFERENCE_PATTERNS: RegExp[] = [
+  /\byou (?:looked|seemed?|appeared?) (?:nervous|uncomfortable|distracted|confident|anxious|worried|stressed|tense|frustrated|bored|excited|happy|sad|angry|scared|shy|timid|overwhelmed)\b/i,
+  /\byour (?:face|expression|eyes|body language|gestures?) (?:showed|revealed|indicated|suggested|betrayed)\b/i,
+  /\byou were trying to (?:appear|look|seem)\b/i,
+  /\byou felt\b/i,
+  /\byour (?:nervousness|anxiety|confidence|discomfort|frustration|tension|stress)\b/i,
+  /\byou were (?:clearly |obviously )?(?:nervous|uncomfortable|confident|anxious|stressed|tense|frustrated|bored|excited|happy|sad|angry|scared|shy|timid|overwhelmed)\b/i,
+  /\bshowed signs of (?:fear|anxiety|nervousness|stress|discomfort|frustration|tension|confidence)\b/i,
+  /\bwas clearly (?:stressed|nervous|anxious|uncomfortable|confident|frustrated|tense|overwhelmed)\b/i,
+];
+
+/**
+ * Visual judgment patterns (Req 7.2)
+ * Detect subjective quality judgments about visual delivery without
+ * referencing a specific measurement.
+ */
+const VISUAL_JUDGMENT_PATTERNS: RegExp[] = [
+  /\b(?:great|good|excellent|wonderful|fantastic|amazing|poor|bad|weak|awkward|terrible|impressive|effective|strong|natural) (?:eye contact|posture|gestures?|stage presence|body language|movement)\b/i,
+  /\b(?:eye contact|posture|gestures?|stage presence|body language|movement) (?:was|were) (?:great|good|excellent|poor|bad|weak|awkward|effective|strong|natural|impressive|terrible)\b/i,
+  /\blacked? (?:eye contact|gestures?|stage presence|movement)\b/i,
+];
+
+/**
+ * Visual metric terms pattern — used to detect visual terms in sentences.
+ * These terms require metric-anchored numbers when hasVideo is true.
+ */
+const VISUAL_METRIC_TERMS = /\b(gaze|audience[- ]facing|notes[- ]facing|gestures?|stability|stage.?crossings?|facial.?energy|movement|body.?stability)\b/i;
 
 /**
  * Punitive/diagnostic language patterns (Req 3.5)
@@ -205,7 +259,9 @@ const HAS_MARKER_PATTERN = /\[\[(Q|M):[^\]]+\]\]/;
 // ─── Scope Acknowledgment ───────────────────────────────────────────────────────
 
 const SCOPE_ACKNOWLEDGMENT = "This evaluation is based on audio content only.";
+const SCOPE_ACKNOWLEDGMENT_VIDEO = "This evaluation is based on audio and video content.";
 const SCOPE_ACKNOWLEDGMENT_DETECTION = /based on audio content only/i;
+const SCOPE_ACKNOWLEDGMENT_VIDEO_DETECTION = /based on audio and video content/i;
 
 // ─── ToneChecker Class ─────────────────────────────────────────────────────────
 
@@ -242,6 +298,7 @@ export class ToneChecker {
       markedScript: string,
       _evaluation: StructuredEvaluation,
       _metrics: DeliveryMetrics,
+      options?: { hasVideo?: boolean },
     ): ToneCheckResult {
       const violations: ToneViolation[] = [];
 
@@ -257,7 +314,9 @@ export class ToneChecker {
       for (const sentence of sentences) {
         // Check each pattern category against this sentence
         this.checkPsychologicalInference(sentence, violations);
-        this.checkVisualScope(sentence, violations);
+        this.checkVisualEmotionInference(sentence, violations);
+        this.checkVisualJudgment(sentence, violations);
+        this.checkVisualScope(sentence, violations, options);
         this.checkPunitiveLanguage(sentence, violations);
         this.checkNumericalScores(sentence, violations);
         this.checkUngroundedClaims(sentence, markedSentenceTexts, violations);
@@ -351,10 +410,21 @@ export class ToneChecker {
     script: string,
     qualityWarning: boolean,
     hasStructureCommentary: boolean,
+    options?: { hasVideo?: boolean },
   ): string {
     // Only append when qualityWarning is true OR hasStructureCommentary is true
     if (!qualityWarning && !hasStructureCommentary) {
       return script;
+    }
+
+    // Choose acknowledgment text based on video availability
+    if (options?.hasVideo) {
+      // Idempotent: don't duplicate if already present
+      if (SCOPE_ACKNOWLEDGMENT_VIDEO_DETECTION.test(script)) {
+        return script;
+      }
+      const trimmed = script.trimEnd();
+      return trimmed + " " + SCOPE_ACKNOWLEDGMENT_VIDEO;
     }
 
     // Idempotent: don't duplicate if already present
@@ -390,17 +460,62 @@ export class ToneChecker {
   private checkVisualScope(
     sentence: string,
     violations: ToneViolation[],
+    options?: { hasVideo?: boolean },
   ): void {
     for (const pattern of VISUAL_SCOPE_PATTERNS) {
       if (pattern.test(sentence)) {
+        if (options?.hasVideo) {
+          // When video is available, visual terms are permitted ONLY with
+          // metric-anchored numbers referencing recognized metric keys
+          if (hasMetricAnchoredNumber(sentence)) {
+            return; // Permitted — has metric-anchored number
+          }
+        }
         violations.push({
           category: "visual_scope",
           sentence,
           pattern: pattern.source,
-          explanation:
-            "Claim beyond audio-only observation scope",
+          explanation: options?.hasVideo
+            ? "Visual term without metric-anchored numeric measurement"
+            : "Claim beyond audio-only observation scope",
         });
         return;
+      }
+    }
+  }
+
+  private checkVisualEmotionInference(
+    sentence: string,
+    violations: ToneViolation[],
+  ): void {
+    for (const pattern of VISUAL_EMOTION_INFERENCE_PATTERNS) {
+      if (pattern.test(sentence)) {
+        violations.push({
+          category: "visual_emotion_inference",
+          sentence,
+          pattern: pattern.source,
+          explanation:
+            "Attribution of emotion, psychological state, or intent from visual observation",
+        });
+        return; // One violation per category per sentence
+      }
+    }
+  }
+
+  private checkVisualJudgment(
+    sentence: string,
+    violations: ToneViolation[],
+  ): void {
+    for (const pattern of VISUAL_JUDGMENT_PATTERNS) {
+      if (pattern.test(sentence)) {
+        violations.push({
+          category: "visual_judgment",
+          sentence,
+          pattern: pattern.source,
+          explanation:
+            "Subjective quality judgment about visual delivery without metric backing",
+        });
+        return; // One violation per category per sentence
       }
     }
   }
@@ -602,6 +717,40 @@ export class ToneChecker {
 
     return parts;
   }
+}
+
+// ─── Exported Helpers ────────────────────────────────────────────────────────────
+
+/**
+ * Check if a sentence contains a metric-anchored numeric measurement.
+ * Requires BOTH a recognized visual metric term AND a numeric value.
+ * A sentence like "I observed low gaze" fails; "I observed 65% audience-facing gaze" passes
+ * only if the metric term maps to a recognized key.
+ */
+export function hasMetricAnchoredNumber(sentence: string): boolean {
+  // Must contain a recognized visual metric term
+  if (!VISUAL_METRIC_TERMS.test(sentence)) return false;
+  // Must also contain a numeric value in metric context
+  // Percentage (e.g., "65%")
+  if (/\d+(\.\d+)?%/.test(sentence)) return true;
+  // Number with unit (e.g., "12 gestures", "2 stage crossings", "3 times")
+  if (/\d+(\.\d+)?\s+(?:\w+\s+)*(gestures?|times|crossings?|frames?|seconds?|minutes?)\b/i.test(sentence)) return true;
+  // Decimal with score/ratio/frequency term (e.g., "score of 0.85", "0.85 score")
+  if (/\b(score|ratio|frequency)\b.*\d+\.\d+/i.test(sentence)) return true;
+  if (/\d+\.\d+.*\b(score|ratio|frequency)\b/i.test(sentence)) return true;
+  return false;
+}
+
+/**
+ * Validate that an observation_data string references an actual metric field
+ * present in the VisualObservations structure.
+ * References to non-existent metric fields are treated as visual_scope violations.
+ */
+export function validateMetricKeyExists(observationData: string): boolean {
+  const metricMatch = observationData.match(/metric=([^;]+)/);
+  if (!metricMatch) return false;
+  const metricKey = metricMatch[1].trim();
+  return VISUAL_METRIC_KEYS.has(metricKey);
 }
 
 // ─── Utility ────────────────────────────────────────────────────────────────────

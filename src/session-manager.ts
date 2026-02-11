@@ -20,7 +20,12 @@ import type {
   EvaluationConfig,
   ProjectContext,
   SessionVADConfig,
+  VideoConsent,
+  VideoConfig,
+  FrameHeader,
+  VisualObservations,
 } from "./types.js";
+import type { VideoProcessor, VideoProcessorDeps } from "./video-processor.js";
 import { createDeferred } from "./utils/deferred.js";
 import type { TranscriptionEngine } from "./transcription-engine.js";
 import type { MetricsExtractor } from "./metrics-extractor.js";
@@ -74,6 +79,7 @@ export interface SessionManagerDeps {
   toneChecker?: ToneChecker;
   filePersistence?: FilePersistence;
   vadMonitorFactory?: (config: VADConfig, callbacks: VADEventCallback) => VADMonitor;
+  videoProcessorFactory?: (config: VideoConfig, deps: VideoProcessorDeps) => VideoProcessor;
 }
 
 /**
@@ -98,6 +104,7 @@ export class SessionManager {
   private readonly deps: SessionManagerDeps;
   private vadMonitors: Map<string, VADMonitor> = new Map();
   private vadCallbacksMap: Map<string, VADEventCallback> = new Map();
+  private videoProcessors: Map<string, VideoProcessor> = new Map();
 
   private log(level: string, msg: string): void {
     console.log(`[${level}] [SessionManager] ${msg}`);
@@ -142,6 +149,11 @@ export class SessionManager {
         evaluationCache: null,
         projectContext: null,
         vadConfig: { silenceThresholdSeconds: 5, enabled: true },
+        // Phase 4: Video fields initialized with defaults
+        videoConsent: null,
+        videoStreamReady: false,
+        visualObservations: null,
+        videoConfig: { frameRate: 5 },
       };
 
       this.sessions.set(session.id, session);
@@ -262,6 +274,103 @@ export class SessionManager {
     this.vadCallbacksMap.set(sessionId, callbacks);
   }
 
+  // ─── Phase 4: Video Lifecycle Methods ─────────────────────────────────────────
+
+  /**
+   * Sets video consent for a session. IDLE-only.
+   * Video consent is independent from audio consent (Req 1.3).
+   * Becomes immutable once recording starts (Req 1.4).
+   */
+  setVideoConsent(sessionId: string, consent: VideoConsent): void {
+    const session = this.getSession(sessionId);
+
+    if (session.state !== SessionState.IDLE) {
+      throw new Error(
+        `Cannot set video consent: session is in "${session.state}" state. ` +
+        `Video consent can only be set while the session is in "idle" state.`
+      );
+    }
+
+    session.videoConsent = consent;
+
+    this.log("INFO", `Video consent set for session ${sessionId}: granted=${consent.consentGranted}`);
+  }
+
+  /**
+   * Marks the video stream as ready after successful getUserMedia handshake.
+   * IDLE-only (Req 1.4). deviceLabel is NOT stored (privacy Req 11.7).
+   */
+  setVideoStreamReady(sessionId: string, _deviceLabel?: string): void {
+    const session = this.getSession(sessionId);
+
+    if (session.state !== SessionState.IDLE) {
+      throw new Error(
+        `Cannot set video stream ready: session is in "${session.state}" state. ` +
+        `Video stream ready can only be set while the session is in "idle" state.`
+      );
+    }
+
+    session.videoStreamReady = true;
+
+    this.log("INFO", `Video stream ready for session ${sessionId}`);
+  }
+
+  /**
+   * Sets video configuration (frame rate). IDLE-only (Req 2.9).
+   * frameRate must be in [1, 5] range.
+   */
+  setVideoConfig(sessionId: string, config: { frameRate: number }): void {
+    const session = this.getSession(sessionId);
+
+    if (session.state !== SessionState.IDLE) {
+      throw new Error(
+        `Cannot set video config: session is in "${session.state}" state. ` +
+        `Video config can only be set while the session is in "idle" state.`
+      );
+    }
+
+    if (config.frameRate < 1 || config.frameRate > 5) {
+      throw new Error(
+        `Invalid frameRate: ${config.frameRate}. Must be between 1 and 5.`
+      );
+    }
+
+    session.videoConfig = { frameRate: config.frameRate };
+
+    this.log("INFO", `Video config set for session ${sessionId}: frameRate=${config.frameRate}`);
+  }
+
+  /**
+   * Feeds a video frame to the VideoProcessor. Fire-and-forget — enqueues
+   * the frame without awaiting inference (Req 10.6, 10.7).
+   *
+   * Guards: only processes if session is RECORDING, videoConsent is granted,
+   * and videoStreamReady is true. Silently ignores otherwise (Req 1.9).
+   */
+  feedVideoFrame(sessionId: string, header: FrameHeader, jpegBuffer: Buffer): void {
+    const session = this.getSession(sessionId);
+
+    // Guard: only process in RECORDING state with consent and stream ready
+    if (session.state !== SessionState.RECORDING) return;
+    if (!session.videoConsent?.consentGranted) return;
+    if (!session.videoStreamReady) return;
+
+    const processor = this.videoProcessors.get(sessionId);
+    if (!processor) return;
+
+    // Fire-and-forget: enqueue frame, do NOT await
+    processor.enqueueFrame(header, jpegBuffer);
+  }
+
+  /**
+   * Get the VideoProcessor for a session, if one exists.
+   * Used by the server to query video processing status for periodic video_status messages.
+   */
+  getVideoProcessor(sessionId: string): VideoProcessor | undefined {
+    return this.videoProcessors.get(sessionId);
+  }
+
+
   /**
    * Revokes consent and purges ALL session data immediately and irrecoverably.
    * This implements the speaker opt-out flow per the privacy retention policy.
@@ -304,6 +413,13 @@ export class SessionManager {
     }
     this.vadCallbacksMap.delete(sessionId);
 
+    // Phase 4: Stop and remove VideoProcessor, purge all video data (Req 1.7, 11.4)
+    const videoProcessor = this.videoProcessors.get(sessionId);
+    if (videoProcessor) {
+      videoProcessor.stop();
+      this.videoProcessors.delete(sessionId);
+    }
+
     // Clear eager pipeline state — runId already incremented above,
     // so use clearEagerState() (pure reset), not cancelEagerGeneration().
     // Per privacy-and-retention rule: opt-out purges all session data immediately and irrecoverably.
@@ -331,6 +447,11 @@ export class SessionManager {
     session.qualityWarning = false;
     session.evaluationPassRate = null;
     session.projectContext = null;
+
+    // Phase 4: Purge all video data (Req 1.7, 11.4)
+    session.videoConsent = null;
+    session.videoStreamReady = false;
+    session.visualObservations = null;
 
     // Backward compatibility: clear deprecated speakerName
     session.speakerName = undefined;
@@ -421,6 +542,54 @@ export class SessionManager {
         const vadMonitor = this.deps.vadMonitorFactory(vadFullConfig, vadCallbacks);
         this.vadMonitors.set(sessionId, vadMonitor);
         this.log("INFO", `VAD monitor created for session ${sessionId} (threshold=${vadFullConfig.silenceThresholdSeconds}s)`);
+      }
+
+      // Phase 4: Create VideoProcessor if consent granted and stream ready (Req 1.6)
+      if (session.videoConsent?.consentGranted && session.videoStreamReady) {
+        if (this.deps.videoProcessorFactory) {
+          try {
+            const videoConfig: VideoConfig = {
+              frameRate: session.videoConfig?.frameRate ?? 5,
+              gestureDisplacementThreshold: 0.15,
+              stageCrossingThreshold: 0.25,
+              stabilityWindowSeconds: 5,
+              gazeYawThreshold: 15,
+              gazePitchThreshold: -20,
+              cameraDropTimeoutSeconds: 5,
+              queueMaxSize: 20,
+              maxFrameInferenceMs: 500,
+              staleFrameThresholdSeconds: 2.0,
+              finalizationBudgetMs: 3000,
+              minFaceAreaFraction: 0.05,
+              faceDetectionConfidenceThreshold: 0.5,
+              poseDetectionConfidenceThreshold: 0.3,
+              minValidFramesPerWindow: 3,
+              metricRoundingPrecision: 4,
+              facialEnergyEpsilon: 0.001,
+              backpressureOverloadThreshold: 0.20,
+              backpressureRecoveryThreshold: 0.10,
+              backpressureCooldownMs: 3000,
+              frameRetentionWarningThreshold: 0.50,
+              motionDeadZoneFraction: 0.0,
+              gazeCoverageThreshold: 0.6,
+              facialEnergyCoverageThreshold: 0.4,
+              gestureCoverageThreshold: 0.3,
+              stabilityCoverageThreshold: 0.6,
+            };
+            const processor = this.deps.videoProcessorFactory(videoConfig, {});
+            this.videoProcessors.set(sessionId, processor);
+            processor.startDrainLoop();
+            this.log("INFO", `Video processing started for session ${sessionId}`);
+          } catch (err) {
+            const errMsg = err instanceof Error ? err.message : String(err);
+            this.log("WARN", `Failed to create VideoProcessor for session ${sessionId}: ${errMsg} — proceeding audio-only`);
+          }
+        } else {
+          this.log("WARN", `Video consent granted but no videoProcessorFactory configured for session ${sessionId} — proceeding audio-only`);
+        }
+      } else if (session.videoConsent?.consentGranted) {
+        // Consent granted but stream not ready (Req 1.6): proceed audio-only with warning
+        this.log("WARN", `Video consent granted but video stream not ready for session ${sessionId} — proceeding audio-only`);
       }
     }
 
@@ -584,6 +753,69 @@ export class SessionManager {
         this.log("WARN", `No MetricsExtractor configured — metrics extraction skipped`);
       }
 
+      // Phase 4: Finalize VideoProcessor and attach visualMetrics to DeliveryMetrics
+      if (session.runId === capturedRunId) {
+        const processor = this.videoProcessors.get(sessionId);
+        if (processor) {
+          try {
+            const observations: VisualObservations = await processor.finalize(session.transcript);
+
+            if (session.runId !== capturedRunId) {
+              return;
+            }
+
+            session.visualObservations = observations;
+
+            // Attach visualMetrics to DeliveryMetrics (Req 9.2)
+            if (session.metrics) {
+              session.metrics.visualMetrics = {
+                gazeBreakdown: observations.gazeBreakdown,
+                faceNotDetectedCount: observations.faceNotDetectedCount,
+                totalGestureCount: observations.totalGestureCount,
+                gestureFrequency: observations.gestureFrequency,
+                gesturePerSentenceRatio: observations.gesturePerSentenceRatio,
+                meanBodyStabilityScore: observations.meanBodyStabilityScore,
+                stageCrossingCount: observations.stageCrossingCount,
+                movementClassification: observations.movementClassification,
+                meanFacialEnergyScore: observations.meanFacialEnergyScore,
+                facialEnergyVariation: observations.facialEnergyVariation,
+                facialEnergyLowSignal: observations.facialEnergyLowSignal,
+                framesAnalyzed: observations.framesAnalyzed,
+                videoQualityGrade: observations.videoQualityGrade,
+                videoQualityWarning: observations.videoQualityGrade !== "good",
+                gazeReliable: observations.gazeReliable,
+                gestureReliable: observations.gestureReliable,
+                stabilityReliable: observations.stabilityReliable,
+                facialEnergyReliable: observations.facialEnergyReliable,
+                framesDroppedByFinalizationBudget: observations.framesDroppedByFinalizationBudget,
+                resolutionChangeCount: observations.resolutionChangeCount,
+                videoProcessingVersion: observations.videoProcessingVersion,
+                // Optional high-value improvements (Req 21)
+                confidenceScores: observations.confidenceScores,
+                detectionCoverage: observations.detectionCoverage,
+                cameraPlacementWarning: observations.cameraPlacementWarning,
+              };
+            }
+
+            this.log("INFO", `Video finalized for session ${sessionId}: ${observations.framesAnalyzed} frames analyzed, quality=${observations.videoQualityGrade}`);
+          } catch (err) {
+            const errMsg = err instanceof Error ? err.message : String(err);
+            this.log("WARN", `Video finalization failed for session ${sessionId}: ${errMsg}`);
+            // Set visualMetrics to null on failure — audio evaluation proceeds
+            if (session.metrics) {
+              session.metrics.visualMetrics = null;
+            }
+          } finally {
+            this.videoProcessors.delete(sessionId);
+          }
+        } else {
+          // No VideoProcessor — set visualMetrics to null (Req 9.3)
+          if (session.metrics) {
+            session.metrics.visualMetrics = null;
+          }
+        }
+      }
+
       // Assess transcript quality
       if (session.runId === capturedRunId) {
         // assessTranscriptQuality may upgrade qualityWarning to true but never downgrade it
@@ -654,10 +886,24 @@ export class SessionManager {
         : undefined;
 
       this.log("INFO", `Generating evaluation via GPT-4o for session ${sessionId} (${session.transcript.length} segments, ${metrics.totalWords} words)`);
+
+      // Phase 4: Determine visual observations to pass to EvaluationGenerator (Req 17.3)
+      // Suppress visual feedback entirely when videoQualityGrade === "poor"
+      // Skip unreliable metrics by passing null when quality is poor
+      let visualObsForEval: VisualObservations | null = null;
+      if (session.visualObservations) {
+        if (session.visualObservations.videoQualityGrade !== "poor") {
+          visualObsForEval = session.visualObservations;
+        } else {
+          this.log("INFO", `Visual observations suppressed for session ${sessionId}: videoQualityGrade is "poor"`);
+        }
+      }
+
       const generateResult = await this.deps.evaluationGenerator.generate(
         session.transcript,
         metrics,
         config,
+        visualObsForEval,
       );
       evaluation = generateResult.evaluation;
       session.evaluationPassRate = generateResult.passRate;
@@ -708,8 +954,9 @@ export class SessionManager {
     // Input: marked script with [[Q:*]] / [[M:*]] markers
     // Output: clean script with no markers, no violations
     if (this.deps.toneChecker) {
+      const hasVideo = session.visualObservations != null;
       this.log("INFO", `Running tone check for session ${sessionId}`);
-      const toneResult = this.deps.toneChecker.check(script, evaluation, metrics);
+      const toneResult = this.deps.toneChecker.check(script, evaluation, metrics, { hasVideo });
 
       if (!toneResult.passed) {
         this.log("WARN", `Tone check found ${toneResult.violations.length} violation(s) for session ${sessionId}`);
@@ -748,10 +995,12 @@ export class SessionManager {
         evaluation.structure_commentary?.body_comment ||
         evaluation.structure_commentary?.closing_comment
       );
+      const hasVideo = session.visualObservations != null;
       script = this.deps.toneChecker.appendScopeAcknowledgment(
         script,
         session.qualityWarning,
         hasStructureCommentary,
+        { hasVideo },
       );
     }
 
@@ -1072,7 +1321,8 @@ export class SessionManager {
 
         // ── Stage 4: Tone Check + Fix ──
         if (this.deps.toneChecker) {
-          const toneResult = this.deps.toneChecker.check(script, evaluation, metrics);
+          const hasVideo = session.visualObservations != null;
+          const toneResult = this.deps.toneChecker.check(script, evaluation, metrics, { hasVideo });
           if (!toneResult.passed) {
             script = this.deps.toneChecker.stripViolations(script, toneResult.violations);
           }
@@ -1100,10 +1350,12 @@ export class SessionManager {
             evaluation.structure_commentary?.body_comment ||
             evaluation.structure_commentary?.closing_comment
           );
+          const hasVideo = session.visualObservations != null;
           script = this.deps.toneChecker.appendScopeAcknowledgment(
             script,
             session.qualityWarning,
             hasStructureCommentary,
+            { hasVideo },
           );
         }
 
@@ -1270,6 +1522,13 @@ export class SessionManager {
     // Clear eager pipeline state — runId already incremented above,
     // so use clearEagerState() (pure reset), not cancelEagerGeneration()
     this.clearEagerState(sessionId);
+
+    // Phase 4: Stop and remove VideoProcessor (clears frame queue)
+    const videoProcessor = this.videoProcessors.get(sessionId);
+    if (videoProcessor) {
+      videoProcessor.stop();
+      this.videoProcessors.delete(sessionId);
+    }
 
     // Stop live transcription if active
     if (this.deps.transcriptionEngine) {

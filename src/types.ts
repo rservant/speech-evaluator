@@ -94,6 +94,11 @@ export interface Session {
   // ─── Phase 3 Fields ────────────────────────────────────────────────────────
   projectContext: ProjectContext | null; // Phase 3 (Req 9.1) — project awareness metadata
   vadConfig: SessionVADConfig; // Phase 3 (Req 9.2) — VAD configuration
+  // ─── Phase 4 Fields ──────────────────────────────────────────────────────────
+  videoConsent: VideoConsent | null; // Phase 4 (Req 1) — separate from audio consent
+  videoStreamReady: boolean; // Phase 4 (Req 1.5) — true after successful getUserMedia handshake
+  visualObservations: VisualObservations | null; // Phase 4 — aggregate visual metrics from video processing
+  videoConfig: { frameRate: number }; // Phase 4 (Req 2.9) — default: { frameRate: 2 }
   // ─── Eager Pipeline Fields ──────────────────────────────────────────────────
   eagerStatus: EagerStatus; // default: "idle"
   eagerRunId: number | null; // runId captured at eager pipeline start; null when idle
@@ -138,6 +143,7 @@ export interface DeliveryMetrics {
   energyVariationCoefficient: number;
   energyProfile: EnergyProfile;
   classifiedFillers: ClassifiedFillerEntry[];
+  visualMetrics: VisualMetrics | null; // Phase 4 (Req 9.1) — null when video not available
 }
 
 export interface FillerWordEntry {
@@ -197,6 +203,7 @@ export interface StructuredEvaluation {
   items: EvaluationItem[]; // 2-3 commendations + 1-2 recommendations
   closing: string; // 1-2 sentences
   structure_commentary: StructureCommentary; // Phase 2 (Req 4.9)
+  visual_feedback?: VisualFeedbackItem[]; // Phase 4 (Req 8) — optional visual observation items
 }
 
 // ─── Public Evaluation Types (Phase 2 — Req 8.1) ───────────────────────────────
@@ -238,7 +245,9 @@ export interface ToneViolation {
     | "psychological_inference"
     | "visual_scope"
     | "punitive_language"
-    | "numerical_score";
+    | "numerical_score"
+    | "visual_emotion_inference"
+    | "visual_judgment";
   sentence: string;
   pattern: string;
   explanation: string;
@@ -266,6 +275,183 @@ export interface TTSConfig {
 
 // ─── WebSocket Protocol ─────────────────────────────────────────────────────────
 
+// ─── Phase 4: Video Consent (Req 1) ────────────────────────────────────────────
+
+export interface VideoConsent {
+  consentGranted: boolean;
+  timestamp: Date;
+}
+
+// ─── Phase 4: Visual Metrics (Req 9) ───────────────────────────────────────────
+
+export interface VisualMetrics {
+  gazeBreakdown: { audienceFacing: number; notesFacing: number; other: number };
+  faceNotDetectedCount: number;
+  totalGestureCount: number;
+  gestureFrequency: number;
+  gesturePerSentenceRatio: number | null; // null when suppressed due to low retention
+  meanBodyStabilityScore: number;
+  stageCrossingCount: number;
+  movementClassification: "stationary" | "moderate_movement" | "high_movement";
+  meanFacialEnergyScore: number;
+  facialEnergyVariation: number;
+  facialEnergyLowSignal: boolean;
+  framesAnalyzed: number;
+  videoQualityGrade: "good" | "degraded" | "poor";
+  videoQualityWarning: boolean; // derived: videoQualityGrade !== "good" — NOT stored independently
+  gazeReliable: boolean;
+  gestureReliable: boolean;
+  stabilityReliable: boolean;
+  facialEnergyReliable: boolean;
+  framesDroppedByFinalizationBudget: number;
+  resolutionChangeCount: number;
+  videoProcessingVersion: {
+    tfjsVersion: string;
+    tfjsBackend: string;
+    modelVersions: { blazeface: string; movenet: string };
+    configHash: string;
+  };
+  // Optional high-value improvements (Req 21)
+  confidenceScores?: MetricConfidenceScores;
+  detectionCoverage?: DetectionCoverage;
+  cameraPlacementWarning?: CameraPlacementWarning;
+}
+
+// ─── Phase 4: Visual Feedback Item (Req 8) ─────────────────────────────────────
+
+export interface VisualFeedbackItem {
+  type: "visual_observation";
+  summary: string;
+  observation_data: string; // formal grammar: "metric=<metricName>; value=<number><unit?>; source=visualObservations"
+  explanation: string; // 2-3 sentences, observational "I observed..." language
+}
+
+// ─── Phase 4: Gaze Breakdown ───────────────────────────────────────────────────
+
+export interface GazeBreakdown {
+  audienceFacing: number;
+  notesFacing: number;
+  other: number;
+}
+
+// ─── Phase 4: Frame Headers and Types (Req 10) ────────────────────────────────
+
+export interface FrameHeader {
+  timestamp: number; // seconds since client-side recording start (monotonic)
+  seq: number; // incrementing frame sequence number
+  width: number;
+  height: number;
+}
+
+export interface AudioFrameHeader {
+  timestamp: number;
+  seq: number;
+}
+
+export type FrameType = "audio" | "video";
+
+// ─── Phase 4: Video Config (Req 2.9) ──────────────────────────────────────────
+
+export interface VideoConfig {
+  frameRate: number; // target FPS for sampling; default: 2, range: 1-5
+  gestureDisplacementThreshold: number; // fraction of body bbox height; default: 0.15
+  stageCrossingThreshold: number; // fraction of frame width; default: 0.25
+  stabilityWindowSeconds: number; // rolling window for body stability; default: 5
+  gazeYawThreshold: number; // degrees from camera-facing for "audience-facing"; default: 15
+  gazePitchThreshold: number; // degrees below horizontal for "notes-facing"; default: -20
+  cameraDropTimeoutSeconds: number; // seconds without frames before declaring camera drop; default: 5
+  queueMaxSize: number; // max frames in the internal queue; default: 20
+  maxFrameInferenceMs: number; // hard timeout per frame inference; default: 500
+  staleFrameThresholdSeconds: number; // max age of frame before discard; default: 2.0
+  finalizationBudgetMs: number; // hard max for finalize(); default: 3000
+  minFaceAreaFraction: number; // minimum face bbox area / frame area for gaze; default: 0.05
+  faceDetectionConfidenceThreshold: number; // min confidence for face detection; default: 0.5
+  poseDetectionConfidenceThreshold: number; // min confidence for pose detection; default: 0.3
+  minValidFramesPerWindow: number; // min valid frames in a 5s window for metric inclusion; default: 3
+  metricRoundingPrecision: number; // decimal places for metric rounding; default: 4
+  facialEnergyEpsilon: number; // variance threshold below which facial energy is "low signal"; default: 0.001
+  backpressureOverloadThreshold: number; // fraction triggering adaptive sampling; default: 0.20
+  backpressureRecoveryThreshold: number; // fraction below which adaptive sampling recovers; default: 0.10
+  backpressureCooldownMs: number; // cooldown before restoring configured rate; default: 3000
+  frameRetentionWarningThreshold: number; // min retention rate in 5s window; default: 0.50
+  motionDeadZoneFraction: number; // min displacement to count as movement; default: 0.0
+  gazeCoverageThreshold: number; // per-metric coverage threshold for gaze; default: 0.6
+  facialEnergyCoverageThreshold: number; // per-metric coverage threshold for facial energy; default: 0.4
+  gestureCoverageThreshold: number; // per-metric coverage threshold for gestures; default: 0.3
+  stabilityCoverageThreshold: number; // per-metric coverage threshold for stability; default: 0.6
+}
+
+// ─── Phase 4: Confidence Scores (Req 21.1) ────────────────────────────────────
+
+export interface MetricConfidenceScores {
+  gaze: number; // 0.0-1.0
+  gesture: number; // 0.0-1.0
+  stability: number; // 0.0-1.0
+  facialEnergy: number; // 0.0-1.0
+}
+
+// ─── Phase 4: Detection Coverage (Req 21.2) ───────────────────────────────────
+
+export interface DetectionCoverage {
+  gaze: number; // fraction of frames where face detector succeeded
+  gesture: number; // fraction of frames where hand keypoints detected
+  stability: number; // fraction of frames where body center computed
+  facialEnergy: number; // fraction of frames where facial energy computed
+}
+
+// ─── Phase 4: Camera Placement Warning (Req 21.6) ─────────────────────────────
+
+export interface CameraPlacementWarning {
+  estimatedAngleDeg: number; // estimated camera angle from frontal
+  isFrontal: boolean; // true if angle <= 30°
+  warning?: string; // human-readable warning if angle > 30°
+}
+
+// ─── Phase 4: Visual Observations (aggregate output) ──────────────────────────
+
+export interface VisualObservations {
+  gazeBreakdown: GazeBreakdown;
+  faceNotDetectedCount: number;
+  totalGestureCount: number;
+  gestureFrequency: number; // gestures per minute
+  gesturePerSentenceRatio: number | null; // 0.0-1.0, null when suppressed
+  handsDetectedFrames: number;
+  handsNotDetectedFrames: number;
+  meanBodyStabilityScore: number; // 0.0-1.0
+  stageCrossingCount: number;
+  movementClassification: "stationary" | "moderate_movement" | "high_movement";
+  meanFacialEnergyScore: number; // 0.0-1.0
+  facialEnergyVariation: number; // coefficient of variation
+  facialEnergyLowSignal: boolean; // true when variance < epsilon
+  framesAnalyzed: number;
+  framesReceived: number;
+  framesSkippedBySampler: number;
+  framesErrored: number;
+  framesDroppedByBackpressure: number;
+  framesDroppedByTimestamp: number;
+  framesDroppedByFinalizationBudget: number;
+  resolutionChangeCount: number;
+  videoQualityGrade: "good" | "degraded" | "poor";
+  videoQualityWarning: boolean; // derived: videoQualityGrade !== "good"
+  finalizationLatencyMs: number;
+  videoProcessingVersion: {
+    tfjsVersion: string;
+    tfjsBackend: string;
+    modelVersions: { blazeface: string; movenet: string };
+    configHash: string;
+  };
+  gazeReliable: boolean;
+  gestureReliable: boolean;
+  stabilityReliable: boolean;
+  facialEnergyReliable: boolean;
+  // Optional high-value improvements (Req 21)
+  confidenceScores?: MetricConfidenceScores;
+  detectionCoverage?: DetectionCoverage;
+  cameraPlacementWarning?: CameraPlacementWarning;
+}
+
+// ─── WebSocket Protocol ─────────────────────────────────────────────────────────
+
 // Client → Server messages
 export type ClientMessage =
   | {
@@ -285,7 +471,10 @@ export type ClientMessage =
   | { type: "revoke_consent" }
   | { type: "set_time_limit"; seconds: number }
   | { type: "set_project_context"; speechTitle: string; projectType: string; objectives: string[] }
-  | { type: "set_vad_config"; silenceThresholdSeconds: number; enabled: boolean };
+  | { type: "set_vad_config"; silenceThresholdSeconds: number; enabled: boolean }
+  | { type: "set_video_consent"; consentGranted: boolean; timestamp: string }
+  | { type: "video_stream_ready"; width: number; height: number; deviceLabel?: string }
+  | { type: "set_video_config"; frameRate: number };
 
 // Server → Client messages
 export type ServerMessage =
@@ -315,4 +504,18 @@ export type ServerMessage =
   | { type: "vad_speech_end"; silenceDurationSeconds: number }
   | { type: "vad_status"; energy: number; isSpeech: boolean }
   | { type: "data_purged"; reason: "opt_out" | "auto_purge" }
-  | { type: "pipeline_progress"; stage: PipelineStage; runId: number; message?: string };
+  | { type: "pipeline_progress"; stage: PipelineStage; runId: number; message?: string }
+  | {
+      type: "video_status";
+      framesProcessed: number;
+      framesDropped: number;
+      processingLatencyMs: number;
+      framesReceived?: number;
+      framesSkippedBySampler?: number;
+      framesDroppedByBackpressure?: number;
+      framesDroppedByTimestamp?: number;
+      framesErrored?: number;
+      effectiveSamplingRate?: number;
+      finalizationLatencyMs?: number;
+      videoQualityGrade?: "good" | "degraded" | "poor";
+    };

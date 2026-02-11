@@ -881,6 +881,144 @@
       text-align: right;
     }
 
+    /* ─── Video Preview (Phase 4 — Req 2.1, 2.2) ───────────────────── */
+    .video-preview-container {
+      display: none;
+      align-items: center;
+      gap: 0.75rem;
+      padding: 0.5rem;
+    }
+
+    .video-preview-container.visible {
+      display: flex;
+    }
+
+    .video-preview-label {
+      font-size: 0.8rem;
+      color: var(--color-text-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+
+    .video-preview {
+      width: 120px;
+      height: 90px;
+      border-radius: var(--radius);
+      border: 1px solid var(--color-border);
+      background: #000;
+      object-fit: cover;
+    }
+
+    .video-frame-stats {
+      font-family: var(--font-mono);
+      font-size: 0.75rem;
+      color: var(--color-text-muted);
+    }
+
+    .video-latency-warning {
+      color: #e67e22;
+      margin-left: 0.25rem;
+      cursor: help;
+    }
+
+    .video-quality-grade {
+      display: none;
+      font-family: var(--font-mono);
+      font-size: 0.75rem;
+      padding: 0.15rem 0.5rem;
+      border-radius: var(--radius);
+      font-weight: 600;
+    }
+
+    .video-quality-grade.visible {
+      display: inline-block;
+    }
+
+    .video-quality-grade.good {
+      background: #d4edda;
+      color: #155724;
+    }
+
+    .video-quality-grade.degraded {
+      background: #fff3cd;
+      color: #856404;
+    }
+
+    .video-quality-grade.poor {
+      background: #f8d7da;
+      color: #721c24;
+    }
+
+    /* ─── Video FPS Config (Phase 4 — Req 2.9) ──────────────────────── */
+    .video-fps-config {
+      display: none;
+      flex-direction: column;
+      gap: 0.5rem;
+      padding: 0.75rem 1rem;
+      background: var(--color-surface);
+      border: 1px solid var(--color-border);
+      border-radius: var(--radius-lg);
+    }
+
+    .video-fps-config.visible {
+      display: flex;
+    }
+
+    .video-fps-config-title {
+      font-size: 0.85rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      color: var(--color-text-muted);
+      margin-bottom: 0.1rem;
+    }
+
+    .video-fps-config-row {
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+    }
+
+    .video-fps-slider-group {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      flex: 1;
+    }
+
+    .video-fps-slider-group label {
+      font-size: 0.85rem;
+      color: var(--color-text-muted);
+      white-space: nowrap;
+    }
+
+    .video-fps-slider-group input[type="range"] {
+      flex: 1;
+      min-width: 100px;
+      accent-color: var(--color-primary);
+      cursor: pointer;
+    }
+
+    .video-fps-slider-group .video-fps-value {
+      font-family: var(--font-mono);
+      font-size: 0.85rem;
+      color: var(--color-text);
+      min-width: 3.5em;
+      text-align: right;
+    }
+
+    /* ─── Video Consent Error (Phase 4 — Req 1.5) ───────────────────── */
+    .video-consent-error {
+      font-size: 0.8rem;
+      color: var(--color-danger);
+      display: none;
+      padding: 0.25rem 0;
+    }
+
+    .video-consent-error.visible {
+      display: block;
+    }
+
     /* ─── Evidence Link (Phase 3 — Req 7.1) ────────────────────────── */
     .evidence-link {
       color: var(--color-primary);
@@ -980,6 +1118,11 @@
         <input type="checkbox" id="consent-checkbox" aria-describedby="consent-label">
         <label id="consent-label" for="consent-checkbox">I confirm the speaker has given verbal consent to be recorded and evaluated</label>
       </div>
+      <div class="checkbox-group">
+        <input type="checkbox" id="video-consent-checkbox" aria-describedby="video-consent-label" disabled>
+        <label id="video-consent-label" for="video-consent-checkbox">Enable video capture for visual delivery feedback</label>
+      </div>
+      <div id="video-consent-error" class="video-consent-error" role="alert" aria-live="polite"></div>
     </div>
 
     <!-- Project Context Form (visible in IDLE state) -->
@@ -1031,6 +1174,18 @@
       </div>
     </div>
 
+    <!-- Video FPS Configuration (visible in IDLE state when video consent enabled — Req 2.9) -->
+    <div id="video-fps-config" class="video-fps-config" aria-label="Video frame rate configuration">
+      <div class="video-fps-config-title">Video Configuration</div>
+      <div class="video-fps-config-row">
+        <div class="video-fps-slider-group">
+          <label for="video-fps-slider">Frame rate</label>
+          <input type="range" id="video-fps-slider" min="1" max="5" value="2" step="1" aria-label="Video frame rate in FPS">
+          <span id="video-fps-value" class="video-fps-value">2 FPS</span>
+        </div>
+      </div>
+    </div>
+
     <!-- VAD Notification Banner (shown during RECORDING when speech-end detected) -->
     <div id="vad-notification" class="vad-notification" role="alert" aria-live="assertive">
       <span>🔔</span>
@@ -1045,6 +1200,14 @@
     <div id="duration-estimate" class="duration-estimate" role="status" aria-live="polite">
       <span>⏱</span>
       <span id="duration-estimate-text">Estimated: --:-- / Limit: 2:00</span>
+    </div>
+
+    <!-- Video Preview (Phase 4 — Req 2.1, 2.2) -->
+    <div id="video-preview-container" class="video-preview-container" aria-label="Camera preview">
+      <span class="video-preview-label">Camera</span>
+      <video id="video-preview" class="video-preview" autoplay muted playsinline></video>
+      <canvas id="video-capture-canvas" style="display:none;"></canvas>
+      <span id="video-frame-stats" class="video-frame-stats"></span>
     </div>
 
     <!-- Controls -->
@@ -1102,6 +1265,7 @@
     <section id="evaluation-panel" class="panel" aria-label="Evaluation">
       <div class="panel-header">
         <span>Evaluation</span>
+        <span id="video-quality-grade" class="video-quality-grade" aria-live="polite"></span>
       </div>
       <div class="panel-body">
         <div id="evaluation-content" class="evaluation-content">
@@ -1156,6 +1320,14 @@
     // ─── Phase 3: Project Context State (Req 4.1, 4.2, 4.3, 4.4) ────
     /** Client-side project context state, synced to server via set_project_context */
     let projectContext = { speechTitle: "", projectType: "", objectives: [] };
+
+    // ─── Phase 4: Video Consent State (Req 1.1, 1.2, 1.5, 2.9) ──────
+    /** Whether video consent toggle is checked */
+    let videoConsentEnabled = false;
+    /** Whether camera was successfully acquired after video consent */
+    let videoStreamReady = false;
+    /** Configured video FPS (1-5, default 2) */
+    let videoFpsConfig = 2;
 
     /** Predefined Toastmasters Pathways project types and their standard objectives (Req 4.2) */
     const PROJECT_TYPES = {
@@ -1308,6 +1480,12 @@
       speechTitleInput: document.getElementById("speech-title-input"),
       projectTypeSelect: document.getElementById("project-type-select"),
       objectivesTextarea: document.getElementById("objectives-textarea"),
+      // Phase 4: Video Consent DOM refs
+      videoConsentCheckbox: document.getElementById("video-consent-checkbox"),
+      videoConsentError: document.getElementById("video-consent-error"),
+      videoFpsConfig: document.getElementById("video-fps-config"),
+      videoFpsSlider: document.getElementById("video-fps-slider"),
+      videoFpsValue: document.getElementById("video-fps-value"),
     };
 
     // ─── Status Text Map ──────────────────────────────────────────────
@@ -1357,6 +1535,20 @@
         show(dom.timeLimitControl);
         // Show VAD config in IDLE (Req 3.1, 3.4)
         show(dom.vadConfig);
+        // Show video FPS config in IDLE only when video consent is enabled (Req 2.9)
+        if (videoConsentEnabled) {
+          show(dom.videoFpsConfig);
+        } else {
+          hide(dom.videoFpsConfig);
+        }
+        // Show video preview in IDLE only when video consent is enabled and camera is active
+        if (videoConsentEnabled && videoStream) {
+          show(videoDom.previewContainer);
+        } else {
+          hide(videoDom.previewContainer);
+        }
+        // Enable video consent checkbox in IDLE
+        enable(dom.videoConsentCheckbox);
         // Hide duration estimate in IDLE
         hide(dom.durationEstimate);
 
@@ -1415,6 +1607,12 @@
         hide(dom.timeLimitControl);
         // Hide VAD config during recording (Req 3.4)
         hide(dom.vadConfig);
+        // Hide video FPS config during recording (Req 1.4 — immutable after recording starts)
+        hide(dom.videoFpsConfig);
+        // Disable video consent checkbox during recording (Req 1.4)
+        disable(dom.videoConsentCheckbox);
+        // Hide video preview thumbnail during recording (shown only in IDLE)
+        hide(videoDom.previewContainer);
         hide(dom.durationEstimate);
 
         hide(dom.btnStart);
@@ -1453,6 +1651,12 @@
         show(dom.timeLimitControl);
         // Hide VAD config during processing (Req 3.4)
         hide(dom.vadConfig);
+        // Hide video FPS config during processing
+        hide(dom.videoFpsConfig);
+        // Disable video consent checkbox during processing
+        disable(dom.videoConsentCheckbox);
+        // Hide video preview during processing
+        hide(videoDom.previewContainer);
         // Show duration estimate if available
         if (estimatedDuration !== null) {
           show(dom.durationEstimate);
@@ -1505,6 +1709,12 @@
         hide(dom.timeLimitControl);
         // Hide VAD config during delivery (Req 3.4)
         hide(dom.vadConfig);
+        // Hide video FPS config during delivery
+        hide(dom.videoFpsConfig);
+        // Disable video consent checkbox during delivery
+        disable(dom.videoConsentCheckbox);
+        // Hide video preview during delivery
+        hide(videoDom.previewContainer);
         hide(dom.durationEstimate);
 
         hide(dom.btnStart);
@@ -1709,8 +1919,117 @@
         consentConfirmed: checked && name.length > 0,
       });
 
+      // Enable/disable video consent checkbox based on audio consent (Req 1.1)
+      if (consentConfirmed) {
+        enable(dom.videoConsentCheckbox);
+      } else {
+        // If audio consent is revoked, also disable and uncheck video consent
+        disable(dom.videoConsentCheckbox);
+        if (videoConsentEnabled) {
+          dom.videoConsentCheckbox.checked = false;
+          videoConsentEnabled = false;
+          videoStreamReady = false;
+          releaseCamera();
+          hideVideoConsentError();
+        }
+      }
+
       // Update Start Speech button gating
       updateUI(currentState);
+    }
+
+    /**
+     * Called when the video consent checkbox changes.
+     * Acquires camera on enable, releases on disable.
+     * Sends set_video_consent and video_stream_ready messages. (Req 1.1, 1.2, 1.5)
+     */
+    async function onVideoConsentChange() {
+      const checked = dom.videoConsentCheckbox.checked;
+      hideVideoConsentError();
+
+      if (checked) {
+        // Attempt to acquire camera (Req 1.5)
+        const acquired = await acquireCamera();
+        if (acquired) {
+          videoConsentEnabled = true;
+          videoStreamReady = true;
+
+          // Send video consent to server (Req 1.2)
+          wsSend({
+            type: "set_video_consent",
+            consentTimestamp: new Date().toISOString(),
+          });
+
+          // Send video_stream_ready to server (Req 1.5)
+          var readyMsg = {
+            type: "video_stream_ready",
+          };
+          // Include device label only if available (optional per Req 10.2)
+          if (videoStream) {
+            var tracks = videoStream.getVideoTracks();
+            if (tracks.length > 0 && tracks[0].label) {
+              readyMsg.deviceLabel = tracks[0].label;
+            }
+          }
+          wsSend(readyMsg);
+        } else {
+          // Camera acquisition failed — revert toggle (Req 1.5)
+          dom.videoConsentCheckbox.checked = false;
+          videoConsentEnabled = false;
+          videoStreamReady = false;
+          showVideoConsentError("Camera access denied or unavailable. Video consent requires camera permission.");
+        }
+      } else {
+        // Video consent disabled — release camera
+        videoConsentEnabled = false;
+        videoStreamReady = false;
+        releaseCamera();
+      }
+
+      // Update UI to show/hide video preview and FPS config
+      updateUI(currentState);
+    }
+
+    /**
+     * Shows a video consent error message below the checkbox.
+     * @param {string} message - Error message to display
+     */
+    function showVideoConsentError(message) {
+      dom.videoConsentError.textContent = message;
+      dom.videoConsentError.classList.add("visible");
+    }
+
+    /**
+     * Hides the video consent error message.
+     */
+    function hideVideoConsentError() {
+      dom.videoConsentError.textContent = "";
+      dom.videoConsentError.classList.remove("visible");
+    }
+
+    /**
+     * Called when the video FPS slider changes.
+     * Sends set_video_config message to server. (Req 2.9)
+     */
+    function onVideoFpsChange() {
+      var fps = parseInt(dom.videoFpsSlider.value, 10);
+      if (isNaN(fps) || fps < 1 || fps > 5) return;
+
+      videoFpsConfig = fps;
+      dom.videoFpsValue.textContent = fps + " FPS";
+
+      // Send video config to server (Req 2.9)
+      wsSend({
+        type: "set_video_config",
+        frameRate: fps,
+      });
+    }
+
+    /**
+     * Updates the FPS slider display value on input (live feedback).
+     */
+    function onVideoFpsInput() {
+      dom.videoFpsValue.textContent = dom.videoFpsSlider.value + " FPS";
     }
 
     /**
@@ -2380,6 +2699,10 @@
         case "vad_status":
           handleVADStatus(message);
           break;
+        case "video_status":
+          // Phase 4: Handle video processing status updates (Req 10.8)
+          handleVideoStatus(message);
+          break;
         default:
           console.warn("Unknown server message type:", message.type);
       }
@@ -2392,6 +2715,13 @@
      */
     function handleStateChange(newState) {
       const previousState = currentState;
+
+      // Phase 4: Stop video frame capture when leaving RECORDING state (Req 2.1, 2.2)
+      // This handles server-initiated transitions (auto-stop, errors) in addition to
+      // the explicit stopVideoCapture() calls in onStopSpeech() and onPanicMute().
+      if (previousState === SessionState.RECORDING && newState !== SessionState.RECORDING) {
+        stopVideoCapture();
+      }
 
       // Echo prevention: hard-stop mic when entering DELIVERING state
       if (newState === SessionState.DELIVERING) {
@@ -2800,6 +3130,7 @@
       hasTTSAudio = false;
       lastEvaluationScript = "";
       lastEvaluationData = null;
+      lastVideoQualityGrade = null;
       estimatedDuration = null;
       hide(dom.durationEstimate);
       forceStopTtsAndCancelDeferral();
@@ -2808,6 +3139,10 @@
       pipelineRunId = 0;
       // Clear evidence highlights (Phase 3)
       clearEvidenceHighlight();
+      // Hide video quality grade badge
+      if (videoDom.qualityGrade) {
+        videoDom.qualityGrade.className = "video-quality-grade";
+      }
 
       if (reason === "opt_out") {
         // Permanent purge — disable Save Outputs for this session
@@ -2817,6 +3152,17 @@
         consentConfirmed = false;
         dom.speakerNameInput.value = "";
         dom.consentCheckbox.checked = false;
+        // Reset video consent (Phase 4, Req 1.7)
+        videoConsentEnabled = false;
+        videoStreamReady = false;
+        dom.videoConsentCheckbox.checked = false;
+        disable(dom.videoConsentCheckbox);
+        hideVideoConsentError();
+        releaseCamera();
+        // Reset video FPS config to default
+        videoFpsConfig = 2;
+        dom.videoFpsSlider.value = 2;
+        dom.videoFpsValue.textContent = "2 FPS";
         // Reset VAD config to defaults (Phase 3, Req 3.1, 3.5)
         vadEnabled = true;
         vadSilenceThreshold = 5;
@@ -2831,6 +3177,17 @@
         dom.purgeBanner.className = "purge-banner visible opt-out";
       } else if (reason === "auto_purge") {
         // Auto-purge — informational
+        // Reset video consent (Phase 4)
+        videoConsentEnabled = false;
+        videoStreamReady = false;
+        dom.videoConsentCheckbox.checked = false;
+        disable(dom.videoConsentCheckbox);
+        hideVideoConsentError();
+        releaseCamera();
+        // Reset video FPS config to default
+        videoFpsConfig = 2;
+        dom.videoFpsSlider.value = 2;
+        dom.videoFpsValue.textContent = "2 FPS";
         // Reset VAD config to defaults (Phase 3)
         vadEnabled = true;
         vadSilenceThreshold = 5;
@@ -2962,6 +3319,9 @@
       // Stop the AudioWorklet first
       stopAudioCapture();
 
+      // Phase 4: Stop video frame capture (echo prevention — no video during delivery)
+      stopVideoCapture();
+
       // Hard-stop all MediaStream tracks (not just mute — fully release the mic)
       if (mediaStream) {
         mediaStream.getTracks().forEach(function (track) {
@@ -3041,6 +3401,7 @@
       pipelineRunId = 0;
       forceStopTtsAndCancelDeferral();
       dismissError();
+      hideVideoConsentError();
       clearEvidenceHighlight();
       hide(dom.interruptionBanner);
       hide(dom.savedConfirmation);
@@ -3061,8 +3422,15 @@
         return; // Error already shown by startAudioCapture
       }
 
+      // Phase 4: Camera is already acquired via video consent toggle (Req 1.5)
+      // Only start video capture if video consent is enabled and camera is ready
+
       // Send start_recording command to server
       wsSend({ type: "start_recording" });
+
+      if (videoConsentEnabled && videoStream) {
+        startVideoCapture();
+      }
 
       // Optimistic UI update (server will confirm via state_change)
       updateUI(SessionState.RECORDING);
@@ -3072,6 +3440,9 @@
     function onStopSpeech() {
       // Stop the AudioWorklet but keep MediaStream alive for potential restart
       stopAudioCapture();
+
+      // Phase 4: Stop video frame capture (camera stays alive for potential restart)
+      stopVideoCapture();
 
       // Send stop_recording command to server
       wsSend({ type: "stop_recording" });
@@ -3131,6 +3502,8 @@
 
       // Hard-stop mic if recording
       hardStopMic();
+      // Phase 4: Release camera on consent revocation
+      releaseCamera();
       // Atomic: cancel deferral + bump token + stop audio + clear ttsPlaying + clear latch
       forceStopTtsAndCancelDeferral();
       clearCooldown();
@@ -3145,6 +3518,8 @@
       // Panic mute: immediate action, no confirmation dialog
       // Hard-stop mic immediately
       hardStopMic();
+      // Phase 4: Stop video capture immediately
+      stopVideoCapture();
       // Atomic: cancel deferral + bump token + stop audio + clear ttsPlaying + clear latch
       forceStopTtsAndCancelDeferral();
       clearCooldown();
@@ -3210,6 +3585,272 @@
       return div.innerHTML;
     }
 
+    // ─── Phase 4: Video Frame Streaming State (Req 2.1, 2.2, 16.1) ──
+    /** @type {MediaStream|null} Camera video stream */
+    let videoStream = null;
+    /** @type {number|null} Interval ID for frame capture at 5 FPS */
+    let videoCaptureInterval = null;
+    /** Frame sequence number, reset per recording session */
+    let videoFrameSeq = 0;
+    /** performance.now() at recording start — shared time base with audio */
+    let recordingStartPerfNow = 0;
+    /** Total frames sent this session (for stats display) */
+    let videoFramesSent = 0;
+    /** Total frames skipped due to backpressure this session */
+    let videoFramesSkipped = 0;
+    /** Backpressure threshold: 2 MB */
+    const VIDEO_BACKPRESSURE_BYTES = 2 * 1024 * 1024;
+    /** Frame capture interval: 200ms = 5 FPS client cap */
+    const VIDEO_CAPTURE_INTERVAL_MS = 200;
+    /** JPEG quality for frame capture (0.0 - 1.0) */
+    const VIDEO_JPEG_QUALITY = 0.7;
+
+    // ─── Phase 4: Video DOM References ────────────────────────────────
+    const videoDom = {
+      previewContainer: document.getElementById("video-preview-container"),
+      preview: document.getElementById("video-preview"),
+      captureCanvas: document.getElementById("video-capture-canvas"),
+      frameStats: document.getElementById("video-frame-stats"),
+      qualityGrade: document.getElementById("video-quality-grade"),
+    };
+
+    /** Last video quality grade from final video_status message */
+    let lastVideoQualityGrade = null;
+
+    /**
+     * Encodes a video frame into the TM-prefixed wire format for browser.
+     * Format: [0x54 0x4D][0x56][uint24 header len][header JSON UTF-8][JPEG bytes]
+     *
+     * Uses ArrayBuffer/DataView/Uint8Array for browser compatibility (no Node.js Buffer).
+     *
+     * @param {Object} header - Frame header with timestamp, seq, width, height
+     * @param {Uint8Array} jpegBytes - JPEG image data
+     * @returns {ArrayBuffer} Encoded binary frame
+     */
+    function encodeVideoFrameBrowser(header, jpegBytes) {
+      var headerJson = JSON.stringify(header);
+      var encoder = new TextEncoder();
+      var headerBytes = encoder.encode(headerJson);
+      var headerLen = headerBytes.length;
+
+      // Total: 2 (magic) + 1 (type) + 3 (header len) + headerLen + jpegBytes.length
+      var totalLen = 6 + headerLen + jpegBytes.length;
+      var buf = new ArrayBuffer(totalLen);
+      var view = new DataView(buf);
+      var arr = new Uint8Array(buf);
+
+      // TM magic prefix
+      view.setUint8(0, 0x54); // 'T'
+      view.setUint8(1, 0x4D); // 'M'
+      // Type byte: video
+      view.setUint8(2, 0x56); // 'V'
+      // uint24 big-endian header length
+      view.setUint8(3, (headerLen >> 16) & 0xFF);
+      view.setUint8(4, (headerLen >> 8) & 0xFF);
+      view.setUint8(5, headerLen & 0xFF);
+      // Header JSON bytes
+      arr.set(headerBytes, 6);
+      // JPEG payload
+      arr.set(jpegBytes, 6 + headerLen);
+
+      return buf;
+    }
+
+    /**
+     * Acquires camera access via getUserMedia and sets up the video preview.
+     * @returns {Promise<boolean>} true if camera acquired successfully
+     */
+    async function acquireCamera() {
+      try {
+        videoStream = await navigator.mediaDevices.getUserMedia({
+          video: { width: { ideal: 640 }, height: { ideal: 480 }, frameRate: { ideal: 10 } }
+        });
+        videoDom.preview.srcObject = videoStream;
+        show(videoDom.previewContainer);
+        return true;
+      } catch (err) {
+        console.warn("[Video] Camera acquisition failed:", err.message);
+        videoStream = null;
+        return false;
+      }
+    }
+
+    /**
+     * Starts video frame capture at 5 FPS client cap.
+     * Captures JPEG frames from the video element via canvas,
+     * encodes them in TM-prefixed wire format, and sends over WebSocket.
+     */
+    function startVideoCapture() {
+      if (!videoStream || !videoDom.preview.videoWidth) {
+        console.warn("[Video] Cannot start capture — no video stream or video not ready");
+        return;
+      }
+
+      // Reset per-session counters
+      videoFrameSeq = 0;
+      videoFramesSent = 0;
+      videoFramesSkipped = 0;
+      lastVideoQualityGrade = null;
+      recordingStartPerfNow = performance.now();
+
+      // Hide video quality grade from previous session
+      if (videoDom.qualityGrade) {
+        videoDom.qualityGrade.className = "video-quality-grade";
+      }
+
+      var canvas = videoDom.captureCanvas;
+      var ctx = canvas.getContext("2d");
+
+      videoCaptureInterval = setInterval(function () {
+        // Guard: only send during RECORDING state with video consent (Req 2.1, 10.4)
+        if (currentState !== SessionState.RECORDING) return;
+        if (!videoConsentEnabled) return;
+        // Guard: need open WebSocket
+        if (!ws || ws.readyState !== WebSocket.OPEN) return;
+        // Guard: video element must have dimensions
+        if (!videoDom.preview.videoWidth || !videoDom.preview.videoHeight) return;
+
+        // Backpressure guard: skip frame if bufferedAmount > 2MB
+        if (ws.bufferedAmount > VIDEO_BACKPRESSURE_BYTES) {
+          videoFramesSkipped++;
+          updateVideoFrameStats();
+          return;
+        }
+
+        var vw = videoDom.preview.videoWidth;
+        var vh = videoDom.preview.videoHeight;
+
+        // Set canvas to match video dimensions
+        canvas.width = vw;
+        canvas.height = vh;
+
+        // Draw current video frame to canvas
+        ctx.drawImage(videoDom.preview, 0, 0, vw, vh);
+
+        // Convert to JPEG blob via toBlob for async, non-blocking encoding
+        canvas.toBlob(function (blob) {
+          if (!blob) return;
+          // Guard again — state or consent may have changed during async toBlob
+          if (currentState !== SessionState.RECORDING) return;
+          if (!videoConsentEnabled) return;
+          if (!ws || ws.readyState !== WebSocket.OPEN) return;
+          if (ws.bufferedAmount > VIDEO_BACKPRESSURE_BYTES) {
+            videoFramesSkipped++;
+            updateVideoFrameStats();
+            return;
+          }
+
+          // Read blob as ArrayBuffer
+          var reader = new FileReader();
+          reader.onload = function () {
+            // Final guard after async read — verify state and consent
+            if (currentState !== SessionState.RECORDING) return;
+            if (!videoConsentEnabled) return;
+            if (!ws || ws.readyState !== WebSocket.OPEN) return;
+
+            var jpegBytes = new Uint8Array(reader.result);
+
+            // Build header with timestamp relative to recording start
+            var header = {
+              timestamp: (performance.now() - recordingStartPerfNow) / 1000,
+              seq: videoFrameSeq++,
+              width: vw,
+              height: vh
+            };
+
+            // Encode in TM-prefixed wire format and send as binary
+            var encoded = encodeVideoFrameBrowser(header, jpegBytes);
+            ws.send(encoded);
+
+            videoFramesSent++;
+            updateVideoFrameStats();
+          };
+          reader.readAsArrayBuffer(blob);
+        }, "image/jpeg", VIDEO_JPEG_QUALITY);
+      }, VIDEO_CAPTURE_INTERVAL_MS);
+    }
+
+    /**
+     * Stops video frame capture.
+     */
+    function stopVideoCapture() {
+      if (videoCaptureInterval !== null) {
+        clearInterval(videoCaptureInterval);
+        videoCaptureInterval = null;
+      }
+    }
+
+    /**
+     * Releases the camera stream and hides the preview.
+     */
+    function releaseCamera() {
+      stopVideoCapture();
+      if (videoStream) {
+        videoStream.getTracks().forEach(function (track) { track.stop(); });
+        videoStream = null;
+      }
+      if (videoDom.preview) {
+        videoDom.preview.srcObject = null;
+      }
+      hide(videoDom.previewContainer);
+    }
+
+    /**
+     * Updates the video frame stats display.
+     */
+    function updateVideoFrameStats() {
+      if (videoDom.frameStats) {
+        videoDom.frameStats.textContent = "Sent: " + videoFramesSent + " / Skipped: " + videoFramesSkipped;
+      }
+    }
+
+    /**
+     * Handles video_status messages from the server.
+     * Updates the video frame stats display during recording. (Req 10.8, 17.1)
+     * Shows frames processed/dropped, latency warning if >500ms,
+     * and captures video quality grade from final status after stop_recording.
+     * @param {Object} message - The video_status message
+     */
+    function handleVideoStatus(message) {
+      // Capture video quality grade from final status (present after stop_recording)
+      if (message.videoQualityGrade) {
+        lastVideoQualityGrade = message.videoQualityGrade;
+      }
+
+      // Show server-side frame stats during recording
+      if (videoDom.frameStats && currentState === SessionState.RECORDING) {
+        const processed = message.framesProcessed || 0;
+        const dropped = message.framesDropped || 0;
+        const latency = message.processingLatencyMs || 0;
+        let text = "Processed: " + processed + " / Dropped: " + dropped;
+        if (latency > 500) {
+          text += " ⚠️";
+        }
+        videoDom.frameStats.textContent = text;
+        if (latency > 500) {
+          videoDom.frameStats.title = "Processing latency: " + Math.round(latency) + "ms (high)";
+        } else {
+          videoDom.frameStats.title = "";
+        }
+      }
+
+      // Show video quality grade after evaluation (final status message)
+      if (message.videoQualityGrade) {
+        showVideoQualityGrade(message.videoQualityGrade);
+      }
+    }
+
+    /**
+     * Displays the video quality grade badge in the evaluation panel header.
+     * @param {"good"|"degraded"|"poor"} grade
+     */
+    function showVideoQualityGrade(grade) {
+      if (!videoDom.qualityGrade) return;
+      videoDom.qualityGrade.className = "video-quality-grade visible " + grade;
+      var labels = { good: "Video: Good", degraded: "Video: Degraded", poor: "Video: Poor" };
+      videoDom.qualityGrade.textContent = labels[grade] || "Video: " + grade;
+    }
+
     // ─── Initialize ───────────────────────────────────────────────────
     // Set initial UI state and establish WebSocket connection
     updateUI(SessionState.IDLE);
@@ -3237,6 +3878,11 @@
     dom.speechTitleInput.addEventListener("input", onSpeechTitleChange);
     dom.projectTypeSelect.addEventListener("change", onProjectTypeChange);
     dom.objectivesTextarea.addEventListener("input", onObjectivesChange);
+
+    // Phase 4: Listen for video consent and FPS config changes
+    dom.videoConsentCheckbox.addEventListener("change", onVideoConsentChange);
+    dom.videoFpsSlider.addEventListener("change", onVideoFpsChange);
+    dom.videoFpsSlider.addEventListener("input", onVideoFpsInput);
   </script>
 </body>
 </html>

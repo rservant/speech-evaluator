@@ -13,6 +13,7 @@ import {
   EXPECTED_FORMAT,
 } from "./server.js";
 import { SessionState, type ServerMessage, type Session } from "./types.js";
+import { encodeVideoFrame, encodeAudioFrame } from "./video-frame-codec.js";
 
 // ─── Test Helpers ───────────────────────────────────────────────────────────────
 
@@ -1098,6 +1099,7 @@ describe("purgeSessionData", () => {
         energyVariationCoefficient: 0,
         energyProfile: { windowDurationMs: 250, windows: [], coefficientOfVariation: 0, silenceThreshold: 0 },
         classifiedFillers: [],
+        visualMetrics: null,
       },
       evaluation: { opening: "test", items: [], closing: "test", structure_commentary: { opening_comment: null, body_comment: null, closing_comment: null } },
       evaluationPublic: {
@@ -1120,6 +1122,23 @@ describe("purgeSessionData", () => {
       evaluationCache: null,
       projectContext: { speechTitle: "My Speech", projectType: "Ice Breaker", objectives: ["Introduce yourself"] },
       vadConfig: { silenceThresholdSeconds: 5, enabled: true },
+      // Phase 4 video fields
+      videoConsent: { consentGranted: true, timestamp: new Date() },
+      videoStreamReady: true,
+      visualObservations: {
+        gazeBreakdown: { audienceFacing: 70, notesFacing: 20, other: 10 },
+        faceNotDetectedCount: 0, totalGestureCount: 0, gestureFrequency: 0,
+        gesturePerSentenceRatio: null, handsDetectedFrames: 0, handsNotDetectedFrames: 0,
+        meanBodyStabilityScore: 0, stageCrossingCount: 0, movementClassification: "stationary",
+        meanFacialEnergyScore: 0, facialEnergyVariation: 0, facialEnergyLowSignal: false,
+        framesAnalyzed: 0, framesReceived: 0, framesSkippedBySampler: 0, framesErrored: 0,
+        framesDroppedByBackpressure: 0, framesDroppedByTimestamp: 0,
+        framesDroppedByFinalizationBudget: 0, resolutionChangeCount: 0,
+        videoQualityGrade: "good", videoQualityWarning: false, finalizationLatencyMs: 0,
+        videoProcessingVersion: { tfjsVersion: "4.0.0", tfjsBackend: "cpu", modelVersions: { blazeface: "1.0", movenet: "1.0" }, configHash: "abc" },
+        gazeReliable: true, gestureReliable: true, stabilityReliable: true, facialEnergyReliable: true,
+      },
+      videoConfig: { frameRate: 5 },
     };
 
     purgeSessionData(session);
@@ -1142,6 +1161,12 @@ describe("purgeSessionData", () => {
     expect(session.outputsSaved).toBe(true);
     // vadConfig is NOT cleared (it's configuration, not speech data)
     expect(session.vadConfig).toEqual({ silenceThresholdSeconds: 5, enabled: true });
+    // Phase 4: video data is cleared on purge (Req 11.5)
+    expect(session.visualObservations).toBeNull();
+    expect(session.videoConsent).toBeNull();
+    expect(session.videoStreamReady).toBe(false);
+    // videoConfig is NOT cleared (it's configuration, not speech data)
+    expect(session.videoConfig).toEqual({ frameRate: 5 });
   });
 });
 
@@ -1912,6 +1937,686 @@ describe("Phase 3 VAD and project context message handling", () => {
 
       const vadMsg = await c.nextMessageOfType("vad_speech_end");
       expect(vadMsg).toEqual({ type: "vad_speech_end", silenceDurationSeconds: 5.2 });
+    });
+  });
+});
+
+// ─── Phase 4: Video Message Handler Tests ─────────────────────────────────────
+
+describe("Server — Video Message Handlers", () => {
+  let server: AppServer;
+  let silentLogger: ReturnType<typeof createSilentLogger>;
+  let clients: TestClient[];
+
+  beforeEach(async () => {
+    silentLogger = createSilentLogger();
+    server = createAppServer({ logger: silentLogger });
+    await server.listen(TEST_PORT);
+    clients = [];
+  });
+
+  afterEach(async () => {
+    for (const c of clients) c.close();
+    await server.close();
+  });
+
+  function track(client: TestClient): TestClient {
+    clients.push(client);
+    return client;
+  }
+
+  // ─── set_video_consent ────────────────────────────────────────────────────
+
+  describe("set_video_consent", () => {
+    it("should succeed in IDLE state", async () => {
+      const c = track(await createClient(server));
+
+      c.sendJson({
+        type: "set_video_consent",
+        consentGranted: true,
+        timestamp: new Date().toISOString(),
+      });
+
+      // No error should be sent — verify by sending another message and getting its response
+      c.sendJson({ type: "set_consent", speakerName: "Test", consentConfirmed: true });
+      const msg = await c.nextMessageOfType("consent_status");
+      expect(msg.type).toBe("consent_status");
+
+      // Verify session has video consent set
+      const session = server.sessionManager.getSession(
+        Array.from((server.sessionManager as unknown as { sessions: Map<string, Session> }).sessions.keys())[0],
+      );
+      expect(session.videoConsent).not.toBeNull();
+      expect(session.videoConsent!.consentGranted).toBe(true);
+    });
+
+    it("should return recoverable error in non-IDLE state", async () => {
+      const c = track(await createClient(server));
+
+      await setConsentForRecording(c);
+      c.sendJson({ type: "start_recording" });
+      await c.nextMessageOfType("state_change"); // RECORDING
+
+      c.sendJson({
+        type: "set_video_consent",
+        consentGranted: true,
+        timestamp: new Date().toISOString(),
+      });
+
+      const errMsg = await c.nextMessageOfType("error");
+      expect(errMsg.type).toBe("error");
+      expect((errMsg as { recoverable: boolean }).recoverable).toBe(true);
+    });
+  });
+
+  // ─── video_stream_ready ───────────────────────────────────────────────────
+
+  describe("video_stream_ready", () => {
+    it("should succeed in IDLE state", async () => {
+      const c = track(await createClient(server));
+
+      c.sendJson({
+        type: "video_stream_ready",
+        width: 640,
+        height: 480,
+      });
+
+      // Verify no error by sending another message
+      c.sendJson({ type: "set_consent", speakerName: "Test", consentConfirmed: true });
+      const msg = await c.nextMessageOfType("consent_status");
+      expect(msg.type).toBe("consent_status");
+    });
+
+    it("should return recoverable error in non-IDLE state", async () => {
+      const c = track(await createClient(server));
+
+      await setConsentForRecording(c);
+      c.sendJson({ type: "start_recording" });
+      await c.nextMessageOfType("state_change"); // RECORDING
+
+      c.sendJson({
+        type: "video_stream_ready",
+        width: 640,
+        height: 480,
+      });
+
+      const errMsg = await c.nextMessageOfType("error");
+      expect(errMsg.type).toBe("error");
+      expect((errMsg as { recoverable: boolean }).recoverable).toBe(true);
+    });
+  });
+
+  // ─── set_video_config ─────────────────────────────────────────────────────
+
+  describe("set_video_config", () => {
+    it("should succeed with valid frameRate in IDLE state", async () => {
+      const c = track(await createClient(server));
+
+      c.sendJson({ type: "set_video_config", frameRate: 3 });
+
+      // Verify no error by sending another message
+      c.sendJson({ type: "set_consent", speakerName: "Test", consentConfirmed: true });
+      const msg = await c.nextMessageOfType("consent_status");
+      expect(msg.type).toBe("consent_status");
+    });
+
+    it("should return error for invalid frameRate (too low)", async () => {
+      const c = track(await createClient(server));
+
+      c.sendJson({ type: "set_video_config", frameRate: 0 });
+
+      const errMsg = await c.nextMessageOfType("error");
+      expect(errMsg.type).toBe("error");
+      expect((errMsg as { recoverable: boolean }).recoverable).toBe(true);
+    });
+
+    it("should return error for invalid frameRate (too high)", async () => {
+      const c = track(await createClient(server));
+
+      c.sendJson({ type: "set_video_config", frameRate: 10 });
+
+      const errMsg = await c.nextMessageOfType("error");
+      expect(errMsg.type).toBe("error");
+      expect((errMsg as { recoverable: boolean }).recoverable).toBe(true);
+    });
+
+    it("should return error in non-IDLE state", async () => {
+      const c = track(await createClient(server));
+
+      await setConsentForRecording(c);
+      c.sendJson({ type: "start_recording" });
+      await c.nextMessageOfType("state_change"); // RECORDING
+
+      c.sendJson({ type: "set_video_config", frameRate: 3 });
+
+      const errMsg = await c.nextMessageOfType("error");
+      expect(errMsg.type).toBe("error");
+      expect((errMsg as { recoverable: boolean }).recoverable).toBe(true);
+    });
+  });
+
+  // ─── Binary frame routing ────────────────────────────────────────────────
+
+  describe("binary frame routing", () => {
+    it("should route TM video frames to feedVideoFrame", async () => {
+      const c = track(await createClient(server));
+
+      // Set up video consent and stream ready
+      c.sendJson({
+        type: "set_video_consent",
+        consentGranted: true,
+        timestamp: new Date().toISOString(),
+      });
+      c.sendJson({ type: "video_stream_ready", width: 640, height: 480 });
+
+      // Spy on feedVideoFrame
+      const feedSpy = vi.spyOn(server.sessionManager, "feedVideoFrame");
+
+      await setConsentForRecording(c);
+      c.sendJson({ type: "start_recording" });
+      await c.nextMessageOfType("state_change"); // RECORDING
+
+      // Send a TM-prefixed video frame
+      const videoFrame = encodeVideoFrame(
+        { timestamp: 1.0, seq: 0, width: 640, height: 480 },
+        Buffer.from([0xff, 0xd8, 0xff, 0xe0]), // minimal JPEG-like bytes
+      );
+      c.sendBinary(videoFrame);
+
+      // Give the server a moment to process
+      await new Promise((r) => setTimeout(r, 100));
+
+      expect(feedSpy).toHaveBeenCalledTimes(1);
+      expect(feedSpy.mock.calls[0][1]).toEqual(
+        expect.objectContaining({ timestamp: 1.0, seq: 0, width: 640, height: 480 }),
+      );
+    });
+
+    it("should route TM audio frames to feedAudio", async () => {
+      const c = track(await createClient(server));
+
+      const feedSpy = vi.spyOn(server.sessionManager, "feedAudio");
+
+      await setConsentForRecording(c);
+      c.sendJson({ type: "start_recording" });
+      await c.nextMessageOfType("state_change"); // RECORDING
+
+      // Send a TM-prefixed audio frame
+      const pcmData = Buffer.alloc(1600); // 50ms of 16kHz mono 16-bit
+      const audioFrame = encodeAudioFrame(
+        { timestamp: 0.5, seq: 0 },
+        pcmData,
+      );
+      c.sendBinary(audioFrame);
+
+      // Give the server a moment to process
+      await new Promise((r) => setTimeout(r, 100));
+
+      expect(feedSpy).toHaveBeenCalled();
+    });
+
+    it("should treat non-TM binary data as raw PCM audio (backward compat)", async () => {
+      const c = track(await createClient(server));
+
+      // Validate audio format first (required for legacy path)
+      c.sendJson({
+        type: "audio_format",
+        channels: 1,
+        sampleRate: 16000,
+        encoding: "LINEAR16",
+      });
+
+      const feedSpy = vi.spyOn(server.sessionManager, "feedAudio");
+
+      await setConsentForRecording(c);
+      c.sendJson({ type: "start_recording" });
+      await c.nextMessageOfType("state_change"); // RECORDING
+
+      // Send raw PCM data (no TM prefix)
+      const rawPcm = Buffer.alloc(1600);
+      c.sendBinary(rawPcm);
+
+      // Give the server a moment to process
+      await new Promise((r) => setTimeout(r, 100));
+
+      expect(feedSpy).toHaveBeenCalled();
+    });
+
+    it("should silently discard frames with unrecognized TM type byte", async () => {
+      const c = track(await createClient(server));
+
+      await setConsentForRecording(c);
+      c.sendJson({ type: "start_recording" });
+      await c.nextMessageOfType("state_change"); // RECORDING
+
+      const feedVideoSpy = vi.spyOn(server.sessionManager, "feedVideoFrame");
+      const feedAudioSpy = vi.spyOn(server.sessionManager, "feedAudio");
+
+      // Send TM frame with unknown type byte 0x58
+      const badFrame = Buffer.from([0x54, 0x4d, 0x58, 0x00, 0x00, 0x02, 0x7b, 0x7d]);
+      c.sendBinary(badFrame);
+
+      await new Promise((r) => setTimeout(r, 100));
+
+      expect(feedVideoSpy).not.toHaveBeenCalled();
+      expect(feedAudioSpy).not.toHaveBeenCalled();
+    });
+  });
+
+  // ─── video_status periodic sender ─────────────────────────────────────────
+
+  describe("video_status", () => {
+    it("should send periodic video_status during recording when video processor exists", async () => {
+      const c = track(await createClient(server));
+
+      // Set up video consent and stream ready
+      c.sendJson({
+        type: "set_video_consent",
+        consentGranted: true,
+        timestamp: new Date().toISOString(),
+      });
+      c.sendJson({ type: "video_stream_ready", width: 640, height: 480 });
+
+      // Mock getVideoProcessor to return a fake processor
+      const mockStatus = {
+        framesProcessed: 10,
+        framesDropped: 2,
+        processingLatencyMs: 50,
+        framesReceived: 15,
+        framesSkippedBySampler: 3,
+        framesDroppedByBackpressure: 0,
+        framesDroppedByTimestamp: 0,
+        framesErrored: 0,
+        effectiveSamplingRate: 2,
+      };
+      vi.spyOn(server.sessionManager, "getVideoProcessor").mockReturnValue({
+        getExtendedStatus: () => mockStatus,
+      } as unknown as ReturnType<typeof server.sessionManager.getVideoProcessor>);
+
+      await setConsentForRecording(c);
+      c.sendJson({ type: "start_recording" });
+      await c.nextMessageOfType("state_change"); // RECORDING
+
+      // Wait for at least one video_status message (sent every 1s)
+      const statusMsg = await c.nextMessageOfType("video_status", 2000);
+      expect(statusMsg.type).toBe("video_status");
+      expect((statusMsg as { framesReceived: number }).framesReceived).toBe(15);
+      expect((statusMsg as { effectiveSamplingRate: number }).effectiveSamplingRate).toBe(2);
+    });
+
+    it("should send final video_status after stop_recording with finalization data", async () => {
+      const c = track(await createClient(server));
+
+      // Set up video consent and stream ready
+      c.sendJson({
+        type: "set_video_consent",
+        consentGranted: true,
+        timestamp: new Date().toISOString(),
+      });
+      c.sendJson({ type: "video_stream_ready", width: 640, height: 480 });
+
+      await setConsentForRecording(c);
+      c.sendJson({ type: "start_recording" });
+      await c.nextMessageOfType("state_change"); // RECORDING
+
+      // Mock stopRecording to set visualObservations on the session
+      const originalStop = server.sessionManager.stopRecording.bind(server.sessionManager);
+      vi.spyOn(server.sessionManager, "stopRecording").mockImplementation(async (sessionId: string) => {
+        await originalStop(sessionId);
+        const session = server.sessionManager.getSession(sessionId);
+        session.visualObservations = {
+          gazeBreakdown: { audienceFacing: 70, notesFacing: 20, other: 10 },
+          faceNotDetectedCount: 1,
+          totalGestureCount: 5,
+          gestureFrequency: 3.0,
+          gesturePerSentenceRatio: 0.5,
+          handsDetectedFrames: 8,
+          handsNotDetectedFrames: 2,
+          meanBodyStabilityScore: 0.9,
+          stageCrossingCount: 1,
+          movementClassification: "stationary" as const,
+          meanFacialEnergyScore: 0.4,
+          facialEnergyVariation: 0.2,
+          facialEnergyLowSignal: false,
+          framesAnalyzed: 10,
+          framesReceived: 15,
+          framesSkippedBySampler: 3,
+          framesErrored: 0,
+          framesDroppedByBackpressure: 1,
+          framesDroppedByTimestamp: 1,
+          framesDroppedByFinalizationBudget: 0,
+          resolutionChangeCount: 0,
+          videoQualityGrade: "good" as const,
+          videoQualityWarning: false,
+          finalizationLatencyMs: 150,
+          videoProcessingVersion: {
+            tfjsVersion: "4.0.0",
+            tfjsBackend: "cpu",
+            modelVersions: { blazeface: "1.0", movenet: "1.0" },
+            configHash: "abc123",
+          },
+          gazeReliable: true,
+          gestureReliable: true,
+          stabilityReliable: true,
+          facialEnergyReliable: true,
+        };
+      });
+
+      // Also mock getVideoProcessor to return null after stop (processor removed)
+      vi.spyOn(server.sessionManager, "getVideoProcessor").mockReturnValue(undefined);
+
+      c.sendJson({ type: "stop_recording" });
+
+      // Look for the final video_status with finalizationLatencyMs
+      const finalStatus = await c.nextMessageOfType("video_status", 3000);
+      expect(finalStatus.type).toBe("video_status");
+      expect((finalStatus as { finalizationLatencyMs: number }).finalizationLatencyMs).toBe(150);
+      expect((finalStatus as { videoQualityGrade: string }).videoQualityGrade).toBe("good");
+      expect((finalStatus as { framesReceived: number }).framesReceived).toBe(15);
+    });
+
+    it("should throttle video_status to at most 1 per second", async () => {
+      const c = track(await createClient(server));
+
+      // Mock getVideoProcessor to return a fake processor
+      const mockStatus = {
+        framesProcessed: 5,
+        framesDropped: 0,
+        processingLatencyMs: 20,
+        framesReceived: 10,
+        framesSkippedBySampler: 5,
+        framesDroppedByBackpressure: 0,
+        framesDroppedByTimestamp: 0,
+        framesErrored: 0,
+        effectiveSamplingRate: 2,
+      };
+      vi.spyOn(server.sessionManager, "getVideoProcessor").mockReturnValue({
+        getExtendedStatus: () => mockStatus,
+      } as unknown as ReturnType<typeof server.sessionManager.getVideoProcessor>);
+
+      await setConsentForRecording(c);
+      c.sendJson({ type: "start_recording" });
+      await c.nextMessageOfType("state_change"); // RECORDING
+
+      // Collect video_status messages over ~2.5 seconds
+      const statusMessages: ServerMessage[] = [];
+      const collectStart = Date.now();
+      const collectDuration = 2500;
+
+      while (Date.now() - collectStart < collectDuration) {
+        try {
+          const msg = await c.nextMessageOfType("video_status", 1200);
+          statusMessages.push(msg);
+        } catch {
+          // Timeout is fine — just means no more messages in this window
+          break;
+        }
+      }
+
+      // Over 2.5 seconds, we should get at most 3 video_status messages (≤1/sec)
+      expect(statusMessages.length).toBeGreaterThanOrEqual(1);
+      expect(statusMessages.length).toBeLessThanOrEqual(3);
+    });
+  });
+
+  // ─── Additional binary frame routing tests ──────────────────────────────────
+
+  describe("binary frame routing — edge cases", () => {
+    it("should silently discard malformed video frames with corrupt header JSON", async () => {
+      const c = track(await createClient(server));
+
+      c.sendJson({
+        type: "set_video_consent",
+        consentGranted: true,
+        timestamp: new Date().toISOString(),
+      });
+      c.sendJson({ type: "video_stream_ready", width: 640, height: 480 });
+
+      const feedSpy = vi.spyOn(server.sessionManager, "feedVideoFrame");
+
+      await setConsentForRecording(c);
+      c.sendJson({ type: "start_recording" });
+      await c.nextMessageOfType("state_change"); // RECORDING
+
+      // Build a TM video frame with corrupt header JSON
+      const corruptHeader = Buffer.from("not{valid}json", "utf-8");
+      const frame = Buffer.alloc(6 + corruptHeader.length + 4);
+      frame[0] = 0x54; // T
+      frame[1] = 0x4d; // M
+      frame[2] = 0x56; // V (video)
+      frame[3] = (corruptHeader.length >> 16) & 0xff;
+      frame[4] = (corruptHeader.length >> 8) & 0xff;
+      frame[5] = corruptHeader.length & 0xff;
+      corruptHeader.copy(frame, 6);
+      // Some JPEG-like bytes
+      frame[6 + corruptHeader.length] = 0xff;
+      frame[6 + corruptHeader.length + 1] = 0xd8;
+
+      c.sendBinary(frame);
+      await new Promise((r) => setTimeout(r, 100));
+
+      // feedVideoFrame should NOT be called — decodeVideoFrame returns null
+      expect(feedSpy).not.toHaveBeenCalled();
+    });
+
+    it("should silently discard binary frames without TM prefix in RECORDING state", async () => {
+      const c = track(await createClient(server));
+
+      const feedVideoSpy = vi.spyOn(server.sessionManager, "feedVideoFrame");
+
+      await setConsentForRecording(c);
+      c.sendJson({ type: "start_recording" });
+      await c.nextMessageOfType("state_change"); // RECORDING
+
+      // Send binary data that doesn't start with TM magic (0x54 0x4D)
+      // and is NOT valid raw PCM (odd length to avoid legacy path processing)
+      const nonTMData = Buffer.from([0x00, 0x01, 0x02, 0x03, 0x04]);
+      c.sendBinary(nonTMData);
+
+      await new Promise((r) => setTimeout(r, 100));
+
+      // No video frame should be routed
+      expect(feedVideoSpy).not.toHaveBeenCalled();
+    });
+
+    it("should silently discard video frames in non-RECORDING state", async () => {
+      const c = track(await createClient(server));
+
+      const feedSpy = vi.spyOn(server.sessionManager, "feedVideoFrame");
+
+      // Session is in IDLE — send a video frame
+      const videoFrame = encodeVideoFrame(
+        { timestamp: 1.0, seq: 0, width: 640, height: 480 },
+        Buffer.from([0xff, 0xd8, 0xff, 0xe0]),
+      );
+      c.sendBinary(videoFrame);
+
+      await new Promise((r) => setTimeout(r, 100));
+
+      // feedVideoFrame is called but SessionManager guards on RECORDING state
+      // The frame is effectively discarded
+      expect(feedSpy).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  // ─── Video consent in various non-IDLE states ───────────────────────────────
+
+  describe("set_video_consent — non-IDLE state rejection", () => {
+    it("should reject set_video_consent in PROCESSING state", async () => {
+      const c = track(await createClient(server));
+
+      await setConsentForRecording(c);
+      c.sendJson({ type: "start_recording" });
+      await c.nextMessageOfType("state_change"); // RECORDING
+
+      // Transition to PROCESSING by stopping recording
+      c.sendJson({ type: "stop_recording" });
+      await c.nextMessageOfType("state_change"); // PROCESSING
+
+      c.sendJson({
+        type: "set_video_consent",
+        consentGranted: true,
+        timestamp: new Date().toISOString(),
+      });
+
+      const errMsg = await c.nextMessageOfType("error");
+      expect(errMsg.type).toBe("error");
+      expect((errMsg as { recoverable: boolean }).recoverable).toBe(true);
+      expect((errMsg as { message: string }).message).toContain("idle");
+    });
+  });
+
+  // ─── video_stream_ready in non-IDLE states ─────────────────────────────────
+
+  describe("video_stream_ready — non-IDLE state rejection", () => {
+    it("should reject video_stream_ready in PROCESSING state", async () => {
+      const c = track(await createClient(server));
+
+      await setConsentForRecording(c);
+      c.sendJson({ type: "start_recording" });
+      await c.nextMessageOfType("state_change"); // RECORDING
+
+      c.sendJson({ type: "stop_recording" });
+      await c.nextMessageOfType("state_change"); // PROCESSING
+
+      c.sendJson({
+        type: "video_stream_ready",
+        width: 640,
+        height: 480,
+      });
+
+      const errMsg = await c.nextMessageOfType("error");
+      expect(errMsg.type).toBe("error");
+      expect((errMsg as { recoverable: boolean }).recoverable).toBe(true);
+    });
+  });
+
+  // ─── set_video_config boundary values ──────────────────────────────────────
+
+  describe("set_video_config — boundary values", () => {
+    it("should accept frameRate of 1 (minimum)", async () => {
+      const c = track(await createClient(server));
+
+      c.sendJson({ type: "set_video_config", frameRate: 1 });
+
+      // Verify no error by sending another message and getting its response
+      c.sendJson({ type: "set_consent", speakerName: "Test", consentConfirmed: true });
+      const msg = await c.nextMessageOfType("consent_status");
+      expect(msg.type).toBe("consent_status");
+    });
+
+    it("should accept frameRate of 5 (maximum)", async () => {
+      const c = track(await createClient(server));
+
+      c.sendJson({ type: "set_video_config", frameRate: 5 });
+
+      // Verify no error
+      c.sendJson({ type: "set_consent", speakerName: "Test", consentConfirmed: true });
+      const msg = await c.nextMessageOfType("consent_status");
+      expect(msg.type).toBe("consent_status");
+    });
+
+    it("should reject frameRate of 6 (just above max)", async () => {
+      const c = track(await createClient(server));
+
+      c.sendJson({ type: "set_video_config", frameRate: 6 });
+
+      const errMsg = await c.nextMessageOfType("error");
+      expect(errMsg.type).toBe("error");
+      expect((errMsg as { recoverable: boolean }).recoverable).toBe(true);
+    });
+  });
+
+  // ─── Audio priority: audio never blocked by video ──────────────────────────
+
+  describe("audio priority", () => {
+    it("should process audio frames synchronously even when video frames are sent", async () => {
+      const c = track(await createClient(server));
+
+      // Set up video consent and stream ready
+      c.sendJson({
+        type: "set_video_consent",
+        consentGranted: true,
+        timestamp: new Date().toISOString(),
+      });
+      c.sendJson({ type: "video_stream_ready", width: 640, height: 480 });
+
+      const feedAudioSpy = vi.spyOn(server.sessionManager, "feedAudio");
+      const feedVideoSpy = vi.spyOn(server.sessionManager, "feedVideoFrame");
+
+      await setConsentForRecording(c);
+      c.sendJson({ type: "start_recording" });
+      await c.nextMessageOfType("state_change"); // RECORDING
+
+      // Send interleaved video and audio frames
+      const videoFrame = encodeVideoFrame(
+        { timestamp: 0.5, seq: 0, width: 640, height: 480 },
+        Buffer.from([0xff, 0xd8, 0xff, 0xe0]),
+      );
+      const audioFrame = encodeAudioFrame(
+        { timestamp: 0.5, seq: 0 },
+        Buffer.alloc(1600), // 50ms of 16kHz mono 16-bit PCM
+      );
+
+      // Send video first, then audio
+      c.sendBinary(videoFrame);
+      c.sendBinary(audioFrame);
+
+      await new Promise((r) => setTimeout(r, 200));
+
+      // Both should be processed — audio is never blocked by video
+      expect(feedVideoSpy).toHaveBeenCalledTimes(1);
+      expect(feedAudioSpy).toHaveBeenCalledTimes(1);
+    });
+
+    it("should handle audio frames via feedAudio (synchronous) while video uses fire-and-forget enqueue", async () => {
+      const c = track(await createClient(server));
+
+      c.sendJson({
+        type: "set_video_consent",
+        consentGranted: true,
+        timestamp: new Date().toISOString(),
+      });
+      c.sendJson({ type: "video_stream_ready", width: 640, height: 480 });
+
+      // Track call order to verify audio is not blocked
+      const callOrder: string[] = [];
+      vi.spyOn(server.sessionManager, "feedAudio").mockImplementation(() => {
+        callOrder.push("audio");
+      });
+      vi.spyOn(server.sessionManager, "feedVideoFrame").mockImplementation(() => {
+        callOrder.push("video");
+      });
+
+      await setConsentForRecording(c);
+      c.sendJson({ type: "start_recording" });
+      await c.nextMessageOfType("state_change"); // RECORDING
+
+      // Send multiple video frames then an audio frame
+      for (let i = 0; i < 3; i++) {
+        const vf = encodeVideoFrame(
+          { timestamp: i * 0.5, seq: i, width: 640, height: 480 },
+          Buffer.from([0xff, 0xd8, 0xff, 0xe0]),
+        );
+        c.sendBinary(vf);
+      }
+
+      const af = encodeAudioFrame(
+        { timestamp: 1.0, seq: 0 },
+        Buffer.alloc(1600),
+      );
+      c.sendBinary(af);
+
+      await new Promise((r) => setTimeout(r, 200));
+
+      // All frames should be processed — video via fire-and-forget, audio synchronously
+      const videoCount = callOrder.filter((c) => c === "video").length;
+      const audioCount = callOrder.filter((c) => c === "audio").length;
+      expect(videoCount).toBe(3);
+      expect(audioCount).toBe(1);
+
+      // Audio should appear in the call order (not blocked by video)
+      expect(callOrder).toContain("audio");
     });
   });
 });

@@ -43,6 +43,7 @@ const STUB_METRICS: DeliveryMetrics = {
     silenceThreshold: 0,
   },
   classifiedFillers: [],
+  visualMetrics: null,
 };
 
 const checker = new ToneChecker();
@@ -735,5 +736,476 @@ describe("ToneChecker — edge cases", () => {
     const result = checker.check(script, STUB_EVALUATION, STUB_METRICS);
     expect(result.passed).toBe(false);
     expect(result.violations.some((v) => v.category === "psychological_inference")).toBe(true);
+  });
+});
+
+import { hasMetricAnchoredNumber, validateMetricKeyExists } from "./tone-checker.js";
+
+// ─── check() — Visual Emotion Inference Detection (Req 6.5, 7.1) ───────────────
+
+describe("ToneChecker.check() — visual emotion inference", () => {
+  it("should flag 'you looked nervous'", () => {
+    const result = checker.check(
+      "You looked nervous during the opening.",
+      STUB_EVALUATION,
+      STUB_METRICS,
+    );
+    expect(result.passed).toBe(false);
+    expect(result.violations.some((v) => v.category === "visual_emotion_inference")).toBe(true);
+  });
+
+  it("should flag 'you seemed anxious'", () => {
+    const result = checker.check(
+      "You seemed anxious throughout the speech.",
+      STUB_EVALUATION,
+      STUB_METRICS,
+    );
+    expect(result.passed).toBe(false);
+    expect(result.violations.some((v) => v.category === "visual_emotion_inference")).toBe(true);
+  });
+
+  it("should flag 'you appeared confident'", () => {
+    const result = checker.check(
+      "You appeared confident on stage.",
+      STUB_EVALUATION,
+      STUB_METRICS,
+    );
+    expect(result.passed).toBe(false);
+    expect(result.violations.some((v) => v.category === "visual_emotion_inference")).toBe(true);
+  });
+
+  it("should flag 'your face showed'", () => {
+    const result = checker.check(
+      "Your face showed signs of discomfort.",
+      STUB_EVALUATION,
+      STUB_METRICS,
+    );
+    expect(result.passed).toBe(false);
+    expect(result.violations.some((v) => v.category === "visual_emotion_inference")).toBe(true);
+  });
+
+  it("should flag 'you were trying to appear'", () => {
+    const result = checker.check(
+      "You were trying to appear confident.",
+      STUB_EVALUATION,
+      STUB_METRICS,
+    );
+    expect(result.passed).toBe(false);
+    expect(result.violations.some((v) => v.category === "visual_emotion_inference")).toBe(true);
+  });
+
+  it("should flag 'your nervousness'", () => {
+    const result = checker.check(
+      "Your nervousness was apparent.",
+      STUB_EVALUATION,
+      STUB_METRICS,
+    );
+    expect(result.passed).toBe(false);
+    const categories = result.violations.map((v) => v.category);
+    expect(
+      categories.includes("visual_emotion_inference") ||
+      categories.includes("psychological_inference"),
+    ).toBe(true);
+  });
+
+  it("should flag 'was clearly stressed'", () => {
+    const result = checker.check(
+      "The speaker was clearly stressed.",
+      STUB_EVALUATION,
+      STUB_METRICS,
+    );
+    expect(result.passed).toBe(false);
+    expect(result.violations.some((v) => v.category === "visual_emotion_inference")).toBe(true);
+  });
+
+  it("should flag 'showed signs of fear'", () => {
+    const result = checker.check(
+      "The delivery showed signs of fear.",
+      STUB_EVALUATION,
+      STUB_METRICS,
+    );
+    expect(result.passed).toBe(false);
+    expect(result.violations.some((v) => v.category === "visual_emotion_inference")).toBe(true);
+  });
+
+  it("should NOT flag observational language without emotion", () => {
+    const result = checker.check(
+      "I observed audience-facing gaze at 65%.",
+      STUB_EVALUATION,
+      STUB_METRICS,
+    );
+    const emotionViolations = result.violations.filter(
+      (v) => v.category === "visual_emotion_inference",
+    );
+    expect(emotionViolations).toHaveLength(0);
+  });
+
+  it("should NOT flag metric-based statements", () => {
+    const result = checker.check(
+      "The stability score was 0.85.",
+      STUB_EVALUATION,
+      STUB_METRICS,
+    );
+    const emotionViolations = result.violations.filter(
+      (v) => v.category === "visual_emotion_inference",
+    );
+    expect(emotionViolations).toHaveLength(0);
+  });
+});
+
+// ─── check() — Visual Judgment Detection (Req 7.2) ─────────────────────────────
+
+describe("ToneChecker.check() — visual judgment", () => {
+  it("should flag 'poor body language'", () => {
+    const result = checker.check(
+      "You had poor body language.",
+      STUB_EVALUATION,
+      STUB_METRICS,
+    );
+    expect(result.passed).toBe(false);
+    expect(result.violations.some((v) => v.category === "visual_judgment")).toBe(true);
+  });
+
+  it("should flag 'great eye contact'", () => {
+    const result = checker.check(
+      "You maintained great eye contact.",
+      STUB_EVALUATION,
+      STUB_METRICS,
+    );
+    expect(result.passed).toBe(false);
+    // Could be visual_judgment or visual_scope — both are valid catches
+    const relevant = result.violations.filter(
+      (v) => v.category === "visual_judgment" || v.category === "visual_scope",
+    );
+    expect(relevant.length).toBeGreaterThan(0);
+  });
+
+  it("should flag 'bad posture'", () => {
+    const result = checker.check(
+      "You had bad posture throughout.",
+      STUB_EVALUATION,
+      STUB_METRICS,
+    );
+    expect(result.passed).toBe(false);
+    expect(result.violations.some((v) => v.category === "visual_judgment")).toBe(true);
+  });
+
+  it("should flag 'excellent gestures'", () => {
+    const result = checker.check(
+      "You used excellent gestures.",
+      STUB_EVALUATION,
+      STUB_METRICS,
+    );
+    expect(result.passed).toBe(false);
+    expect(result.violations.some((v) => v.category === "visual_judgment")).toBe(true);
+  });
+
+  it("should flag 'terrible movement'", () => {
+    const result = checker.check(
+      "Your terrible movement was distracting.",
+      STUB_EVALUATION,
+      STUB_METRICS,
+    );
+    expect(result.passed).toBe(false);
+    expect(result.violations.some((v) => v.category === "visual_judgment")).toBe(true);
+  });
+
+  it("should flag 'lacked eye contact'", () => {
+    const result = checker.check(
+      "You lacked eye contact with the audience.",
+      STUB_EVALUATION,
+      STUB_METRICS,
+    );
+    expect(result.passed).toBe(false);
+    expect(result.violations.some((v) => v.category === "visual_judgment")).toBe(true);
+  });
+
+  it("should flag 'gestures were awkward'", () => {
+    const result = checker.check(
+      "Your gestures were awkward.",
+      STUB_EVALUATION,
+      STUB_METRICS,
+    );
+    expect(result.passed).toBe(false);
+    const relevant = result.violations.filter(
+      (v) => v.category === "visual_judgment" || v.category === "visual_scope",
+    );
+    expect(relevant.length).toBeGreaterThan(0);
+  });
+
+  it("should NOT flag metric-backed visual observation", () => {
+    const result = checker.check(
+      "I observed audience-facing gaze at 65% of the speech.",
+      STUB_EVALUATION,
+      STUB_METRICS,
+    );
+    const judgmentViolations = result.violations.filter(
+      (v) => v.category === "visual_judgment",
+    );
+    expect(judgmentViolations).toHaveLength(0);
+  });
+});
+
+// ─── hasMetricAnchoredNumber() ──────────────────────────────────────────────────
+
+describe("hasMetricAnchoredNumber()", () => {
+  it("should return true for percentage with metric term", () => {
+    expect(hasMetricAnchoredNumber("audience-facing gaze at 65%")).toBe(true);
+  });
+
+  it("should return true for count with unit and metric term", () => {
+    expect(hasMetricAnchoredNumber("I observed 12 gestures during the speech")).toBe(true);
+  });
+
+  it("should return true for decimal score with metric term", () => {
+    expect(hasMetricAnchoredNumber("body stability score of 0.85")).toBe(true);
+  });
+
+  it("should return true for frequency with metric term", () => {
+    expect(hasMetricAnchoredNumber("gesture frequency of 3.5")).toBe(true);
+  });
+
+  it("should return true for stage crossing count", () => {
+    expect(hasMetricAnchoredNumber("2 stage crossings were detected")).toBe(true);
+  });
+
+  it("should return false for metric term without number", () => {
+    expect(hasMetricAnchoredNumber("I observed low gaze")).toBe(false);
+  });
+
+  it("should return false for number without metric term", () => {
+    expect(hasMetricAnchoredNumber("You spoke for 5 minutes")).toBe(false);
+  });
+
+  it("should return false for empty string", () => {
+    expect(hasMetricAnchoredNumber("")).toBe(false);
+  });
+
+  it("should return false for generic sentence", () => {
+    expect(hasMetricAnchoredNumber("Great speech today")).toBe(false);
+  });
+
+  it("should return true for facial energy with decimal", () => {
+    expect(hasMetricAnchoredNumber("facial energy score was 0.72")).toBe(true);
+  });
+
+  it("should return true for movement with percentage", () => {
+    expect(hasMetricAnchoredNumber("audience-facing movement at 80%")).toBe(true);
+  });
+});
+
+// ─── validateMetricKeyExists() ──────────────────────────────────────────────────
+
+describe("validateMetricKeyExists()", () => {
+  it("should return true for gazeBreakdown.audienceFacing", () => {
+    expect(
+      validateMetricKeyExists("metric=gazeBreakdown.audienceFacing; value=65%; source=visualObservations"),
+    ).toBe(true);
+  });
+
+  it("should return true for totalGestureCount", () => {
+    expect(
+      validateMetricKeyExists("metric=totalGestureCount; value=12; source=visualObservations"),
+    ).toBe(true);
+  });
+
+  it("should return true for meanBodyStabilityScore", () => {
+    expect(
+      validateMetricKeyExists("metric=meanBodyStabilityScore; value=0.85; source=visualObservations"),
+    ).toBe(true);
+  });
+
+  it("should return true for meanFacialEnergyScore", () => {
+    expect(
+      validateMetricKeyExists("metric=meanFacialEnergyScore; value=0.72; source=visualObservations"),
+    ).toBe(true);
+  });
+
+  it("should return true for stageCrossingCount", () => {
+    expect(
+      validateMetricKeyExists("metric=stageCrossingCount; value=2; source=visualObservations"),
+    ).toBe(true);
+  });
+
+  it("should return true for gestureFrequency", () => {
+    expect(
+      validateMetricKeyExists("metric=gestureFrequency; value=3.5; source=visualObservations"),
+    ).toBe(true);
+  });
+
+  it("should return false for non-existent metric key", () => {
+    expect(
+      validateMetricKeyExists("metric=eyeContactPercentage; value=65%; source=visualObservations"),
+    ).toBe(false);
+  });
+
+  it("should return false for fabricated metric key", () => {
+    expect(
+      validateMetricKeyExists("metric=confidenceScore; value=0.9; source=visualObservations"),
+    ).toBe(false);
+  });
+
+  it("should return false for missing metric= prefix", () => {
+    expect(validateMetricKeyExists("gazeBreakdown.audienceFacing; value=65%")).toBe(false);
+  });
+
+  it("should return false for empty string", () => {
+    expect(validateMetricKeyExists("")).toBe(false);
+  });
+});
+
+// ─── Context-dependent visual_scope with hasVideo ───────────────────────────────
+
+describe("ToneChecker.check() — context-dependent visual_scope", () => {
+  it("should flag visual terms when hasVideo is false", () => {
+    const result = checker.check(
+      "Your gestures were expressive. [[Q:item-0]]",
+      STUB_EVALUATION,
+      STUB_METRICS,
+      { hasVideo: false },
+    );
+    expect(result.violations.some((v) => v.category === "visual_scope")).toBe(true);
+  });
+
+  it("should flag visual terms when hasVideo is undefined (default)", () => {
+    const result = checker.check(
+      "Your gestures were expressive. [[Q:item-0]]",
+      STUB_EVALUATION,
+      STUB_METRICS,
+    );
+    expect(result.violations.some((v) => v.category === "visual_scope")).toBe(true);
+  });
+
+  it("should flag visual terms without metric-anchored number when hasVideo is true", () => {
+    const result = checker.check(
+      "Your gestures were expressive. [[Q:item-0]]",
+      STUB_EVALUATION,
+      STUB_METRICS,
+      { hasVideo: true },
+    );
+    expect(result.violations.some((v) => v.category === "visual_scope")).toBe(true);
+  });
+
+  it("should permit visual terms WITH metric-anchored number when hasVideo is true", () => {
+    const result = checker.check(
+      "I observed 12 gestures during the speech. [[Q:item-0]]",
+      STUB_EVALUATION,
+      STUB_METRICS,
+      { hasVideo: true },
+    );
+    const scopeViolations = result.violations.filter(
+      (v) => v.category === "visual_scope",
+    );
+    expect(scopeViolations).toHaveLength(0);
+  });
+
+  it("should permit audience-facing gaze with percentage when hasVideo is true", () => {
+    const result = checker.check(
+      "I observed audience-facing gaze at 65%. [[Q:item-0]]",
+      STUB_EVALUATION,
+      STUB_METRICS,
+      { hasVideo: true },
+    );
+    const scopeViolations = result.violations.filter(
+      (v) => v.category === "visual_scope",
+    );
+    expect(scopeViolations).toHaveLength(0);
+  });
+
+  it("should permit body stability with score when hasVideo is true", () => {
+    const result = checker.check(
+      "I observed a body stability score of 0.85. [[Q:item-0]]",
+      STUB_EVALUATION,
+      STUB_METRICS,
+      { hasVideo: true },
+    );
+    const scopeViolations = result.violations.filter(
+      (v) => v.category === "visual_scope",
+    );
+    expect(scopeViolations).toHaveLength(0);
+  });
+
+  it("should still flag visual terms without numbers even with hasVideo true", () => {
+    const result = checker.check(
+      "Your eye contact was good. [[Q:item-0]]",
+      STUB_EVALUATION,
+      STUB_METRICS,
+      { hasVideo: true },
+    );
+    // Should be flagged as visual_scope (no metric-anchored number) or visual_judgment
+    expect(result.passed).toBe(false);
+  });
+
+  it("should still flag 'eye contact' without metric when hasVideo is true", () => {
+    const result = checker.check(
+      "You maintained eye contact throughout. [[Q:item-0]]",
+      STUB_EVALUATION,
+      STUB_METRICS,
+      { hasVideo: true },
+    );
+    expect(result.violations.some((v) => v.category === "visual_scope")).toBe(true);
+  });
+});
+
+// ─── appendScopeAcknowledgment() with hasVideo option ───────────────────────────
+
+describe("ToneChecker.appendScopeAcknowledgment() — with hasVideo", () => {
+  it("should append audio-only acknowledgment when hasVideo is false", () => {
+    const result = checker.appendScopeAcknowledgment(
+      "Great speech.",
+      true,
+      false,
+      { hasVideo: false },
+    );
+    expect(result).toBe(
+      "Great speech. This evaluation is based on audio content only.",
+    );
+  });
+
+  it("should append video acknowledgment when hasVideo is true", () => {
+    const result = checker.appendScopeAcknowledgment(
+      "Great speech.",
+      true,
+      false,
+      { hasVideo: true },
+    );
+    expect(result).toBe(
+      "Great speech. This evaluation is based on audio and video content.",
+    );
+  });
+
+  it("should append audio-only when options is undefined", () => {
+    const result = checker.appendScopeAcknowledgment(
+      "Great speech.",
+      true,
+      false,
+    );
+    expect(result).toBe(
+      "Great speech. This evaluation is based on audio content only.",
+    );
+  });
+
+  it("should be idempotent for video acknowledgment", () => {
+    const scriptWithAck =
+      "Great speech. This evaluation is based on audio and video content.";
+    const result = checker.appendScopeAcknowledgment(
+      scriptWithAck,
+      true,
+      false,
+      { hasVideo: true },
+    );
+    expect(result).toBe(scriptWithAck);
+    const matches = result.match(/based on audio and video content/g);
+    expect(matches).toHaveLength(1);
+  });
+
+  it("should NOT append when both conditions are false even with hasVideo", () => {
+    const result = checker.appendScopeAcknowledgment(
+      "Great speech.",
+      false,
+      false,
+      { hasVideo: true },
+    );
+    expect(result).toBe("Great speech.");
   });
 });

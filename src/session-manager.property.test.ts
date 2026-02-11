@@ -11,6 +11,7 @@ import type {
   TranscriptWord,
   DeliveryMetrics,
   ProjectContext,
+  FrameHeader,
 } from "./types.js";
 import type { EvaluationGenerator } from "./evaluation-generator.js";
 import type { TTSEngine } from "./tts-engine.js";
@@ -3345,6 +3346,1112 @@ describe("Feature: phase-3-semi-automation, CTX-P4: Project context purged on sp
 
           // PROPERTY ASSERTION: projectContext is null — complete purge
           expect(session.projectContext).toBeNull();
+        },
+      ),
+      { numRuns: 100 },
+    );
+  });
+});
+
+// ─── Phase 4: Property 2 — IDLE-only mutability for video settings ──────────────
+
+describe("Feature: phase-4-multimodal-video, Property 2: IDLE-only mutability for video settings", () => {
+  /**
+   * **Validates: Requirements 1.4, 2.9**
+   *
+   * For any session not in IDLE state, attempts to call setVideoConsent(),
+   * setVideoConfig(), or setVideoStreamReady() SHALL throw an error, and the
+   * session's video consent, video config, and video stream ready fields SHALL
+   * remain unchanged.
+   */
+
+  /** Generator for non-IDLE session states. */
+  const arbitraryNonIdleState = (): fc.Arbitrary<SessionState> =>
+    fc.constantFrom(
+      SessionState.RECORDING,
+      SessionState.PROCESSING,
+      SessionState.DELIVERING,
+    );
+
+  /** Generator for VideoConsent objects. */
+  const arbitraryVideoConsent = (): fc.Arbitrary<{ consentGranted: boolean; timestamp: Date }> =>
+    fc.record({
+      consentGranted: fc.boolean(),
+      timestamp: fc.date({ min: new Date("2020-01-01"), max: new Date("2030-01-01") }),
+    });
+
+  /** Generator for valid frame rates (1-5). */
+  const arbitraryFrameRate = (): fc.Arbitrary<number> =>
+    fc.integer({ min: 1, max: 5 });
+
+  it("setVideoConsent(), setVideoStreamReady(), setVideoConfig() succeed in IDLE state", async () => {
+    await fc.assert(
+      fc.asyncProperty(
+        arbitraryVideoConsent(),
+        arbitraryFrameRate(),
+        async (videoConsent, frameRate) => {
+          const sm = new SessionManager();
+          const session = sm.createSession();
+          const sessionId = session.id;
+
+          // All three methods should succeed in IDLE state without throwing
+          expect(() => sm.setVideoConsent(sessionId, videoConsent)).not.toThrow();
+          expect(session.videoConsent).not.toBeNull();
+          expect(session.videoConsent!.consentGranted).toBe(videoConsent.consentGranted);
+
+          expect(() => sm.setVideoStreamReady(sessionId)).not.toThrow();
+          expect(session.videoStreamReady).toBe(true);
+
+          expect(() => sm.setVideoConfig(sessionId, { frameRate })).not.toThrow();
+          expect(session.videoConfig.frameRate).toBe(frameRate);
+        },
+      ),
+      { numRuns: 100 },
+    );
+  });
+
+  it("setVideoConsent() throws and preserves fields when session is not IDLE", async () => {
+    await fc.assert(
+      fc.asyncProperty(
+        arbitraryNonIdleState(),
+        arbitraryVideoConsent(),
+        arbitraryVideoConsent(),
+        arbitraryFrameRate(),
+        async (nonIdleState, initialConsent, attemptedConsent, initialFrameRate) => {
+          const sm = new SessionManager();
+          const session = sm.createSession();
+          const sessionId = session.id;
+
+          // Set initial video fields while in IDLE
+          sm.setVideoConsent(sessionId, initialConsent);
+          sm.setVideoStreamReady(sessionId);
+          sm.setVideoConfig(sessionId, { frameRate: initialFrameRate });
+
+          // Capture field values before transition
+          const consentBefore = {
+            consentGranted: session.videoConsent!.consentGranted,
+            timestamp: session.videoConsent!.timestamp,
+          };
+          const streamReadyBefore = session.videoStreamReady;
+          const configBefore = { frameRate: session.videoConfig.frameRate };
+
+          // Transition to non-IDLE state
+          session.state = nonIdleState;
+
+          // setVideoConsent must throw
+          expect(() => sm.setVideoConsent(sessionId, attemptedConsent)).toThrow();
+
+          // Fields must remain unchanged
+          expect(session.videoConsent!.consentGranted).toBe(consentBefore.consentGranted);
+          expect(session.videoConsent!.timestamp).toBe(consentBefore.timestamp);
+          expect(session.videoStreamReady).toBe(streamReadyBefore);
+          expect(session.videoConfig.frameRate).toBe(configBefore.frameRate);
+        },
+      ),
+      { numRuns: 100 },
+    );
+  });
+
+  it("setVideoStreamReady() throws and preserves fields when session is not IDLE", async () => {
+    await fc.assert(
+      fc.asyncProperty(
+        arbitraryNonIdleState(),
+        arbitraryVideoConsent(),
+        arbitraryFrameRate(),
+        async (nonIdleState, initialConsent, initialFrameRate) => {
+          const sm = new SessionManager();
+          const session = sm.createSession();
+          const sessionId = session.id;
+
+          // Set initial video fields while in IDLE
+          sm.setVideoConsent(sessionId, initialConsent);
+          sm.setVideoConfig(sessionId, { frameRate: initialFrameRate });
+          // Deliberately do NOT set videoStreamReady to test both true and false initial states
+
+          // Capture field values before transition
+          const consentBefore = {
+            consentGranted: session.videoConsent!.consentGranted,
+            timestamp: session.videoConsent!.timestamp,
+          };
+          const streamReadyBefore = session.videoStreamReady;
+          const configBefore = { frameRate: session.videoConfig.frameRate };
+
+          // Transition to non-IDLE state
+          session.state = nonIdleState;
+
+          // setVideoStreamReady must throw
+          expect(() => sm.setVideoStreamReady(sessionId)).toThrow();
+
+          // Fields must remain unchanged
+          expect(session.videoConsent!.consentGranted).toBe(consentBefore.consentGranted);
+          expect(session.videoConsent!.timestamp).toBe(consentBefore.timestamp);
+          expect(session.videoStreamReady).toBe(streamReadyBefore);
+          expect(session.videoConfig.frameRate).toBe(configBefore.frameRate);
+        },
+      ),
+      { numRuns: 100 },
+    );
+  });
+
+  it("setVideoConfig() throws and preserves fields when session is not IDLE", async () => {
+    await fc.assert(
+      fc.asyncProperty(
+        arbitraryNonIdleState(),
+        arbitraryVideoConsent(),
+        arbitraryFrameRate(),
+        arbitraryFrameRate(),
+        async (nonIdleState, initialConsent, initialFrameRate, attemptedFrameRate) => {
+          const sm = new SessionManager();
+          const session = sm.createSession();
+          const sessionId = session.id;
+
+          // Set initial video fields while in IDLE
+          sm.setVideoConsent(sessionId, initialConsent);
+          sm.setVideoStreamReady(sessionId);
+          sm.setVideoConfig(sessionId, { frameRate: initialFrameRate });
+
+          // Capture field values before transition
+          const consentBefore = {
+            consentGranted: session.videoConsent!.consentGranted,
+            timestamp: session.videoConsent!.timestamp,
+          };
+          const streamReadyBefore = session.videoStreamReady;
+          const configBefore = { frameRate: session.videoConfig.frameRate };
+
+          // Transition to non-IDLE state
+          session.state = nonIdleState;
+
+          // setVideoConfig must throw
+          expect(() => sm.setVideoConfig(sessionId, { frameRate: attemptedFrameRate })).toThrow();
+
+          // Fields must remain unchanged
+          expect(session.videoConsent!.consentGranted).toBe(consentBefore.consentGranted);
+          expect(session.videoConsent!.timestamp).toBe(consentBefore.timestamp);
+          expect(session.videoStreamReady).toBe(streamReadyBefore);
+          expect(session.videoConfig.frameRate).toBe(configBefore.frameRate);
+        },
+      ),
+      { numRuns: 100 },
+    );
+  });
+
+  it("all three methods reject from every non-IDLE state with no field mutations", async () => {
+    await fc.assert(
+      fc.asyncProperty(
+        arbitraryNonIdleState(),
+        arbitraryVideoConsent(),
+        arbitraryFrameRate(),
+        async (nonIdleState, videoConsent, frameRate) => {
+          const sm = new SessionManager();
+          const session = sm.createSession();
+          const sessionId = session.id;
+
+          // Leave video fields at defaults (null consent, false streamReady, default config)
+          const consentBefore = session.videoConsent;
+          const streamReadyBefore = session.videoStreamReady;
+          const configBefore = { frameRate: session.videoConfig.frameRate };
+
+          // Transition to non-IDLE state
+          session.state = nonIdleState;
+
+          // All three must throw
+          expect(() => sm.setVideoConsent(sessionId, videoConsent)).toThrow();
+          expect(() => sm.setVideoStreamReady(sessionId)).toThrow();
+          expect(() => sm.setVideoConfig(sessionId, { frameRate })).toThrow();
+
+          // All fields must remain at their default values
+          expect(session.videoConsent).toBe(consentBefore);
+          expect(session.videoStreamReady).toBe(streamReadyBefore);
+          expect(session.videoConfig.frameRate).toBe(configBefore.frameRate);
+        },
+      ),
+      { numRuns: 100 },
+    );
+  });
+});
+
+// ─── Phase 4: Property 3 — Opt-out purges visual observations ───────────────
+
+describe("Feature: phase-4-multimodal-video, Property 3: Opt-out purges visual observations", () => {
+  /**
+   * **Validates: Requirements 1.7**
+   *
+   * WHEN the Speaker opts out (consent revocation), THE Session_Manager SHALL
+   * purge all Visual_Observations as part of the full session data purge.
+   * This includes videoConsent, videoStreamReady, visualObservations, and
+   * the VideoProcessor (if running) being stopped and removed.
+   *
+   * This must hold regardless of what video data was accumulated before opt-out,
+   * and regardless of the session state at the time of opt-out.
+   */
+
+  /** Generator for session states from which opt-out can occur (any state). */
+  const arbitrarySessionState = (): fc.Arbitrary<SessionState> =>
+    fc.constantFrom(
+      SessionState.IDLE,
+      SessionState.RECORDING,
+      SessionState.PROCESSING,
+      SessionState.DELIVERING,
+    );
+
+  /** Generator for VideoConsent objects with consent granted. */
+  const arbitraryGrantedVideoConsent = (): fc.Arbitrary<{ consentGranted: boolean; timestamp: Date }> =>
+    fc.record({
+      consentGranted: fc.constant(true),
+      timestamp: fc.date({ min: new Date("2020-01-01"), max: new Date("2030-01-01") }),
+    });
+
+  /** Generator for arbitrary VisualObservations to simulate accumulated video data. */
+  const arbitraryVisualObservations = (): fc.Arbitrary<import("./types.js").VisualObservations> =>
+    fc.record({
+      gazeBreakdown: fc.record({
+        audienceFacing: fc.float({ min: 0, max: 100, noNaN: true }),
+        notesFacing: fc.float({ min: 0, max: 100, noNaN: true }),
+        other: fc.float({ min: 0, max: 100, noNaN: true }),
+      }),
+      faceNotDetectedCount: fc.nat({ max: 500 }),
+      totalGestureCount: fc.nat({ max: 200 }),
+      gestureFrequency: fc.float({ min: 0, max: 60, noNaN: true }),
+      gesturePerSentenceRatio: fc.oneof(fc.constant(null), fc.float({ min: 0, max: 1, noNaN: true })),
+      handsDetectedFrames: fc.nat({ max: 500 }),
+      handsNotDetectedFrames: fc.nat({ max: 500 }),
+      meanBodyStabilityScore: fc.float({ min: 0, max: 1, noNaN: true }),
+      stageCrossingCount: fc.nat({ max: 50 }),
+      movementClassification: fc.constantFrom("stationary" as const, "moderate_movement" as const, "high_movement" as const),
+      meanFacialEnergyScore: fc.float({ min: 0, max: 1, noNaN: true }),
+      facialEnergyVariation: fc.float({ min: 0, max: 10, noNaN: true }),
+      facialEnergyLowSignal: fc.boolean(),
+      framesAnalyzed: fc.nat({ max: 1000 }),
+      framesReceived: fc.nat({ max: 2000 }),
+      framesSkippedBySampler: fc.nat({ max: 1000 }),
+      framesErrored: fc.nat({ max: 100 }),
+      framesDroppedByBackpressure: fc.nat({ max: 200 }),
+      framesDroppedByTimestamp: fc.nat({ max: 100 }),
+      framesDroppedByFinalizationBudget: fc.nat({ max: 50 }),
+      resolutionChangeCount: fc.nat({ max: 10 }),
+      videoQualityGrade: fc.constantFrom("good" as const, "degraded" as const, "poor" as const),
+      videoQualityWarning: fc.boolean(),
+      finalizationLatencyMs: fc.nat({ max: 5000 }),
+      videoProcessingVersion: fc.record({
+        tfjsVersion: fc.constant("4.0.0"),
+        tfjsBackend: fc.constant("cpu"),
+        modelVersions: fc.record({
+          blazeface: fc.constant("1.0.0"),
+          movenet: fc.constant("1.0.0"),
+        }),
+        configHash: fc.string({ minLength: 8, maxLength: 8 }),
+      }),
+      gazeReliable: fc.boolean(),
+      gestureReliable: fc.boolean(),
+      stabilityReliable: fc.boolean(),
+      facialEnergyReliable: fc.boolean(),
+    });
+
+  /** Generator for valid frame rates (1-5). */
+  const arbitraryFrameRate = (): fc.Arbitrary<number> =>
+    fc.integer({ min: 1, max: 5 });
+
+  it("revokeConsent purges videoConsent, videoStreamReady, and visualObservations regardless of accumulated data", async () => {
+    await fc.assert(
+      fc.asyncProperty(
+        arbitrarySessionState(),
+        arbitraryGrantedVideoConsent(),
+        arbitraryVisualObservations(),
+        arbitraryFrameRate(),
+        async (sessionState, videoConsent, visualObs, frameRate) => {
+          const sm = new SessionManager();
+          const session = sm.createSession();
+          const sessionId = session.id;
+
+          // Set up video fields while in IDLE
+          sm.setVideoConsent(sessionId, videoConsent);
+          sm.setVideoStreamReady(sessionId);
+          sm.setVideoConfig(sessionId, { frameRate });
+
+          // Simulate accumulated visual observations on the session
+          session.visualObservations = visualObs;
+
+          // Transition to the target state
+          session.state = sessionState;
+
+          // Verify video data exists before opt-out
+          expect(session.videoConsent).not.toBeNull();
+          expect(session.videoStreamReady).toBe(true);
+          expect(session.visualObservations).not.toBeNull();
+
+          // Opt-out: revoke consent
+          sm.revokeConsent(sessionId);
+
+          // After opt-out, all video data must be purged
+          expect(session.videoConsent).toBeNull();
+          expect(session.videoStreamReady).toBe(false);
+          expect(session.visualObservations).toBeNull();
+
+          // Session must be in IDLE state after opt-out
+          expect(session.state).toBe(SessionState.IDLE);
+        },
+      ),
+      { numRuns: 100 },
+    );
+  });
+
+  it("revokeConsent stops and removes the VideoProcessor when one is running", async () => {
+    await fc.assert(
+      fc.asyncProperty(
+        arbitraryGrantedVideoConsent(),
+        arbitraryVisualObservations(),
+        async (videoConsent, visualObs) => {
+          // Track whether stop() was called on the VideoProcessor
+          let stopCalled = false;
+
+          const mockVideoProcessor = {
+            stop: () => { stopCalled = true; },
+            startDrainLoop: () => Promise.resolve(),
+            enqueueFrame: () => {},
+            finalize: () => ({}),
+            getStatus: () => ({ framesProcessed: 0, framesDropped: 0, processingLatencyMs: 0 }),
+            getExtendedStatus: () => ({ framesProcessed: 0, framesDropped: 0, processingLatencyMs: 0 }),
+          };
+
+          const sm = new SessionManager({
+            videoProcessorFactory: () => mockVideoProcessor as any,
+          });
+          const session = sm.createSession();
+          const sessionId = session.id;
+
+          // Set up video consent and stream ready
+          sm.setVideoConsent(sessionId, videoConsent);
+          sm.setVideoStreamReady(sessionId);
+
+          // Start recording — this creates the VideoProcessor
+          sm.startRecording(sessionId);
+          expect(session.state).toBe(SessionState.RECORDING);
+
+          // Simulate accumulated visual observations
+          session.visualObservations = visualObs;
+
+          // Verify processor exists before opt-out
+          expect(sm.getVideoProcessor(sessionId)).toBeDefined();
+
+          // Opt-out: revoke consent
+          sm.revokeConsent(sessionId);
+
+          // VideoProcessor.stop() must have been called
+          expect(stopCalled).toBe(true);
+
+          // VideoProcessor must be removed (no longer accessible)
+          expect(sm.getVideoProcessor(sessionId)).toBeUndefined();
+
+          // All video data must be purged
+          expect(session.videoConsent).toBeNull();
+          expect(session.videoStreamReady).toBe(false);
+          expect(session.visualObservations).toBeNull();
+        },
+      ),
+      { numRuns: 100 },
+    );
+  });
+
+  it("revokeConsent purges video data even when no VideoProcessor was created (no video recording started)", async () => {
+    await fc.assert(
+      fc.asyncProperty(
+        arbitraryGrantedVideoConsent(),
+        arbitraryFrameRate(),
+        async (videoConsent, frameRate) => {
+          const sm = new SessionManager();
+          const session = sm.createSession();
+          const sessionId = session.id;
+
+          // Set video consent and config but never start recording (no VideoProcessor created)
+          sm.setVideoConsent(sessionId, videoConsent);
+          sm.setVideoStreamReady(sessionId);
+          sm.setVideoConfig(sessionId, { frameRate });
+
+          // Verify video fields are set
+          expect(session.videoConsent).not.toBeNull();
+          expect(session.videoStreamReady).toBe(true);
+
+          // No VideoProcessor should exist
+          expect(sm.getVideoProcessor(sessionId)).toBeUndefined();
+
+          // Opt-out: revoke consent
+          sm.revokeConsent(sessionId);
+
+          // All video data must still be purged
+          expect(session.videoConsent).toBeNull();
+          expect(session.videoStreamReady).toBe(false);
+          expect(session.visualObservations).toBeNull();
+        },
+      ),
+      { numRuns: 100 },
+    );
+  });
+
+  it("revokeConsent purges video data from every possible session state", async () => {
+    await fc.assert(
+      fc.asyncProperty(
+        arbitrarySessionState(),
+        arbitraryGrantedVideoConsent(),
+        async (sessionState, videoConsent) => {
+          let stopCalled = false;
+
+          const mockVideoProcessor = {
+            stop: () => { stopCalled = true; },
+            startDrainLoop: () => Promise.resolve(),
+            enqueueFrame: () => {},
+            finalize: () => ({}),
+            getStatus: () => ({ framesProcessed: 0, framesDropped: 0, processingLatencyMs: 0 }),
+            getExtendedStatus: () => ({ framesProcessed: 0, framesDropped: 0, processingLatencyMs: 0 }),
+          };
+
+          const sm = new SessionManager({
+            videoProcessorFactory: () => mockVideoProcessor as any,
+          });
+          const session = sm.createSession();
+          const sessionId = session.id;
+
+          // Set up video consent and stream ready while IDLE
+          sm.setVideoConsent(sessionId, videoConsent);
+          sm.setVideoStreamReady(sessionId);
+
+          // Start recording to create the VideoProcessor
+          sm.startRecording(sessionId);
+
+          // Force session to the target state (simulating various lifecycle points)
+          session.state = sessionState;
+
+          // Opt-out: revoke consent
+          sm.revokeConsent(sessionId);
+
+          // VideoProcessor.stop() must have been called (if processor existed)
+          expect(stopCalled).toBe(true);
+
+          // VideoProcessor must be removed
+          expect(sm.getVideoProcessor(sessionId)).toBeUndefined();
+
+          // All video data must be purged regardless of state
+          expect(session.videoConsent).toBeNull();
+          expect(session.videoStreamReady).toBe(false);
+          expect(session.visualObservations).toBeNull();
+
+          // Session must be in IDLE state
+          expect(session.state).toBe(SessionState.IDLE);
+        },
+      ),
+      { numRuns: 100 },
+    );
+  });
+});
+
+// ─── Phase 4: Property 5 — Video frame guard ────────────────────────────────
+
+describe("Feature: phase-4-multimodal-video, Property 5: Video frame guard — no processing without consent and RECORDING state", () => {
+  /**
+   * **Validates: Requirements 1.9, 10.6, 10.7**
+   *
+   * Video frames SHALL only be processed when:
+   * 1. Video consent has been granted (Req 1.9)
+   * 2. Session is in RECORDING state (Req 10.6, 10.7)
+   * 3. videoStreamReady is true
+   *
+   * Frames SHALL be silently discarded in all other states and when consent
+   * is not given. No error is thrown — the method returns void silently.
+   */
+
+  /** Generator for non-RECORDING session states. */
+  const arbitraryNonRecordingState = (): fc.Arbitrary<SessionState> =>
+    fc.constantFrom(
+      SessionState.IDLE,
+      SessionState.PROCESSING,
+      SessionState.DELIVERING,
+    );
+
+  /** Generator for all session states. */
+  const arbitrarySessionState = (): fc.Arbitrary<SessionState> =>
+    fc.constantFrom(
+      SessionState.IDLE,
+      SessionState.RECORDING,
+      SessionState.PROCESSING,
+      SessionState.DELIVERING,
+    );
+
+  /** Generator for valid video frame headers. */
+  const arbitraryFrameHeader = (): fc.Arbitrary<FrameHeader> =>
+    fc.record({
+      timestamp: fc.double({ min: 0.01, max: 300, noNaN: true }),
+      seq: fc.integer({ min: 1, max: 100000 }),
+      width: fc.constantFrom(640, 1280, 1920),
+      height: fc.constantFrom(480, 720, 1080),
+    });
+
+  /** Generator for JPEG-like buffers (non-empty). */
+  const arbitraryJpegBuffer = (): fc.Arbitrary<Buffer> =>
+    fc.uint8Array({ minLength: 4, maxLength: 64 }).map((arr) => Buffer.from(arr));
+
+  /** Generator for VideoConsent with consent granted. */
+  const arbitraryGrantedConsent = (): fc.Arbitrary<{ consentGranted: boolean; timestamp: Date }> =>
+    fc.record({
+      consentGranted: fc.constant(true),
+      timestamp: fc.date({ min: new Date("2020-01-01"), max: new Date("2030-01-01") }),
+    });
+
+  /** Generator for VideoConsent with consent denied. */
+  const arbitraryDeniedConsent = (): fc.Arbitrary<{ consentGranted: boolean; timestamp: Date }> =>
+    fc.record({
+      consentGranted: fc.constant(false),
+      timestamp: fc.date({ min: new Date("2020-01-01"), max: new Date("2030-01-01") }),
+    });
+
+  it("frames are processed when session is RECORDING with consent granted and stream ready", async () => {
+    await fc.assert(
+      fc.asyncProperty(
+        arbitraryGrantedConsent(),
+        arbitraryFrameHeader(),
+        arbitraryJpegBuffer(),
+        async (consent, header, jpegBuffer) => {
+          let enqueueCalled = false;
+
+          const mockVideoProcessor = {
+            stop: () => {},
+            startDrainLoop: () => Promise.resolve(),
+            enqueueFrame: () => { enqueueCalled = true; },
+            finalize: () => ({}),
+            getStatus: () => ({ framesProcessed: 0, framesDropped: 0, processingLatencyMs: 0 }),
+            getExtendedStatus: () => ({ framesProcessed: 0, framesDropped: 0, processingLatencyMs: 0 }),
+          };
+
+          const sm = new SessionManager({
+            videoProcessorFactory: () => mockVideoProcessor as any,
+          });
+          const session = sm.createSession();
+          const sessionId = session.id;
+
+          // Set up video consent and stream ready while IDLE
+          sm.setVideoConsent(sessionId, consent);
+          sm.setVideoStreamReady(sessionId);
+
+          // Start recording — creates the VideoProcessor
+          sm.startRecording(sessionId);
+          expect(session.state).toBe(SessionState.RECORDING);
+
+          // Feed a video frame — should be processed
+          sm.feedVideoFrame(sessionId, header, jpegBuffer);
+
+          expect(enqueueCalled).toBe(true);
+        },
+      ),
+      { numRuns: 100 },
+    );
+  });
+
+  it("frames are silently discarded when session is not in RECORDING state", async () => {
+    await fc.assert(
+      fc.asyncProperty(
+        arbitraryNonRecordingState(),
+        arbitraryGrantedConsent(),
+        arbitraryFrameHeader(),
+        arbitraryJpegBuffer(),
+        async (nonRecordingState, consent, header, jpegBuffer) => {
+          let enqueueCalled = false;
+
+          const mockVideoProcessor = {
+            stop: () => {},
+            startDrainLoop: () => Promise.resolve(),
+            enqueueFrame: () => { enqueueCalled = true; },
+            finalize: () => ({}),
+            getStatus: () => ({ framesProcessed: 0, framesDropped: 0, processingLatencyMs: 0 }),
+            getExtendedStatus: () => ({ framesProcessed: 0, framesDropped: 0, processingLatencyMs: 0 }),
+          };
+
+          const sm = new SessionManager({
+            videoProcessorFactory: () => mockVideoProcessor as any,
+          });
+          const session = sm.createSession();
+          const sessionId = session.id;
+
+          // Set up video consent and stream ready while IDLE
+          sm.setVideoConsent(sessionId, consent);
+          sm.setVideoStreamReady(sessionId);
+
+          // Start recording to create the VideoProcessor, then force to non-RECORDING state
+          sm.startRecording(sessionId);
+          session.state = nonRecordingState;
+
+          // Feed a video frame — should be silently discarded (no throw)
+          expect(() => sm.feedVideoFrame(sessionId, header, jpegBuffer)).not.toThrow();
+
+          expect(enqueueCalled).toBe(false);
+        },
+      ),
+      { numRuns: 100 },
+    );
+  });
+
+  it("frames are silently discarded when video consent is not granted", async () => {
+    await fc.assert(
+      fc.asyncProperty(
+        arbitraryDeniedConsent(),
+        arbitraryFrameHeader(),
+        arbitraryJpegBuffer(),
+        async (deniedConsent, header, jpegBuffer) => {
+          let enqueueCalled = false;
+
+          const mockVideoProcessor = {
+            stop: () => {},
+            startDrainLoop: () => Promise.resolve(),
+            enqueueFrame: () => { enqueueCalled = true; },
+            finalize: () => ({}),
+            getStatus: () => ({ framesProcessed: 0, framesDropped: 0, processingLatencyMs: 0 }),
+            getExtendedStatus: () => ({ framesProcessed: 0, framesDropped: 0, processingLatencyMs: 0 }),
+          };
+
+          const sm = new SessionManager({
+            videoProcessorFactory: () => mockVideoProcessor as any,
+          });
+          const session = sm.createSession();
+          const sessionId = session.id;
+
+          // Set denied consent and stream ready while IDLE
+          sm.setVideoConsent(sessionId, deniedConsent);
+          sm.setVideoStreamReady(sessionId);
+
+          // Force to RECORDING state and inject the mock processor
+          session.state = SessionState.RECORDING;
+          (sm as any).videoProcessors.set(sessionId, mockVideoProcessor);
+
+          // Feed a video frame — should be silently discarded
+          expect(() => sm.feedVideoFrame(sessionId, header, jpegBuffer)).not.toThrow();
+
+          expect(enqueueCalled).toBe(false);
+        },
+      ),
+      { numRuns: 100 },
+    );
+  });
+
+  it("frames are silently discarded when video consent is null (never set)", async () => {
+    await fc.assert(
+      fc.asyncProperty(
+        arbitraryFrameHeader(),
+        arbitraryJpegBuffer(),
+        async (header, jpegBuffer) => {
+          let enqueueCalled = false;
+
+          const mockVideoProcessor = {
+            stop: () => {},
+            startDrainLoop: () => Promise.resolve(),
+            enqueueFrame: () => { enqueueCalled = true; },
+            finalize: () => ({}),
+            getStatus: () => ({ framesProcessed: 0, framesDropped: 0, processingLatencyMs: 0 }),
+            getExtendedStatus: () => ({ framesProcessed: 0, framesDropped: 0, processingLatencyMs: 0 }),
+          };
+
+          const sm = new SessionManager({
+            videoProcessorFactory: () => mockVideoProcessor as any,
+          });
+          const session = sm.createSession();
+          const sessionId = session.id;
+
+          // Do NOT set video consent — leave it null
+          // Force to RECORDING state and inject the mock processor
+          session.state = SessionState.RECORDING;
+          (sm as any).videoProcessors.set(sessionId, mockVideoProcessor);
+
+          // Feed a video frame — should be silently discarded
+          expect(() => sm.feedVideoFrame(sessionId, header, jpegBuffer)).not.toThrow();
+
+          expect(enqueueCalled).toBe(false);
+        },
+      ),
+      { numRuns: 100 },
+    );
+  });
+
+  it("frames are silently discarded when videoStreamReady is false", async () => {
+    await fc.assert(
+      fc.asyncProperty(
+        arbitraryGrantedConsent(),
+        arbitraryFrameHeader(),
+        arbitraryJpegBuffer(),
+        async (consent, header, jpegBuffer) => {
+          let enqueueCalled = false;
+
+          const mockVideoProcessor = {
+            stop: () => {},
+            startDrainLoop: () => Promise.resolve(),
+            enqueueFrame: () => { enqueueCalled = true; },
+            finalize: () => ({}),
+            getStatus: () => ({ framesProcessed: 0, framesDropped: 0, processingLatencyMs: 0 }),
+            getExtendedStatus: () => ({ framesProcessed: 0, framesDropped: 0, processingLatencyMs: 0 }),
+          };
+
+          const sm = new SessionManager({
+            videoProcessorFactory: () => mockVideoProcessor as any,
+          });
+          const session = sm.createSession();
+          const sessionId = session.id;
+
+          // Set consent but do NOT set videoStreamReady
+          sm.setVideoConsent(sessionId, consent);
+
+          // Force to RECORDING state and inject the mock processor
+          session.state = SessionState.RECORDING;
+          (sm as any).videoProcessors.set(sessionId, mockVideoProcessor);
+
+          // Feed a video frame — should be silently discarded
+          expect(() => sm.feedVideoFrame(sessionId, header, jpegBuffer)).not.toThrow();
+
+          expect(enqueueCalled).toBe(false);
+        },
+      ),
+      { numRuns: 100 },
+    );
+  });
+
+  it("for any combination of state and consent, frames are processed IFF state=RECORDING AND consent=granted AND streamReady=true", async () => {
+    await fc.assert(
+      fc.asyncProperty(
+        arbitrarySessionState(),
+        fc.oneof(arbitraryGrantedConsent(), arbitraryDeniedConsent(), fc.constant(null)),
+        fc.boolean(),
+        arbitraryFrameHeader(),
+        arbitraryJpegBuffer(),
+        async (state, consent, streamReady, header, jpegBuffer) => {
+          let enqueueCalled = false;
+
+          const mockVideoProcessor = {
+            stop: () => {},
+            startDrainLoop: () => Promise.resolve(),
+            enqueueFrame: () => { enqueueCalled = true; },
+            finalize: () => ({}),
+            getStatus: () => ({ framesProcessed: 0, framesDropped: 0, processingLatencyMs: 0 }),
+            getExtendedStatus: () => ({ framesProcessed: 0, framesDropped: 0, processingLatencyMs: 0 }),
+          };
+
+          const sm = new SessionManager({
+            videoProcessorFactory: () => mockVideoProcessor as any,
+          });
+          const session = sm.createSession();
+          const sessionId = session.id;
+
+          // Set up consent if provided
+          if (consent !== null) {
+            sm.setVideoConsent(sessionId, consent);
+          }
+          // Set stream ready if requested
+          if (streamReady) {
+            sm.setVideoStreamReady(sessionId);
+          }
+
+          // Force to the target state and inject the mock processor
+          session.state = state;
+          (sm as any).videoProcessors.set(sessionId, mockVideoProcessor);
+
+          // Feed a video frame — should never throw
+          expect(() => sm.feedVideoFrame(sessionId, header, jpegBuffer)).not.toThrow();
+
+          // Frame should be processed IFF all three conditions are met
+          const shouldProcess =
+            state === SessionState.RECORDING &&
+            consent !== null &&
+            consent.consentGranted === true &&
+            streamReady === true;
+
+          expect(enqueueCalled).toBe(shouldProcess);
+        },
+      ),
+      { numRuns: 200 },
+    );
+  });
+});
+
+
+// ─── Property 23: No visual metrics without video ───────────────────────────────
+/**
+ * **Property 23: No visual metrics without video**
+ *
+ * **Validates: Requirements 9.3**
+ *
+ * For any session where video was not used (no video consent, consent denied,
+ * no video stream ready, or video not enabled), the resulting DeliveryMetrics
+ * SHALL have `visualMetrics: null`. All other DeliveryMetrics fields SHALL be
+ * computed identically to Phase 3 behavior.
+ */
+describe("Property 23: No visual metrics without video", () => {
+  /** Generator for a "no video" scenario reason. */
+  const arbitraryNoVideoReason = (): fc.Arbitrary<
+    "no_consent" | "consent_denied" | "no_stream_ready" | "no_processor_factory"
+  > =>
+    fc.constantFrom(
+      "no_consent" as const,
+      "consent_denied" as const,
+      "no_stream_ready" as const,
+      "no_processor_factory" as const,
+    );
+
+  /** Generator for a simple transcript with at least one segment. */
+  const arbitrarySimpleTranscript = (): fc.Arbitrary<TranscriptSegment[]> =>
+    fc
+      .integer({ min: 1, max: 5 })
+      .map((count) =>
+        Array.from({ length: count }, (_, i) => ({
+          text: `Segment ${i}`,
+          startTime: i * 2,
+          endTime: i * 2 + 1.5,
+          words: [
+            { word: "hello", startTime: i * 2, endTime: i * 2 + 0.5, confidence: 0.99 },
+            { word: "world", startTime: i * 2 + 0.5, endTime: i * 2 + 1.0, confidence: 0.99 },
+          ],
+          isFinal: true,
+        })),
+      );
+
+  /** Minimal DeliveryMetrics for mocking (without visualMetrics — the extractor returns this). */
+  const makeBaseMetrics = (): DeliveryMetrics => ({
+    durationSeconds: 60,
+    durationFormatted: "1:00",
+    totalWords: 100,
+    wordsPerMinute: 100,
+    fillerWords: [],
+    fillerWordCount: 0,
+    fillerWordFrequency: 0,
+    pauseCount: 0,
+    totalPauseDurationSeconds: 0,
+    averagePauseDurationSeconds: 0,
+    intentionalPauseCount: 0,
+    hesitationPauseCount: 0,
+    classifiedPauses: [],
+    energyVariationCoefficient: 0,
+    energyProfile: {
+      windowDurationMs: 250,
+      windows: [],
+      coefficientOfVariation: 0,
+      silenceThreshold: 0,
+    },
+    classifiedFillers: [],
+    visualMetrics: null,
+  });
+
+  it("visualMetrics is null after stopRecording when video was not used", async () => {
+    await fc.assert(
+      fc.asyncProperty(
+        arbitraryNoVideoReason(),
+        arbitrarySimpleTranscript(),
+        async (reason, transcript) => {
+          const baseMetrics = makeBaseMetrics();
+
+          const mockTranscriptionEngine = {
+            startLive: vi.fn(),
+            stopLive: vi.fn(),
+            feedAudio: vi.fn(),
+            finalize: vi.fn().mockResolvedValue(transcript),
+            get qualityWarning() {
+              return false;
+            },
+          } as unknown as import("./transcription-engine.js").TranscriptionEngine;
+
+          const mockMetricsExtractor = {
+            extract: vi.fn().mockReturnValue(baseMetrics),
+          } as unknown as import("./metrics-extractor.js").MetricsExtractor;
+
+          // Only provide videoProcessorFactory when the reason is NOT "no_processor_factory"
+          const deps: Record<string, unknown> = {
+            transcriptionEngine: mockTranscriptionEngine,
+            metricsExtractor: mockMetricsExtractor,
+          };
+
+          if (reason !== "no_processor_factory") {
+            let factoryCalled = false;
+            deps.videoProcessorFactory = () => {
+              factoryCalled = true;
+              return {
+                stop: () => {},
+                startDrainLoop: () => Promise.resolve(),
+                enqueueFrame: () => {},
+                finalize: () => ({}),
+                getStatus: () => ({ framesProcessed: 0, framesDropped: 0, processingLatencyMs: 0 }),
+                getExtendedStatus: () => ({ framesProcessed: 0, framesDropped: 0, processingLatencyMs: 0 }),
+              };
+            };
+          }
+
+          const sm = new SessionManager(deps as any);
+          const session = sm.createSession();
+          const sessionId = session.id;
+
+          // Set up the "no video" scenario based on reason
+          switch (reason) {
+            case "no_consent":
+              // Leave videoConsent as null (default)
+              break;
+            case "consent_denied":
+              sm.setVideoConsent(sessionId, {
+                consentGranted: false,
+                timestamp: new Date(),
+              });
+              break;
+            case "no_stream_ready":
+              // Grant consent but don't call setVideoStreamReady
+              sm.setVideoConsent(sessionId, {
+                consentGranted: true,
+                timestamp: new Date(),
+              });
+              break;
+            case "no_processor_factory":
+              // Grant consent and set stream ready, but no factory
+              sm.setVideoConsent(sessionId, {
+                consentGranted: true,
+                timestamp: new Date(),
+              });
+              sm.setVideoStreamReady(sessionId);
+              break;
+          }
+
+          // Feed an audio chunk so stopRecording has data to process
+          sm.startRecording(sessionId);
+          sm.feedAudio(sessionId, Buffer.from([0x00, 0x01, 0x02]));
+
+          await sm.stopRecording(sessionId);
+
+          // After stopRecording, metrics should exist with visualMetrics === null
+          expect(session.metrics).not.toBeNull();
+          expect(session.metrics!.visualMetrics).toBeNull();
+        },
+      ),
+      { numRuns: 100 },
+    );
+  });
+
+  it("audio-only metrics fields are unchanged when video is not used", async () => {
+    await fc.assert(
+      fc.asyncProperty(
+        arbitraryNoVideoReason(),
+        arbitrarySimpleTranscript(),
+        async (reason, transcript) => {
+          const baseMetrics = makeBaseMetrics();
+
+          const mockTranscriptionEngine = {
+            startLive: vi.fn(),
+            stopLive: vi.fn(),
+            feedAudio: vi.fn(),
+            finalize: vi.fn().mockResolvedValue(transcript),
+            get qualityWarning() {
+              return false;
+            },
+          } as unknown as import("./transcription-engine.js").TranscriptionEngine;
+
+          const mockMetricsExtractor = {
+            extract: vi.fn().mockReturnValue(baseMetrics),
+          } as unknown as import("./metrics-extractor.js").MetricsExtractor;
+
+          const deps: Record<string, unknown> = {
+            transcriptionEngine: mockTranscriptionEngine,
+            metricsExtractor: mockMetricsExtractor,
+          };
+
+          if (reason !== "no_processor_factory") {
+            deps.videoProcessorFactory = () => ({
+              stop: () => {},
+              startDrainLoop: () => Promise.resolve(),
+              enqueueFrame: () => {},
+              finalize: () => ({}),
+              getStatus: () => ({ framesProcessed: 0, framesDropped: 0, processingLatencyMs: 0 }),
+              getExtendedStatus: () => ({ framesProcessed: 0, framesDropped: 0, processingLatencyMs: 0 }),
+            });
+          }
+
+          const sm = new SessionManager(deps as any);
+          const session = sm.createSession();
+          const sessionId = session.id;
+
+          // Set up the "no video" scenario
+          if (reason === "consent_denied") {
+            sm.setVideoConsent(sessionId, { consentGranted: false, timestamp: new Date() });
+          } else if (reason === "no_stream_ready") {
+            sm.setVideoConsent(sessionId, { consentGranted: true, timestamp: new Date() });
+          } else if (reason === "no_processor_factory") {
+            sm.setVideoConsent(sessionId, { consentGranted: true, timestamp: new Date() });
+            sm.setVideoStreamReady(sessionId);
+          }
+          // "no_consent" — leave defaults
+
+          sm.startRecording(sessionId);
+          sm.feedAudio(sessionId, Buffer.from([0x00, 0x01, 0x02]));
+          await sm.stopRecording(sessionId);
+
+          // Verify audio metrics fields are preserved from the extractor output
+          const metrics = session.metrics!;
+          expect(metrics.durationSeconds).toBe(baseMetrics.durationSeconds);
+          expect(metrics.totalWords).toBe(baseMetrics.totalWords);
+          expect(metrics.wordsPerMinute).toBe(baseMetrics.wordsPerMinute);
+          expect(metrics.fillerWordCount).toBe(baseMetrics.fillerWordCount);
+          expect(metrics.pauseCount).toBe(baseMetrics.pauseCount);
+          expect(metrics.energyVariationCoefficient).toBe(baseMetrics.energyVariationCoefficient);
+          // And visualMetrics is null
+          expect(metrics.visualMetrics).toBeNull();
+        },
+      ),
+      { numRuns: 100 },
+    );
+  });
+
+  it("visualObservations on session is null when video was not used", async () => {
+    await fc.assert(
+      fc.asyncProperty(
+        arbitraryNoVideoReason(),
+        arbitrarySimpleTranscript(),
+        async (reason, transcript) => {
+          const baseMetrics = makeBaseMetrics();
+
+          const mockTranscriptionEngine = {
+            startLive: vi.fn(),
+            stopLive: vi.fn(),
+            feedAudio: vi.fn(),
+            finalize: vi.fn().mockResolvedValue(transcript),
+            get qualityWarning() {
+              return false;
+            },
+          } as unknown as import("./transcription-engine.js").TranscriptionEngine;
+
+          const mockMetricsExtractor = {
+            extract: vi.fn().mockReturnValue(baseMetrics),
+          } as unknown as import("./metrics-extractor.js").MetricsExtractor;
+
+          const deps: Record<string, unknown> = {
+            transcriptionEngine: mockTranscriptionEngine,
+            metricsExtractor: mockMetricsExtractor,
+          };
+
+          if (reason !== "no_processor_factory") {
+            deps.videoProcessorFactory = () => ({
+              stop: () => {},
+              startDrainLoop: () => Promise.resolve(),
+              enqueueFrame: () => {},
+              finalize: () => ({}),
+              getStatus: () => ({ framesProcessed: 0, framesDropped: 0, processingLatencyMs: 0 }),
+              getExtendedStatus: () => ({ framesProcessed: 0, framesDropped: 0, processingLatencyMs: 0 }),
+            });
+          }
+
+          const sm = new SessionManager(deps as any);
+          const session = sm.createSession();
+          const sessionId = session.id;
+
+          if (reason === "consent_denied") {
+            sm.setVideoConsent(sessionId, { consentGranted: false, timestamp: new Date() });
+          } else if (reason === "no_stream_ready") {
+            sm.setVideoConsent(sessionId, { consentGranted: true, timestamp: new Date() });
+          } else if (reason === "no_processor_factory") {
+            sm.setVideoConsent(sessionId, { consentGranted: true, timestamp: new Date() });
+            sm.setVideoStreamReady(sessionId);
+          }
+
+          sm.startRecording(sessionId);
+          sm.feedAudio(sessionId, Buffer.from([0x00, 0x01, 0x02]));
+          await sm.stopRecording(sessionId);
+
+          // visualObservations should remain null on the session
+          expect(session.visualObservations).toBeNull();
         },
       ),
       { numRuns: 100 },

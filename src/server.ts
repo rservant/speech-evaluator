@@ -20,6 +20,12 @@ import {
   SessionState,
 } from "./types.js";
 import { VADMonitor, type VADStatus } from "./vad-monitor.js";
+import {
+  isTMFrame,
+  getFrameType,
+  decodeVideoFrame,
+  decodeAudioFrame,
+} from "./video-frame-codec.js";
 
 // ─── Constants ──────────────────────────────────────────────────────────────────
 
@@ -55,6 +61,8 @@ interface ConnectionState {
   purgeTimer: ReturnType<typeof setTimeout> | null;
   /** Index tracking for live transcript replaceFromIndex semantics */
   liveTranscriptLength: number;
+  /** Periodic video_status sender interval (≤1/sec during RECORDING) */
+  videoStatusInterval: ReturnType<typeof setInterval> | null;
 }
 
 // ─── Logging ────────────────────────────────────────────────────────────────────
@@ -179,6 +187,7 @@ function handleConnection(
     elapsedTimerInterval: null,
     purgeTimer: null,
     liveTranscriptLength: 0,
+    videoStatusInterval: null,
   };
 
   logger.info(`New WebSocket connection, session ${session.id}`);
@@ -228,6 +237,47 @@ function handleBinaryMessage(
 ): void {
   const session = sessionManager.getSession(connState.sessionId);
 
+  // ── TM-prefixed binary frame routing ──
+  // Check for TM magic prefix (0x54 0x4D) — type-byte demux, no heuristics
+  if (isTMFrame(data)) {
+    const frameType = getFrameType(data);
+
+    if (frameType === "video") {
+      // Video frame: decode and fire-and-forget to VideoProcessor
+      const decoded = decodeVideoFrame(data);
+      if (!decoded) {
+        // Malformed video frame — silently discard
+        return;
+      }
+      // feedVideoFrame handles state/consent guards internally
+      sessionManager.feedVideoFrame(connState.sessionId, decoded.header, decoded.jpegBuffer);
+      return;
+    }
+
+    if (frameType === "audio") {
+      // TM-prefixed audio frame: decode and process synchronously
+      const decoded = decodeAudioFrame(data);
+      if (!decoded) {
+        // Malformed audio frame — silently discard
+        return;
+      }
+
+      // Reject audio in non-RECORDING states (echo prevention, Req 2.5)
+      if (session.state !== SessionState.RECORDING) {
+        logger.debug(`[handleBinaryMessage] Rejecting TM audio frame in state="${session.state}" for session ${connState.sessionId}`);
+        return;
+      }
+
+      sessionManager.feedAudio(connState.sessionId, decoded.pcmBuffer);
+      return;
+    }
+
+    // Unrecognized type byte — silently discard
+    return;
+  }
+
+  // ── Legacy raw PCM audio (no TM prefix) — backward compatibility ──
+
   // Audio format must be validated before accepting audio chunks
   if (!connState.audioFormatValidated) {
     sendMessage(ws, {
@@ -273,7 +323,6 @@ function handleBinaryMessage(
 
   // Buffer audio chunk and forward to Deepgram live transcription
   // Privacy: audio chunks are in-memory only, never written to disk
-  // too verbose logger.debug(`[handleBinaryMessage] Feeding audio chunk (${data.length} bytes) for session ${connState.sessionId}`);
   sessionManager.feedAudio(connState.sessionId, Buffer.from(data));
 }
 
@@ -356,6 +405,18 @@ function handleClientMessage(
 
     case "set_vad_config":
       handleSetVADConfig(ws, message, connState, sessionManager, logger);
+      break;
+
+    case "set_video_consent":
+      handleSetVideoConsent(ws, message, connState, sessionManager, logger);
+      break;
+
+    case "video_stream_ready":
+      handleVideoStreamReady(ws, message, connState, sessionManager, logger);
+      break;
+
+    case "set_video_config":
+      handleSetVideoConfig(ws, message, connState, sessionManager, logger);
       break;
 
     default: {
@@ -470,6 +531,9 @@ function handleStartRecording(
 
   // Start elapsed time ticker (every second during RECORDING)
   startElapsedTimeTicker(ws, connState, session, sessionManager, logger);
+
+  // Start periodic video_status sender (≤1/sec during RECORDING)
+  startVideoStatusSender(ws, connState, sessionManager);
 }
 
 // ─── Stop Recording ─────────────────────────────────────────────────────────────
@@ -481,11 +545,35 @@ async function handleStopRecording(
   logger: ServerLogger,
 ): Promise<void> {
   stopElapsedTimeTicker(connState);
+  stopVideoStatusSender(connState);
+
+  // Capture video processor reference before stopRecording (which may remove it)
+  const videoProcessor = sessionManager.getVideoProcessor(connState.sessionId);
 
   await sessionManager.stopRecording(connState.sessionId);
   logger.info(`Recording stopped for session ${connState.sessionId}`);
 
-  const session = sessionManager.getSession(connState.sessionId);
+  // Send final video_status with finalization counters if video was active
+  const sessionAfterStop = sessionManager.getSession(connState.sessionId);
+  if (sessionAfterStop.visualObservations && ws.readyState === WebSocket.OPEN) {
+    const obs = sessionAfterStop.visualObservations;
+    sendMessage(ws, {
+      type: "video_status",
+      framesProcessed: obs.framesAnalyzed,
+      framesDropped: obs.framesSkippedBySampler + obs.framesDroppedByBackpressure,
+      processingLatencyMs: 0,
+      framesReceived: obs.framesReceived,
+      framesSkippedBySampler: obs.framesSkippedBySampler,
+      framesDroppedByBackpressure: obs.framesDroppedByBackpressure,
+      framesDroppedByTimestamp: obs.framesDroppedByTimestamp,
+      framesErrored: obs.framesErrored,
+      effectiveSamplingRate: 0,
+      finalizationLatencyMs: obs.finalizationLatencyMs,
+      videoQualityGrade: obs.videoQualityGrade,
+    });
+  }
+
+  const session = sessionAfterStop;
 
   sendMessage(ws, { type: "state_change", state: SessionState.PROCESSING });
 
@@ -820,6 +908,7 @@ function handlePanicMute(
   logger: ServerLogger,
 ): void {
   stopElapsedTimeTicker(connState);
+  stopVideoStatusSender(connState);
 
   sessionManager.panicMute(connState.sessionId);
   logger.info(`Panic mute activated for session ${connState.sessionId}`);
@@ -1029,6 +1118,106 @@ function handleSetVADConfig(
   }
 }
 
+// ─── Phase 4: Video Message Handlers ──────────────────────────────────────────
+
+function handleSetVideoConsent(
+  ws: WebSocket,
+  message: Extract<ClientMessage, { type: "set_video_consent" }>,
+  connState: ConnectionState,
+  sessionManager: SessionManager,
+  logger: ServerLogger,
+): void {
+  try {
+    sessionManager.setVideoConsent(connState.sessionId, {
+      consentGranted: message.consentGranted,
+      timestamp: new Date(message.timestamp),
+    });
+    logger.info(`Video consent set for session ${connState.sessionId}: granted=${message.consentGranted}`);
+  } catch (err) {
+    const errorMessage = err instanceof Error ? err.message : String(err);
+    logger.warn(`set_video_consent failed for session ${connState.sessionId}: ${errorMessage}`);
+    sendMessage(ws, {
+      type: "error",
+      message: errorMessage,
+      recoverable: true,
+    });
+  }
+}
+
+function handleVideoStreamReady(
+  ws: WebSocket,
+  message: Extract<ClientMessage, { type: "video_stream_ready" }>,
+  connState: ConnectionState,
+  sessionManager: SessionManager,
+  logger: ServerLogger,
+): void {
+  try {
+    // deviceLabel is accepted for protocol compatibility but NOT stored/logged (Req 11.7)
+    sessionManager.setVideoStreamReady(connState.sessionId, message.deviceLabel);
+    logger.info(`Video stream ready for session ${connState.sessionId}`);
+  } catch (err) {
+    const errorMessage = err instanceof Error ? err.message : String(err);
+    logger.warn(`video_stream_ready failed for session ${connState.sessionId}: ${errorMessage}`);
+    sendMessage(ws, {
+      type: "error",
+      message: errorMessage,
+      recoverable: true,
+    });
+  }
+}
+
+function handleSetVideoConfig(
+  ws: WebSocket,
+  message: Extract<ClientMessage, { type: "set_video_config" }>,
+  connState: ConnectionState,
+  sessionManager: SessionManager,
+  logger: ServerLogger,
+): void {
+  try {
+    sessionManager.setVideoConfig(connState.sessionId, {
+      frameRate: message.frameRate,
+    });
+    logger.info(`Video config set for session ${connState.sessionId}: frameRate=${message.frameRate}`);
+  } catch (err) {
+    const errorMessage = err instanceof Error ? err.message : String(err);
+    logger.warn(`set_video_config failed for session ${connState.sessionId}: ${errorMessage}`);
+    sendMessage(ws, {
+      type: "error",
+      message: errorMessage,
+      recoverable: true,
+    });
+  }
+}
+
+// ─── Video Status Sender ────────────────────────────────────────────────────────
+
+function startVideoStatusSender(
+  ws: WebSocket,
+  connState: ConnectionState,
+  sessionManager: SessionManager,
+): void {
+  stopVideoStatusSender(connState);
+
+  connState.videoStatusInterval = setInterval(() => {
+    const processor = sessionManager.getVideoProcessor(connState.sessionId);
+    if (processor && ws.readyState === WebSocket.OPEN) {
+      const status = processor.getExtendedStatus();
+      sendMessage(ws, {
+        type: "video_status",
+        ...status,
+      });
+    }
+  }, 1000);
+}
+
+function stopVideoStatusSender(connState: ConnectionState): void {
+  if (connState.videoStatusInterval !== null) {
+    clearInterval(connState.videoStatusInterval);
+    connState.videoStatusInterval = null;
+  }
+}
+
+
 // ─── Elapsed Time Ticker ────────────────────────────────────────────────────────
 
 function startElapsedTimeTicker(
@@ -1153,6 +1342,11 @@ export function purgeSessionData(session: Session): void {
   session.qualityWarning = false;
   session.projectContext = null;
 
+  // Phase 4: Clear video data on auto-purge (Req 11.5)
+  session.visualObservations = null;
+  session.videoConsent = null;
+  session.videoStreamReady = false;
+
   // Clear eager pipeline state — pure reset only, no runId++ needed
   // (purge happens after delivery, no in-flight work to cancel)
   session.eagerStatus = "idle";
@@ -1203,6 +1397,7 @@ export function sendMessage(ws: WebSocket, message: ServerMessage): void {
 function cleanupConnection(connState: ConnectionState): void {
   stopElapsedTimeTicker(connState);
   clearPurgeTimer(connState);
+  stopVideoStatusSender(connState);
 }
 
 // ─── Exports for Testing ────────────────────────────────────────────────────────

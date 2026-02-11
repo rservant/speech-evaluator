@@ -3,7 +3,7 @@
 //        evidence validation delegation, script rendering, name redaction.
 
 import { describe, it, expect, vi } from "vitest";
-import { EvaluationGenerator, cosineSimilarity, EMBEDDING_MODEL, type OpenAIClient } from "./evaluation-generator.js";
+import { EvaluationGenerator, cosineSimilarity, EMBEDDING_MODEL, validateObservationData, type OpenAIClient } from "./evaluation-generator.js";
 import type {
   ConsentRecord,
   DeliveryMetrics,
@@ -12,6 +12,8 @@ import type {
   StructuredEvaluation,
   StructuredEvaluationPublic,
   TranscriptSegment,
+  VisualFeedbackItem,
+  VisualObservations,
 } from "./types.js";
 
 // ─── Test helpers ───────────────────────────────────────────────────────────────
@@ -148,6 +150,7 @@ function makeMetrics(overrides?: Partial<DeliveryMetrics>): DeliveryMetrics {
       silenceThreshold: 0.1,
     },
     classifiedFillers: [],
+    visualMetrics: null,
     ...overrides,
   };
 }
@@ -2203,5 +2206,500 @@ describe("EvaluationGenerator.logConsistencyTelemetry", () => {
     expect(client.embeddings!.create).toHaveBeenCalledWith(
       expect.objectContaining({ input: expectedSummaries }),
     );
+  });
+});
+
+// ─── Phase 4: Visual Feedback Tests ─────────────────────────────────────────────
+
+/** Build a minimal valid VisualObservations for testing. */
+function makeVisualObservations(overrides?: Partial<VisualObservations>): VisualObservations {
+  return {
+    gazeBreakdown: { audienceFacing: 65, notesFacing: 25, other: 10 },
+    faceNotDetectedCount: 2,
+    totalGestureCount: 12,
+    gestureFrequency: 7.6,
+    gesturePerSentenceRatio: 0.6,
+    handsDetectedFrames: 80,
+    handsNotDetectedFrames: 20,
+    meanBodyStabilityScore: 0.82,
+    stageCrossingCount: 1,
+    movementClassification: "moderate_movement",
+    meanFacialEnergyScore: 0.45,
+    facialEnergyVariation: 0.3,
+    facialEnergyLowSignal: false,
+    framesAnalyzed: 100,
+    framesReceived: 120,
+    framesSkippedBySampler: 10,
+    framesErrored: 2,
+    framesDroppedByBackpressure: 5,
+    framesDroppedByTimestamp: 3,
+    framesDroppedByFinalizationBudget: 0,
+    resolutionChangeCount: 0,
+    videoQualityGrade: "good",
+    videoQualityWarning: false,
+    finalizationLatencyMs: 150,
+    videoProcessingVersion: {
+      tfjsVersion: "4.0.0",
+      tfjsBackend: "cpu",
+      modelVersions: { blazeface: "1.0.0", movenet: "1.0.0" },
+      configHash: "abc123",
+    },
+    gazeReliable: true,
+    gestureReliable: true,
+    stabilityReliable: true,
+    facialEnergyReliable: true,
+    ...overrides,
+  };
+}
+
+function makeVisualFeedbackItem(overrides?: Partial<VisualFeedbackItem>): VisualFeedbackItem {
+  return {
+    type: "visual_observation",
+    summary: "Audience-facing gaze",
+    observation_data: "metric=gazeBreakdown.audienceFacing; value=65%; source=visualObservations",
+    explanation: "I observed that you faced the audience for 65% of the speech, which is below the typical 80% target.",
+    ...overrides,
+  };
+}
+
+describe("Phase 4: Visual Feedback Integration", () => {
+  // ── generate() with null visualObservations produces Phase 3 identical output ──
+
+  describe("generate() with null visualObservations", () => {
+    it("should produce byte-identical prompts to Phase 3 when visualObservations is null", async () => {
+      const evaluation = makeEvaluation();
+      const response = JSON.stringify(evaluation);
+      const client = makeMockClient([response]);
+      const generator = new EvaluationGenerator(client);
+      const segments = makeTranscriptSegments();
+      const metrics = makeMetrics();
+
+      await generator.generate(segments, metrics, undefined, null);
+
+      // Call with no visual observations (Phase 3 style)
+      const client2 = makeMockClient([response]);
+      const generator2 = new EvaluationGenerator(client2);
+      await generator2.generate(segments, metrics, undefined);
+
+      // Both should have been called with identical prompts
+      const call1 = (client.chat.completions.create as ReturnType<typeof vi.fn>).mock.calls[0][0];
+      const call2 = (client2.chat.completions.create as ReturnType<typeof vi.fn>).mock.calls[0][0];
+
+      expect(call1.messages[0].content).toBe(call2.messages[0].content); // system prompt
+      expect(call1.messages[1].content).toBe(call2.messages[1].content); // user prompt
+    });
+
+    it("should produce byte-identical prompts when visualObservations is undefined", async () => {
+      const evaluation = makeEvaluation();
+      const response = JSON.stringify(evaluation);
+      const client = makeMockClient([response]);
+      const generator = new EvaluationGenerator(client);
+      const segments = makeTranscriptSegments();
+      const metrics = makeMetrics();
+
+      await generator.generate(segments, metrics, undefined, undefined);
+
+      const client2 = makeMockClient([response]);
+      const generator2 = new EvaluationGenerator(client2);
+      await generator2.generate(segments, metrics);
+
+      const call1 = (client.chat.completions.create as ReturnType<typeof vi.fn>).mock.calls[0][0];
+      const call2 = (client2.chat.completions.create as ReturnType<typeof vi.fn>).mock.calls[0][0];
+
+      expect(call1.messages[0].content).toBe(call2.messages[0].content);
+      expect(call1.messages[1].content).toBe(call2.messages[1].content);
+    });
+  });
+
+  // ── generate() with valid visualObservations includes visual section ──
+
+  describe("generate() with valid visualObservations", () => {
+    it("should include Visual Observations section in user prompt", async () => {
+      const visualObs = makeVisualObservations();
+      const evaluation = makeEvaluation({
+        visual_feedback: [makeVisualFeedbackItem()],
+      });
+      const response = JSON.stringify(evaluation);
+      const client = makeMockClient([response]);
+      const generator = new EvaluationGenerator(client);
+      const segments = makeTranscriptSegments();
+      const metrics = makeMetrics();
+
+      await generator.generate(segments, metrics, undefined, visualObs);
+
+      const call = (client.chat.completions.create as ReturnType<typeof vi.fn>).mock.calls[0][0];
+      const userPrompt = call.messages[1].content;
+      expect(userPrompt).toContain("## Visual Observations (from video analysis)");
+      expect(userPrompt).toContain("Visual Feedback Instructions");
+    });
+
+    it("should include visual_feedback in system prompt JSON schema", async () => {
+      const visualObs = makeVisualObservations();
+      const evaluation = makeEvaluation({
+        visual_feedback: [makeVisualFeedbackItem()],
+      });
+      const response = JSON.stringify(evaluation);
+      const client = makeMockClient([response]);
+      const generator = new EvaluationGenerator(client);
+      const segments = makeTranscriptSegments();
+      const metrics = makeMetrics();
+
+      await generator.generate(segments, metrics, undefined, visualObs);
+
+      const call = (client.chat.completions.create as ReturnType<typeof vi.fn>).mock.calls[0][0];
+      const systemPrompt = call.messages[0].content;
+      expect(systemPrompt).toContain("visual_feedback");
+      expect(systemPrompt).toContain("visual_observation");
+      expect(systemPrompt).toContain("observation_data");
+    });
+  });
+
+  // ── generate() suppresses visual data when videoQualityGrade is "poor" ──
+
+  describe("generate() with poor video quality", () => {
+    it("should not include Visual Observations section when grade is poor", async () => {
+      const visualObs = makeVisualObservations({ videoQualityGrade: "poor", videoQualityWarning: true });
+      const evaluation = makeEvaluation();
+      const response = JSON.stringify(evaluation);
+      const client = makeMockClient([response]);
+      const generator = new EvaluationGenerator(client);
+      const segments = makeTranscriptSegments();
+      const metrics = makeMetrics();
+
+      await generator.generate(segments, metrics, undefined, visualObs);
+
+      const call = (client.chat.completions.create as ReturnType<typeof vi.fn>).mock.calls[0][0];
+      const userPrompt = call.messages[1].content;
+      const systemPrompt = call.messages[0].content;
+      expect(userPrompt).not.toContain("Visual Observations");
+      expect(systemPrompt).not.toContain("visual_feedback");
+    });
+
+    it("should produce prompts identical to Phase 3 when grade is poor", async () => {
+      const visualObs = makeVisualObservations({ videoQualityGrade: "poor", videoQualityWarning: true });
+      const evaluation = makeEvaluation();
+      const response = JSON.stringify(evaluation);
+
+      const client1 = makeMockClient([response]);
+      const generator1 = new EvaluationGenerator(client1);
+      const client2 = makeMockClient([response]);
+      const generator2 = new EvaluationGenerator(client2);
+      const segments = makeTranscriptSegments();
+      const metrics = makeMetrics();
+
+      await generator1.generate(segments, metrics, undefined, visualObs);
+      await generator2.generate(segments, metrics, undefined, null);
+
+      const call1 = (client1.chat.completions.create as ReturnType<typeof vi.fn>).mock.calls[0][0];
+      const call2 = (client2.chat.completions.create as ReturnType<typeof vi.fn>).mock.calls[0][0];
+
+      expect(call1.messages[0].content).toBe(call2.messages[0].content);
+      expect(call1.messages[1].content).toBe(call2.messages[1].content);
+    });
+  });
+
+  // ── buildUserPrompt() excludes unreliable metrics ──
+
+  describe("buildUserPrompt() unreliable metric filtering", () => {
+    it("should exclude gaze data when gazeReliable is false", async () => {
+      const visualObs = makeVisualObservations({ gazeReliable: false });
+      const evaluation = makeEvaluation();
+      const response = JSON.stringify(evaluation);
+      const client = makeMockClient([response]);
+      const generator = new EvaluationGenerator(client);
+      const segments = makeTranscriptSegments();
+      const metrics = makeMetrics();
+
+      await generator.generate(segments, metrics, undefined, visualObs);
+
+      const call = (client.chat.completions.create as ReturnType<typeof vi.fn>).mock.calls[0][0];
+      const userPrompt = call.messages[1].content;
+      expect(userPrompt).toContain("Visual Observations");
+      expect(userPrompt).not.toContain("audienceFacing");
+      expect(userPrompt).not.toContain("notesFacing");
+    });
+
+    it("should exclude gesture data when gestureReliable is false", async () => {
+      const visualObs = makeVisualObservations({ gestureReliable: false });
+      const evaluation = makeEvaluation();
+      const response = JSON.stringify(evaluation);
+      const client = makeMockClient([response]);
+      const generator = new EvaluationGenerator(client);
+      const segments = makeTranscriptSegments();
+      const metrics = makeMetrics();
+
+      await generator.generate(segments, metrics, undefined, visualObs);
+
+      const call = (client.chat.completions.create as ReturnType<typeof vi.fn>).mock.calls[0][0];
+      const userPrompt = call.messages[1].content;
+      expect(userPrompt).not.toContain("totalGestureCount");
+      expect(userPrompt).not.toContain("gestureFrequency");
+    });
+
+    it("should exclude stability data when stabilityReliable is false", async () => {
+      const visualObs = makeVisualObservations({ stabilityReliable: false });
+      const evaluation = makeEvaluation();
+      const response = JSON.stringify(evaluation);
+      const client = makeMockClient([response]);
+      const generator = new EvaluationGenerator(client);
+      const segments = makeTranscriptSegments();
+      const metrics = makeMetrics();
+
+      await generator.generate(segments, metrics, undefined, visualObs);
+
+      const call = (client.chat.completions.create as ReturnType<typeof vi.fn>).mock.calls[0][0];
+      const userPrompt = call.messages[1].content;
+      expect(userPrompt).not.toContain("meanBodyStabilityScore");
+      expect(userPrompt).not.toContain("stageCrossingCount");
+    });
+
+    it("should exclude facial energy data when facialEnergyReliable is false", async () => {
+      const visualObs = makeVisualObservations({ facialEnergyReliable: false });
+      const evaluation = makeEvaluation();
+      const response = JSON.stringify(evaluation);
+      const client = makeMockClient([response]);
+      const generator = new EvaluationGenerator(client);
+      const segments = makeTranscriptSegments();
+      const metrics = makeMetrics();
+
+      await generator.generate(segments, metrics, undefined, visualObs);
+
+      const call = (client.chat.completions.create as ReturnType<typeof vi.fn>).mock.calls[0][0];
+      const userPrompt = call.messages[1].content;
+      expect(userPrompt).not.toContain("meanFacialEnergyScore");
+      expect(userPrompt).not.toContain("facialEnergyVariation");
+    });
+
+    it("should add degraded quality uncertainty note", async () => {
+      const visualObs = makeVisualObservations({ videoQualityGrade: "degraded", videoQualityWarning: true });
+      const evaluation = makeEvaluation();
+      const response = JSON.stringify(evaluation);
+      const client = makeMockClient([response]);
+      const generator = new EvaluationGenerator(client);
+      const segments = makeTranscriptSegments();
+      const metrics = makeMetrics();
+
+      await generator.generate(segments, metrics, undefined, visualObs);
+
+      const call = (client.chat.completions.create as ReturnType<typeof vi.fn>).mock.calls[0][0];
+      const userPrompt = call.messages[1].content;
+      expect(userPrompt).toContain("partial video coverage");
+    });
+  });
+
+  // ── parseEvaluation() handles visual_feedback array ──
+
+  describe("parseEvaluation() visual_feedback", () => {
+    it("should parse valid visual_feedback items from LLM response", async () => {
+      const evaluation = makeEvaluation({
+        visual_feedback: [makeVisualFeedbackItem()],
+      });
+      const response = JSON.stringify(evaluation);
+      const client = makeMockClient([response]);
+      const generator = new EvaluationGenerator(client);
+      const segments = makeTranscriptSegments();
+      const metrics = makeMetrics();
+
+      const result = await generator.generate(segments, metrics, undefined, makeVisualObservations());
+
+      expect(result.evaluation.visual_feedback).toBeDefined();
+      expect(result.evaluation.visual_feedback).toHaveLength(1);
+      expect(result.evaluation.visual_feedback![0].type).toBe("visual_observation");
+      expect(result.evaluation.visual_feedback![0].summary).toBe("Audience-facing gaze");
+    });
+
+    it("should default to undefined when visual_feedback is missing", async () => {
+      const evaluation = makeEvaluation();
+      const response = JSON.stringify(evaluation);
+      const client = makeMockClient([response]);
+      const generator = new EvaluationGenerator(client);
+      const segments = makeTranscriptSegments();
+      const metrics = makeMetrics();
+
+      const result = await generator.generate(segments, metrics);
+
+      expect(result.evaluation.visual_feedback).toBeUndefined();
+    });
+
+    it("should filter out malformed visual_feedback items", async () => {
+      const evaluation = {
+        ...makeEvaluation(),
+        visual_feedback: [
+          makeVisualFeedbackItem(),
+          { type: "visual_observation", summary: "", observation_data: "x", explanation: "y" }, // empty summary
+          { type: "wrong_type", summary: "x", observation_data: "x", explanation: "y" }, // wrong type
+        ],
+      };
+      const response = JSON.stringify(evaluation);
+      const client = makeMockClient([response]);
+      const generator = new EvaluationGenerator(client);
+      const segments = makeTranscriptSegments();
+      const metrics = makeMetrics();
+
+      const result = await generator.generate(segments, metrics, undefined, makeVisualObservations());
+
+      expect(result.evaluation.visual_feedback).toHaveLength(1);
+    });
+  });
+
+  // ── renderScript() over-stripping fallback ──
+
+  describe("renderScript() visual feedback", () => {
+    it("should include visual feedback section with transition sentence", () => {
+      const visualObs = makeVisualObservations();
+      const evaluation = makeEvaluation({
+        visual_feedback: [makeVisualFeedbackItem()],
+      });
+      const generator = new EvaluationGenerator(makeMockClient([]));
+
+      const script = generator.renderScript(evaluation, undefined, makeMetrics(), visualObs);
+
+      expect(script).toContain("Looking at your delivery from a visual perspective...");
+      expect(script).toContain("I observed that you faced the audience for 65%");
+    });
+
+    it("should remove visual section entirely when all items fail validation (over-stripping)", () => {
+      const visualObs = makeVisualObservations();
+      const evaluation = makeEvaluation({
+        visual_feedback: [
+          makeVisualFeedbackItem({
+            observation_data: "metric=nonExistentMetric; value=99%; source=visualObservations",
+          }),
+        ],
+      });
+      const generator = new EvaluationGenerator(makeMockClient([]));
+
+      const script = generator.renderScript(evaluation, undefined, makeMetrics(), visualObs);
+
+      expect(script).not.toContain("Looking at your delivery from a visual perspective...");
+      expect(script).not.toContain("nonExistentMetric");
+    });
+
+    it("should not include visual section when visual_feedback is undefined", () => {
+      const evaluation = makeEvaluation();
+      const generator = new EvaluationGenerator(makeMockClient([]));
+
+      const script = generator.renderScript(evaluation, undefined, makeMetrics());
+
+      expect(script).not.toContain("Looking at your delivery from a visual perspective...");
+    });
+
+    it("should not include visual section when visualObservations is null", () => {
+      const evaluation = makeEvaluation({
+        visual_feedback: [makeVisualFeedbackItem()],
+      });
+      const generator = new EvaluationGenerator(makeMockClient([]));
+
+      const script = generator.renderScript(evaluation, undefined, makeMetrics(), null);
+
+      expect(script).not.toContain("Looking at your delivery from a visual perspective...");
+    });
+
+    it("should render visual feedback after items and before closing", () => {
+      const visualObs = makeVisualObservations();
+      const evaluation = makeEvaluation({
+        visual_feedback: [makeVisualFeedbackItem()],
+      });
+      const generator = new EvaluationGenerator(makeMockClient([]));
+
+      const script = generator.renderScript(evaluation, undefined, makeMetrics(), visualObs);
+
+      const closingIndex = script.indexOf(evaluation.closing);
+      const visualIndex = script.indexOf("Looking at your delivery from a visual perspective...");
+      const lastItemExplanation = evaluation.items[evaluation.items.length - 1].explanation;
+      const lastItemIndex = script.indexOf(lastItemExplanation);
+
+      expect(visualIndex).toBeGreaterThan(lastItemIndex);
+      expect(visualIndex).toBeLessThan(closingIndex);
+    });
+  });
+
+  // ── validateObservationData() ──
+
+  describe("validateObservationData()", () => {
+    const observations = makeVisualObservations();
+
+    it("should return true for valid observation_data with correct metric and value", () => {
+      const item = makeVisualFeedbackItem({
+        observation_data: "metric=gazeBreakdown.audienceFacing; value=65%; source=visualObservations",
+      });
+      expect(validateObservationData(item, observations)).toBe(true);
+    });
+
+    it("should return true for value within ±1% tolerance", () => {
+      // actual is 65, 65.6 is within 1% (65 * 0.01 = 0.65)
+      const item = makeVisualFeedbackItem({
+        observation_data: "metric=gazeBreakdown.audienceFacing; value=65.6%; source=visualObservations",
+      });
+      expect(validateObservationData(item, observations)).toBe(true);
+    });
+
+    it("should return false for value outside ±1% tolerance", () => {
+      // actual is 65, 70 is way outside 1%
+      const item = makeVisualFeedbackItem({
+        observation_data: "metric=gazeBreakdown.audienceFacing; value=70%; source=visualObservations",
+      });
+      expect(validateObservationData(item, observations)).toBe(false);
+    });
+
+    it("should return false for non-existent metric name", () => {
+      const item = makeVisualFeedbackItem({
+        observation_data: "metric=nonExistentMetric; value=65%; source=visualObservations",
+      });
+      expect(validateObservationData(item, observations)).toBe(false);
+    });
+
+    it("should return false for malformed observation_data", () => {
+      const item = makeVisualFeedbackItem({
+        observation_data: "this is not valid grammar",
+      });
+      expect(validateObservationData(item, observations)).toBe(false);
+    });
+
+    it("should return false for wrong source", () => {
+      const item = makeVisualFeedbackItem({
+        observation_data: "metric=gazeBreakdown.audienceFacing; value=65%; source=wrongSource",
+      });
+      expect(validateObservationData(item, observations)).toBe(false);
+    });
+
+    it("should return false for missing value field", () => {
+      const item = makeVisualFeedbackItem({
+        observation_data: "metric=gazeBreakdown.audienceFacing; source=visualObservations",
+      });
+      expect(validateObservationData(item, observations)).toBe(false);
+    });
+
+    it("should handle actual value of 0 — cited must be exactly 0", () => {
+      const zeroObs = makeVisualObservations({ stageCrossingCount: 0 });
+      const item = makeVisualFeedbackItem({
+        observation_data: "metric=stageCrossingCount; value=0; source=visualObservations",
+      });
+      expect(validateObservationData(item, zeroObs)).toBe(true);
+
+      const nonZeroItem = makeVisualFeedbackItem({
+        observation_data: "metric=stageCrossingCount; value=0.1; source=visualObservations",
+      });
+      expect(validateObservationData(nonZeroItem, zeroObs)).toBe(false);
+    });
+
+    it("should validate non-gaze metrics correctly", () => {
+      const item = makeVisualFeedbackItem({
+        observation_data: "metric=totalGestureCount; value=12; source=visualObservations",
+      });
+      expect(validateObservationData(item, observations)).toBe(true);
+    });
+
+    it("should validate meanBodyStabilityScore correctly", () => {
+      const item = makeVisualFeedbackItem({
+        observation_data: "metric=meanBodyStabilityScore; value=0.82; source=visualObservations",
+      });
+      expect(validateObservationData(item, observations)).toBe(true);
+    });
+
+    it("should return false for empty observation_data", () => {
+      const item = makeVisualFeedbackItem({ observation_data: "" });
+      expect(validateObservationData(item, observations)).toBe(false);
+    });
   });
 });

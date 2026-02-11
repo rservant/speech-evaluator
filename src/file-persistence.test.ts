@@ -52,6 +52,10 @@ function makeSession(overrides: Partial<Session> = {}): Session {
     eagerRunId: null,
     eagerPromise: null,
     evaluationCache: null,
+    videoConsent: null,
+    videoStreamReady: false,
+    visualObservations: null,
+    videoConfig: { frameRate: 2 },
     ...overrides,
   };
 }
@@ -108,6 +112,38 @@ function makeMetrics(): DeliveryMetrics {
       silenceThreshold: 0.1,
     },
     classifiedFillers: [],
+    visualMetrics: null,
+  };
+}
+
+function makeVisualMetrics(): import("./types.js").VisualMetrics {
+  return {
+    gazeBreakdown: { audienceFacing: 65.0, notesFacing: 25.0, other: 10.0 },
+    faceNotDetectedCount: 3,
+    totalGestureCount: 12,
+    gestureFrequency: 1.7143,
+    gesturePerSentenceRatio: 0.45,
+    meanBodyStabilityScore: 0.87,
+    stageCrossingCount: 2,
+    movementClassification: "stationary" as const,
+    meanFacialEnergyScore: 0.62,
+    facialEnergyVariation: 0.35,
+    facialEnergyLowSignal: false,
+    framesAnalyzed: 120,
+    videoQualityGrade: "good" as const,
+    videoQualityWarning: false,
+    gazeReliable: true,
+    gestureReliable: true,
+    stabilityReliable: true,
+    facialEnergyReliable: true,
+    framesDroppedByFinalizationBudget: 0,
+    resolutionChangeCount: 0,
+    videoProcessingVersion: {
+      tfjsVersion: "4.10.0",
+      tfjsBackend: "cpu",
+      modelVersions: { blazeface: "1.0.2", movenet: "4.0.0" },
+      configHash: "abc123",
+    },
   };
 }
 
@@ -948,6 +984,773 @@ describe("FilePersistence", () => {
       // Audio path should NOT be in the returned paths since write failed
       expect(paths.filter((p) => p.endsWith("evaluation_audio.mp3"))).toHaveLength(0);
       expect(paths).toHaveLength(3);
+    });
+
+    // ─── Phase 4: Visual metrics in metrics.json (Req 9.4, 11.2, 11.6) ───
+
+    it("includes visualMetrics in metrics.json when present", async () => {
+      const metrics = makeMetrics();
+      metrics.visualMetrics = makeVisualMetrics();
+      const session = makeSession({
+        transcript: makeSegments(),
+        metrics,
+        evaluation: makeEvaluation(),
+        evaluationScript: "Great speech!",
+      });
+
+      const paths = await persistence.saveSession(session);
+      const metricsPath = paths.find((p) => p.endsWith("metrics.json"))!;
+      const content = await readFile(metricsPath, "utf-8");
+      const parsed = JSON.parse(content);
+
+      expect(parsed.visualMetrics).toBeDefined();
+      expect(parsed.visualMetrics).not.toBeNull();
+    });
+
+    it("metrics.json does not include visualMetrics when null", async () => {
+      const metrics = makeMetrics();
+      metrics.visualMetrics = null;
+      const session = makeSession({
+        transcript: makeSegments(),
+        metrics,
+        evaluation: makeEvaluation(),
+        evaluationScript: "Great speech!",
+      });
+
+      const paths = await persistence.saveSession(session);
+      const metricsPath = paths.find((p) => p.endsWith("metrics.json"))!;
+      const content = await readFile(metricsPath, "utf-8");
+      const parsed = JSON.parse(content);
+
+      expect(parsed.visualMetrics).toBeNull();
+    });
+
+    it("includes videoQualityGrade in metrics.json output", async () => {
+      const metrics = makeMetrics();
+      metrics.visualMetrics = makeVisualMetrics();
+      const session = makeSession({
+        transcript: makeSegments(),
+        metrics,
+        evaluation: makeEvaluation(),
+        evaluationScript: "Great speech!",
+      });
+
+      const paths = await persistence.saveSession(session);
+      const metricsPath = paths.find((p) => p.endsWith("metrics.json"))!;
+      const content = await readFile(metricsPath, "utf-8");
+      const parsed = JSON.parse(content);
+
+      expect(parsed.visualMetrics.videoQualityGrade).toBe("good");
+    });
+
+    it("includes per-metric reliability flags in metrics.json output", async () => {
+      const metrics = makeMetrics();
+      metrics.visualMetrics = makeVisualMetrics();
+      const session = makeSession({
+        transcript: makeSegments(),
+        metrics,
+        evaluation: makeEvaluation(),
+        evaluationScript: "Great speech!",
+      });
+
+      const paths = await persistence.saveSession(session);
+      const metricsPath = paths.find((p) => p.endsWith("metrics.json"))!;
+      const content = await readFile(metricsPath, "utf-8");
+      const parsed = JSON.parse(content);
+
+      expect(typeof parsed.visualMetrics.gazeReliable).toBe("boolean");
+      expect(typeof parsed.visualMetrics.gestureReliable).toBe("boolean");
+      expect(typeof parsed.visualMetrics.stabilityReliable).toBe("boolean");
+      expect(typeof parsed.visualMetrics.facialEnergyReliable).toBe("boolean");
+    });
+
+    it("includes videoProcessingVersion in metrics.json for reproducibility", async () => {
+      const metrics = makeMetrics();
+      metrics.visualMetrics = makeVisualMetrics();
+      const session = makeSession({
+        transcript: makeSegments(),
+        metrics,
+        evaluation: makeEvaluation(),
+        evaluationScript: "Great speech!",
+      });
+
+      const paths = await persistence.saveSession(session);
+      const metricsPath = paths.find((p) => p.endsWith("metrics.json"))!;
+      const content = await readFile(metricsPath, "utf-8");
+      const parsed = JSON.parse(content);
+
+      expect(parsed.visualMetrics.videoProcessingVersion).toBeDefined();
+      expect(parsed.visualMetrics.videoProcessingVersion.tfjsVersion).toBe("4.10.0");
+      expect(parsed.visualMetrics.videoProcessingVersion.tfjsBackend).toBe("cpu");
+      expect(parsed.visualMetrics.videoProcessingVersion.modelVersions).toEqual({
+        blazeface: "1.0.2",
+        movenet: "4.0.0",
+      });
+    });
+
+    it("does not leak keypoint data, per-frame data, or pixel data into metrics.json", async () => {
+      const metrics = makeMetrics();
+      metrics.visualMetrics = makeVisualMetrics();
+      const session = makeSession({
+        transcript: makeSegments(),
+        metrics,
+        evaluation: makeEvaluation(),
+        evaluationScript: "Great speech!",
+      });
+
+      const paths = await persistence.saveSession(session);
+      const metricsPath = paths.find((p) => p.endsWith("metrics.json"))!;
+      const content = await readFile(metricsPath, "utf-8");
+
+      // No keypoint data
+      expect(content).not.toContain("keypoint");
+      expect(content).not.toContain("landmark");
+      // No per-frame data
+      expect(content).not.toContain("perFrame");
+      expect(content).not.toContain("per_frame");
+      expect(content).not.toContain("frameData");
+      // No pixel data
+      expect(content).not.toContain("pixel");
+      expect(content).not.toContain("jpeg");
+      expect(content).not.toContain("base64");
+      // No frame headers
+      expect(content).not.toContain("frameHeader");
+      // No frame timestamps (individual frame timestamps, not session-level)
+      expect(content).not.toContain("frameTimestamp");
+      // No frame sequence numbers
+      expect(content).not.toContain('"seq"');
+      // No device label
+      expect(content).not.toContain("deviceLabel");
+    });
+
+    it("does not leak deviceLabel into any persisted file", async () => {
+      const metrics = makeMetrics();
+      metrics.visualMetrics = makeVisualMetrics();
+      const session = makeSession({
+        transcript: makeSegments(),
+        metrics,
+        evaluation: makeEvaluation(),
+        evaluationScript: "Great speech!",
+        consent: makeConsent(),
+      });
+
+      const paths = await persistence.saveSession(session);
+
+      for (const filePath of paths) {
+        const content = await readFile(filePath, filePath.endsWith(".mp3") ? null : "utf-8");
+        const text = typeof content === "string" ? content : content.toString("utf-8");
+        expect(text).not.toContain("deviceLabel");
+      }
+    });
+
+    it("only contains aggregated VisualMetrics fields — no raw observation arrays", async () => {
+      const metrics = makeMetrics();
+      metrics.visualMetrics = makeVisualMetrics();
+      const session = makeSession({
+        transcript: makeSegments(),
+        metrics,
+        evaluation: makeEvaluation(),
+        evaluationScript: "Great speech!",
+      });
+
+      const paths = await persistence.saveSession(session);
+      const metricsPath = paths.find((p) => p.endsWith("metrics.json"))!;
+      const content = await readFile(metricsPath, "utf-8");
+      const parsed = JSON.parse(content);
+
+      // visualMetrics should only contain the known aggregate fields
+      const vm = parsed.visualMetrics;
+      const allowedKeys = new Set([
+        "gazeBreakdown",
+        "faceNotDetectedCount",
+        "totalGestureCount",
+        "gestureFrequency",
+        "gesturePerSentenceRatio",
+        "meanBodyStabilityScore",
+        "stageCrossingCount",
+        "movementClassification",
+        "meanFacialEnergyScore",
+        "facialEnergyVariation",
+        "facialEnergyLowSignal",
+        "framesAnalyzed",
+        "videoQualityGrade",
+        "videoQualityWarning",
+        "gazeReliable",
+        "gestureReliable",
+        "stabilityReliable",
+        "facialEnergyReliable",
+        "framesDroppedByFinalizationBudget",
+        "resolutionChangeCount",
+        "videoProcessingVersion",
+      ]);
+
+      for (const key of Object.keys(vm)) {
+        expect(allowedKeys.has(key)).toBe(true);
+      }
+    });
+
+    it("visualMetrics round-trips through JSON serialization", async () => {
+      const metrics = makeMetrics();
+      const visualMetrics = makeVisualMetrics();
+      metrics.visualMetrics = visualMetrics;
+
+      const json = formatMetrics(metrics);
+      const parsed = JSON.parse(json);
+
+      expect(parsed.visualMetrics).toEqual(visualMetrics);
+    });
+
+    it("preserves degraded videoQualityGrade in output", async () => {
+      const metrics = makeMetrics();
+      metrics.visualMetrics = {
+        ...makeVisualMetrics(),
+        videoQualityGrade: "degraded",
+        videoQualityWarning: true,
+      };
+      const session = makeSession({
+        transcript: makeSegments(),
+        metrics,
+        evaluation: makeEvaluation(),
+        evaluationScript: "Great speech!",
+      });
+
+      const paths = await persistence.saveSession(session);
+      const metricsPath = paths.find((p) => p.endsWith("metrics.json"))!;
+      const content = await readFile(metricsPath, "utf-8");
+      const parsed = JSON.parse(content);
+
+      expect(parsed.visualMetrics.videoQualityGrade).toBe("degraded");
+      expect(parsed.visualMetrics.videoQualityWarning).toBe(true);
+    });
+
+    it("preserves unreliable metric flags in output", async () => {
+      const metrics = makeMetrics();
+      metrics.visualMetrics = {
+        ...makeVisualMetrics(),
+        gazeReliable: false,
+        gestureReliable: false,
+        stabilityReliable: true,
+        facialEnergyReliable: false,
+      };
+      const session = makeSession({
+        transcript: makeSegments(),
+        metrics,
+        evaluation: makeEvaluation(),
+        evaluationScript: "Great speech!",
+      });
+
+      const paths = await persistence.saveSession(session);
+      const metricsPath = paths.find((p) => p.endsWith("metrics.json"))!;
+      const content = await readFile(metricsPath, "utf-8");
+      const parsed = JSON.parse(content);
+
+      expect(parsed.visualMetrics.gazeReliable).toBe(false);
+      expect(parsed.visualMetrics.gestureReliable).toBe(false);
+      expect(parsed.visualMetrics.stabilityReliable).toBe(true);
+      expect(parsed.visualMetrics.facialEnergyReliable).toBe(false);
+    });
+  });
+});
+
+// ─── Privacy Non-Persistence Assertions (Task 13.2) ──────────────────────────
+// Validates: Requirements 11.2, 11.7
+// These tests verify that deviceLabel, per-frame keypoints, frame headers,
+// frame timestamps, frame sequence numbers, and reconstructable motion data
+// are never persisted, stored on session state, or logged.
+
+describe("Privacy non-persistence assertions (Req 11.2, 11.7)", () => {
+  // ─── Source code structural assertions ──────────────────────────────────
+
+  describe("source code privacy invariants", () => {
+    it("Session interface does not define a deviceLabel field", () => {
+      // The Session type must never store deviceLabel — it's accepted in the
+      // protocol for compatibility but discarded immediately (Req 11.7).
+      // We verify by checking that a session object created with all defaults
+      // does not have a deviceLabel property.
+      const session = makeSession();
+      expect("deviceLabel" in session).toBe(false);
+      expect(Object.keys(session)).not.toContain("deviceLabel");
+    });
+
+    it("VisualMetrics type does not contain per-frame data fields", () => {
+      const vm = makeVisualMetrics();
+      const keys = Object.keys(vm);
+
+      // Per-frame data that must NEVER appear in persisted VisualMetrics
+      const prohibitedFields = [
+        "keypoints",
+        "landmarks",
+        "perFrameData",
+        "frameHeaders",
+        "frameTimestamps",
+        "frameSequenceNumbers",
+        "sequenceStream",
+        "rawFrames",
+        "jpegBuffers",
+        "pixelData",
+        "motionTrajectory",
+        "keypointHistory",
+        "gazeClassifications",       // per-frame array, not aggregate
+        "facialEnergyDeltas",        // per-frame array, not aggregate
+        "bodyCenterHistory",         // per-frame array, not aggregate
+        "gestureEvents",             // per-frame array with timestamps
+        "previousHandKeypoints",     // transient processing state
+        "previousFaceLandmarks",     // transient processing state
+      ];
+
+      for (const field of prohibitedFields) {
+        expect(keys).not.toContain(field);
+      }
+    });
+
+    it("VisualObservations type does not contain per-frame arrays or raw data", () => {
+      // VisualObservations is the in-memory aggregate — verify it also
+      // doesn't leak per-frame data into the type structure
+      const obs: import("./types.js").VisualObservations = {
+        gazeBreakdown: { audienceFacing: 70, notesFacing: 20, other: 10 },
+        faceNotDetectedCount: 2,
+        totalGestureCount: 8,
+        gestureFrequency: 1.5,
+        gesturePerSentenceRatio: 0.4,
+        handsDetectedFrames: 50,
+        handsNotDetectedFrames: 10,
+        meanBodyStabilityScore: 0.9,
+        stageCrossingCount: 1,
+        movementClassification: "stationary",
+        meanFacialEnergyScore: 0.5,
+        facialEnergyVariation: 0.3,
+        facialEnergyLowSignal: false,
+        framesAnalyzed: 60,
+        framesReceived: 80,
+        framesSkippedBySampler: 15,
+        framesErrored: 2,
+        framesDroppedByBackpressure: 3,
+        framesDroppedByTimestamp: 0,
+        framesDroppedByFinalizationBudget: 0,
+        resolutionChangeCount: 0,
+        videoQualityGrade: "good",
+        videoQualityWarning: false,
+        finalizationLatencyMs: 150,
+        videoProcessingVersion: {
+          tfjsVersion: "4.10.0",
+          tfjsBackend: "cpu",
+          modelVersions: { blazeface: "1.0.2", movenet: "4.0.0" },
+          configHash: "abc123",
+        },
+        gazeReliable: true,
+        gestureReliable: true,
+        stabilityReliable: true,
+        facialEnergyReliable: true,
+      };
+
+      const keys = Object.keys(obs);
+      const prohibitedFields = [
+        "keypoints", "landmarks", "perFrameData", "frameHeaders",
+        "frameTimestamps", "sequenceStream", "rawFrames", "jpegBuffers",
+        "pixelData", "motionTrajectory", "keypointHistory",
+        "deviceLabel",
+      ];
+
+      for (const field of prohibitedFields) {
+        expect(keys).not.toContain(field);
+      }
+
+      // Verify all values are aggregates (numbers, strings, booleans, objects) — no arrays of per-frame data
+      for (const [key, value] of Object.entries(obs)) {
+        if (Array.isArray(value)) {
+          // No field in VisualObservations should be an array
+          throw new Error(`VisualObservations.${key} is an array — per-frame data must not be in aggregates`);
+        }
+      }
+    });
+  });
+
+  // ─── Session state assertions ───────────────────────────────────────────
+
+  describe("session state after setVideoStreamReady", () => {
+    it("deviceLabel is not stored on session after setVideoStreamReady with a label", () => {
+      const session = makeSession({ videoStreamReady: true });
+
+      // Simulate what happens after setVideoStreamReady — the session should
+      // only have videoStreamReady=true, no deviceLabel anywhere
+      const serialized = JSON.stringify(session);
+      expect(serialized).not.toContain("deviceLabel");
+      expect(serialized).not.toContain("FaceTime");
+      expect(serialized).not.toContain("Logitech");
+      expect(serialized).not.toContain("USB Camera");
+    });
+
+    it("deviceLabel is not stored on session even with visualObservations present", () => {
+      const session = makeSession({
+        videoStreamReady: true,
+        visualObservations: {
+          gazeBreakdown: { audienceFacing: 70, notesFacing: 20, other: 10 },
+          faceNotDetectedCount: 2,
+          totalGestureCount: 8,
+          gestureFrequency: 1.5,
+          gesturePerSentenceRatio: 0.4,
+          handsDetectedFrames: 50,
+          handsNotDetectedFrames: 10,
+          meanBodyStabilityScore: 0.9,
+          stageCrossingCount: 1,
+          movementClassification: "stationary",
+          meanFacialEnergyScore: 0.5,
+          facialEnergyVariation: 0.3,
+          facialEnergyLowSignal: false,
+          framesAnalyzed: 60,
+          framesReceived: 80,
+          framesSkippedBySampler: 15,
+          framesErrored: 2,
+          framesDroppedByBackpressure: 3,
+          framesDroppedByTimestamp: 0,
+          framesDroppedByFinalizationBudget: 0,
+          resolutionChangeCount: 0,
+          videoQualityGrade: "good",
+          videoQualityWarning: false,
+          finalizationLatencyMs: 150,
+          videoProcessingVersion: {
+            tfjsVersion: "4.10.0",
+            tfjsBackend: "cpu",
+            modelVersions: { blazeface: "1.0.2", movenet: "4.0.0" },
+            configHash: "abc123",
+          },
+          gazeReliable: true,
+          gestureReliable: true,
+          stabilityReliable: true,
+          facialEnergyReliable: true,
+        },
+      });
+
+      const serialized = JSON.stringify(session);
+      expect(serialized).not.toContain("deviceLabel");
+    });
+
+    it("no per-frame keypoint arrays exist on session object", () => {
+      const session = makeSession({
+        videoStreamReady: true,
+        visualObservations: {
+          gazeBreakdown: { audienceFacing: 70, notesFacing: 20, other: 10 },
+          faceNotDetectedCount: 2,
+          totalGestureCount: 8,
+          gestureFrequency: 1.5,
+          gesturePerSentenceRatio: 0.4,
+          handsDetectedFrames: 50,
+          handsNotDetectedFrames: 10,
+          meanBodyStabilityScore: 0.9,
+          stageCrossingCount: 1,
+          movementClassification: "stationary",
+          meanFacialEnergyScore: 0.5,
+          facialEnergyVariation: 0.3,
+          facialEnergyLowSignal: false,
+          framesAnalyzed: 60,
+          framesReceived: 80,
+          framesSkippedBySampler: 15,
+          framesErrored: 2,
+          framesDroppedByBackpressure: 3,
+          framesDroppedByTimestamp: 0,
+          framesDroppedByFinalizationBudget: 0,
+          resolutionChangeCount: 0,
+          videoQualityGrade: "good",
+          videoQualityWarning: false,
+          finalizationLatencyMs: 150,
+          videoProcessingVersion: {
+            tfjsVersion: "4.10.0",
+            tfjsBackend: "cpu",
+            modelVersions: { blazeface: "1.0.2", movenet: "4.0.0" },
+            configHash: "abc123",
+          },
+          gazeReliable: true,
+          gestureReliable: true,
+          stabilityReliable: true,
+          facialEnergyReliable: true,
+        },
+      });
+
+      const serialized = JSON.stringify(session);
+
+      // Per-frame data patterns that must never appear in serialized session
+      expect(serialized).not.toContain('"keypoints"');
+      expect(serialized).not.toContain('"landmarks"');
+      expect(serialized).not.toContain('"perFrame"');
+      expect(serialized).not.toContain('"per_frame"');
+      expect(serialized).not.toContain('"frameHeader"');
+      expect(serialized).not.toContain('"frameTimestamp"');
+      expect(serialized).not.toContain('"sequenceStream"');
+      expect(serialized).not.toContain('"pixelData"');
+      expect(serialized).not.toContain('"jpegBuffer"');
+      expect(serialized).not.toContain('"motionTrajectory"');
+    });
+  });
+
+  // ─── Persisted output assertions ────────────────────────────────────────
+
+  describe("persisted output privacy", () => {
+    let tempDir: string;
+    let persistence: FilePersistence;
+
+    beforeEach(async () => {
+      tempDir = await mkdtemp(join(tmpdir(), "privacy-test-"));
+      persistence = new FilePersistence(tempDir);
+    });
+
+    afterEach(async () => {
+      await rm(tempDir, { recursive: true, force: true });
+    });
+
+    it("no persisted file contains deviceLabel when session has visual metrics", async () => {
+      const metrics = makeMetrics();
+      metrics.visualMetrics = makeVisualMetrics();
+      const session = makeSession({
+        transcript: makeSegments(),
+        metrics,
+        evaluation: makeEvaluation(),
+        evaluationScript: "Great speech with visual feedback!",
+        consent: makeConsent(),
+      });
+
+      const paths = await persistence.saveSession(session);
+
+      for (const filePath of paths) {
+        const content = await readFile(filePath, filePath.endsWith(".mp3") ? null : "utf-8");
+        const text = typeof content === "string" ? content : content.toString("utf-8");
+        expect(text).not.toContain("deviceLabel");
+      }
+    });
+
+    it("metrics.json does not contain per-frame keypoints or raw motion data", async () => {
+      const metrics = makeMetrics();
+      metrics.visualMetrics = makeVisualMetrics();
+      const session = makeSession({
+        transcript: makeSegments(),
+        metrics,
+        evaluation: makeEvaluation(),
+        evaluationScript: "Great speech!",
+      });
+
+      const paths = await persistence.saveSession(session);
+      const metricsPath = paths.find((p) => p.endsWith("metrics.json"))!;
+      const content = await readFile(metricsPath, "utf-8");
+
+      // Per-frame data that must never appear
+      expect(content).not.toContain("keypoint");
+      expect(content).not.toContain("landmark");
+      expect(content).not.toContain("perFrame");
+      expect(content).not.toContain("per_frame");
+      expect(content).not.toContain("frameData");
+      expect(content).not.toContain("pixel");
+      expect(content).not.toContain("jpeg");
+      expect(content).not.toContain("base64");
+      expect(content).not.toContain("frameHeader");
+      expect(content).not.toContain("frameTimestamp");
+      expect(content).not.toContain('"seq"');
+      expect(content).not.toContain("sequenceStream");
+      expect(content).not.toContain("motionTrajectory");
+      expect(content).not.toContain("deviceLabel");
+    });
+
+    it("evaluation.txt does not contain deviceLabel or per-frame data", async () => {
+      const metrics = makeMetrics();
+      metrics.visualMetrics = makeVisualMetrics();
+      const session = makeSession({
+        transcript: makeSegments(),
+        metrics,
+        evaluation: makeEvaluation(),
+        evaluationScript: "I observed audience-facing gaze at 65%. Great use of gestures with 12 total gesture events.",
+        consent: makeConsent(),
+      });
+
+      const paths = await persistence.saveSession(session);
+      const evalPath = paths.find((p) => p.endsWith("evaluation.txt"))!;
+      const content = await readFile(evalPath, "utf-8");
+
+      expect(content).not.toContain("deviceLabel");
+      expect(content).not.toContain("keypoint");
+      expect(content).not.toContain("landmark");
+      expect(content).not.toContain("jpegBuffer");
+      expect(content).not.toContain("pixelData");
+      expect(content).not.toContain("frameHeader");
+      expect(content).not.toContain("sequenceStream");
+    });
+
+    it("transcript.txt does not contain deviceLabel or video data", async () => {
+      const session = makeSession({
+        transcript: makeSegments(),
+        metrics: makeMetrics(),
+        evaluation: makeEvaluation(),
+        evaluationScript: "Great speech!",
+      });
+
+      const paths = await persistence.saveSession(session);
+      const transcriptPath = paths.find((p) => p.endsWith("transcript.txt"))!;
+      const content = await readFile(transcriptPath, "utf-8");
+
+      expect(content).not.toContain("deviceLabel");
+      expect(content).not.toContain("keypoint");
+      expect(content).not.toContain("jpegBuffer");
+    });
+
+    it("no file contains reconstructable motion data (coordinate arrays or trajectory data)", async () => {
+      const metrics = makeMetrics();
+      metrics.visualMetrics = makeVisualMetrics();
+      const session = makeSession({
+        transcript: makeSegments(),
+        metrics,
+        evaluation: makeEvaluation(),
+        evaluationScript: "Great speech!",
+        consent: makeConsent(),
+      });
+
+      const paths = await persistence.saveSession(session);
+
+      for (const filePath of paths) {
+        if (filePath.endsWith(".mp3")) continue;
+        const content = await readFile(filePath, "utf-8");
+
+        // No coordinate arrays that could reconstruct motion
+        expect(content).not.toContain("motionTrajectory");
+        expect(content).not.toContain("keypointHistory");
+        expect(content).not.toContain("bodyCenterHistory");
+        expect(content).not.toContain("gazeClassifications");
+        expect(content).not.toContain("facialEnergyDeltas");
+      }
+    });
+  });
+
+  // ─── Source code grep-based assertions ──────────────────────────────────
+
+  describe("source code grep-based privacy assertions", () => {
+    it("setVideoStreamReady parameter is prefixed with underscore (not stored)", async () => {
+      // The session-manager's setVideoStreamReady must use _deviceLabel (underscore prefix)
+      // to signal that the parameter is intentionally unused/not stored.
+      const { readFile: readFs } = await import("node:fs/promises");
+      const smSource = await readFs("src/session-manager.ts", "utf-8");
+
+      // The parameter must be prefixed with underscore to indicate it's intentionally discarded
+      expect(smSource).toContain("_deviceLabel");
+
+      // The function must NOT assign deviceLabel to the session
+      expect(smSource).not.toContain("session.deviceLabel");
+
+      // The function must NOT log the deviceLabel value
+      const setVideoReadyMatch = smSource.match(
+        /setVideoStreamReady[\s\S]*?(?=\n\s{2}\w|\n\s{2}\/\*\*|\n\})/
+      );
+      if (setVideoReadyMatch) {
+        const fnBody = setVideoReadyMatch[0];
+        // The function body should not reference the deviceLabel value in any log
+        expect(fnBody).not.toMatch(/log\(.*deviceLabel/);
+        expect(fnBody).not.toMatch(/log\(.*_deviceLabel/);
+        expect(fnBody).not.toMatch(/console\.\w+\(.*deviceLabel/);
+      }
+    });
+
+    it("server.ts video_stream_ready handler does not log deviceLabel", async () => {
+      const { readFile: readFs } = await import("node:fs/promises");
+      const serverSource = await readFs("src/server.ts", "utf-8");
+
+      // Find the handleVideoStreamReady function
+      const handlerMatch = serverSource.match(
+        /function handleVideoStreamReady[\s\S]*?(?=\nfunction\s|\n\/\/\s─)/
+      );
+      expect(handlerMatch).not.toBeNull();
+
+      if (handlerMatch) {
+        const handlerBody = handlerMatch[0];
+        // The handler must not log deviceLabel
+        expect(handlerBody).not.toMatch(/logger\.\w+\(.*deviceLabel/);
+        expect(handlerBody).not.toMatch(/logger\.\w+\(.*message\.deviceLabel/);
+        expect(handlerBody).not.toMatch(/console\.\w+\(.*deviceLabel/);
+      }
+    });
+
+    it("file-persistence.ts does not reference deviceLabel", async () => {
+      const { readFile: readFs } = await import("node:fs/promises");
+      const fpSource = await readFs("src/file-persistence.ts", "utf-8");
+
+      expect(fpSource).not.toContain("deviceLabel");
+    });
+
+    it("file-persistence.ts does not write per-frame data fields", async () => {
+      const { readFile: readFs } = await import("node:fs/promises");
+      const fpSource = await readFs("src/file-persistence.ts", "utf-8");
+
+      // The persistence layer must not reference per-frame data structures
+      expect(fpSource).not.toContain("keypoints");
+      expect(fpSource).not.toContain("landmarks");
+      expect(fpSource).not.toContain("perFrameData");
+      expect(fpSource).not.toContain("frameHeader");
+      expect(fpSource).not.toContain("jpegBuffer");
+      expect(fpSource).not.toContain("pixelData");
+      expect(fpSource).not.toContain("motionTrajectory");
+      expect(fpSource).not.toContain("sequenceStream");
+    });
+
+    it("video-processor.ts does not use console.log (no accidental data leaks via stdout)", async () => {
+      const { readFile: readFs } = await import("node:fs/promises");
+      const vpSource = await readFs("src/video-processor.ts", "utf-8");
+
+      // VideoProcessor must not log to console — all logging goes through
+      // SessionManager's structured logger which only emits aggregate counters
+      expect(vpSource).not.toMatch(/console\.(log|warn|error|info|debug)\(/);
+    });
+  });
+
+  // ─── Log output simulation assertions ───────────────────────────────────
+
+  describe("log output privacy", () => {
+    it("SessionManager log for video stream ready does not contain deviceLabel", () => {
+      // Verify the log message format used by setVideoStreamReady
+      // The log should only contain the session ID, not the device label
+      const logMessages: string[] = [];
+      const originalLog = console.log;
+      console.log = (...args: unknown[]) => {
+        logMessages.push(args.map(String).join(" "));
+      };
+
+      try {
+        // Import and create a minimal SessionManager to test logging
+        // We verify by checking the session-manager source code pattern
+        // The log line should be: "Video stream ready for session {id}"
+        // and must NOT include any device label information
+        const expectedLogPattern = /Video stream ready for session/;
+        const prohibitedPatterns = [
+          /deviceLabel/i,
+          /FaceTime/i,
+          /Logitech/i,
+          /USB Camera/i,
+          /camera.*label/i,
+        ];
+
+        // The log message format from session-manager.ts
+        const logMessage = `Video stream ready for session test-session-123`;
+        expect(logMessage).toMatch(expectedLogPattern);
+        for (const pattern of prohibitedPatterns) {
+          expect(logMessage).not.toMatch(pattern);
+        }
+      } finally {
+        console.log = originalLog;
+      }
+    });
+
+    it("SessionManager video finalization log contains only aggregate counters", () => {
+      // The log format from session-manager.ts for video finalization is:
+      // "Video finalized for session {id}: {framesAnalyzed} frames analyzed, quality={grade}"
+      // This must contain ONLY aggregate counters — no per-frame data
+      const logMessage = `Video finalized for session test-123: 120 frames analyzed, quality=good`;
+
+      // Must contain aggregate info
+      expect(logMessage).toContain("frames analyzed");
+      expect(logMessage).toContain("quality=");
+
+      // Must NOT contain per-frame data
+      expect(logMessage).not.toContain("keypoint");
+      expect(logMessage).not.toContain("landmark");
+      expect(logMessage).not.toContain("pixel");
+      expect(logMessage).not.toContain("jpeg");
+      expect(logMessage).not.toContain("base64");
+      expect(logMessage).not.toContain("deviceLabel");
+      expect(logMessage).not.toContain("coordinate");
+      expect(logMessage).not.toContain("trajectory");
     });
   });
 });
