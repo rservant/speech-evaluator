@@ -1245,7 +1245,7 @@
 
     <!-- Processing Indicator -->
     <div id="processing-indicator" class="processing-indicator" role="status" aria-live="polite">
-      <span>✓ Speech processed — review transcript and click "Deliver Evaluation" when ready</span>
+      <span>Processing speech...</span>
     </div>
 
     <!-- Transcript Panel -->
@@ -1686,9 +1686,7 @@
         hide(dom.speakingIndicator);
         show(dom.processingIndicator);
         // Update processing indicator text to reflect current pipeline stage
-        if (pipelineStage !== "idle") {
-          updateProcessingIndicator(pipelineStage);
-        }
+        updateProcessingIndicator(pipelineStage);
         hideElapsedTime();
         hide(dom.audioLevel);
 

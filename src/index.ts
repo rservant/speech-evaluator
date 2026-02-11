@@ -16,6 +16,9 @@ import type { OpenAITTSClient } from "./tts-engine.js";
 import { FilePersistence } from "./file-persistence.js";
 import { VADMonitor } from "./vad-monitor.js";
 import type { VADConfig, VADEventCallback } from "./vad-monitor.js";
+import { VideoProcessor } from "./video-processor.js";
+import type { VideoProcessorDeps } from "./video-processor.js";
+import type { VideoConfig } from "./types.js";
 
 export const APP_NAME = "AI Toastmasters Evaluator";
 export const APP_VERSION = "0.1.0";
@@ -79,6 +82,8 @@ const sessionManager = new SessionManager({
   filePersistence,
   vadMonitorFactory: (config: VADConfig, callbacks: VADEventCallback) =>
     new VADMonitor(config, callbacks),
+  videoProcessorFactory: (config: VideoConfig, deps: VideoProcessorDeps) =>
+    new VideoProcessor(config, deps),
 });
 
 // ─── Start server ───────────────────────────────────────────────────────────────
