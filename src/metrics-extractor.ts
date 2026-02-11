@@ -130,6 +130,7 @@ export class MetricsExtractor {
         silenceThreshold: 0,
       },
       classifiedFillers,
+      visualMetrics: null,
     };
   }
 
@@ -310,6 +311,7 @@ export class MetricsExtractor {
         silenceThreshold: 0,
       },
       classifiedFillers: [],
+      visualMetrics: null,
     };
   }
 

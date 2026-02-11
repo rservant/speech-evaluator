@@ -59,7 +59,7 @@ function resolveMetricValue(key: string, observations: VisualObservations): numb
     const val = observations.gazeBreakdown[subKey];
     return typeof val === "number" ? val : undefined;
   }
-  const val = (observations as Record<string, unknown>)[key];
+  const val = (observations as unknown as Record<string, unknown>)[key];
   return typeof val === "number" ? val : undefined;
 }
 
