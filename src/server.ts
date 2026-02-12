@@ -777,6 +777,15 @@ function deliverFromCache(
   const session = sessionManager.getSession(connState.sessionId);
   const cache = session.evaluationCache!;
 
+  // Promote cached artifacts to session fields so that saveSession (formatEvaluation)
+  // can find them. The eager pipeline stores everything in evaluationCache but
+  // formatEvaluation reads session.evaluationScript / evaluationPublic / evaluation.
+  session.evaluation = cache.evaluation;
+  session.evaluationScript = cache.evaluationScript;
+  if (cache.evaluationPublic) {
+    session.evaluationPublic = cache.evaluationPublic;
+  }
+
   // Transition to DELIVERING — set state directly since we're skipping generateEvaluation()
   // which normally handles this transition. The session is in PROCESSING state here.
   session.state = SessionState.DELIVERING;

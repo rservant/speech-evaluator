@@ -37,7 +37,7 @@ This document defines the data handling, retention, and privacy invariants for t
 
 - The final transcript may contain names of other club members mentioned by the speaker.
 - Evidence quotes in the evaluation must be validated against the raw (unredacted) transcript.
-- For delivery (TTS script rendering), third-party names should be replaced with "[a fellow member]" or similar generic phrasing.
+- Third-party name redaction is currently disabled (the heuristic was too aggressive). The LLM prompt instructs against including third-party names as the primary safeguard.
 - The speaker's own name (if provided via `speakerName`) is not redacted.
 
 ## Provider Data Handling

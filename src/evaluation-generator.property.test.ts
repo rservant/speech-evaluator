@@ -1944,235 +1944,17 @@ describe("Feature: phase-2-stability-credibility, Property 16: Short-Form Fallba
 });
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// Property 15: Redaction Correctness
-// Feature: phase-2-stability-credibility, Property 15: Redaction Correctness
-// **Validates: Requirements 8.1, 8.2, 8.4, 8.5**
+// Property 15: Redaction Pass-Through (redaction disabled)
+// Feature: phase-2-stability-credibility, Property 15
+// **Validates: Requirements 8.1, 8.4, 8.5**
 //
-// For any evaluation script containing third-party private individual names
-// (not the speaker's name) and non-name entities (places, organizations, brands),
-// redaction SHALL:
-//   (a) replace each third-party name with "a fellow member"
-//   (b) preserve the speaker's own name unchanged
-//   (c) leave non-name entities unredacted
-//   (d) not introduce new words other than the generic replacement phrase
+// Redaction has been disabled because the heuristic-based name detection was
+// too aggressive. The redact() method now passes through all content unchanged
+// while still producing the StructuredEvaluationPublic shape.
 // ═══════════════════════════════════════════════════════════════════════════════
 
-describe("Property 15: Redaction Correctness", () => {
-  // ── Name pools ──────────────────────────────────────────────────────────────
-  // First names that match the heuristic pattern [A-Z][a-z]+ and are NOT in the
-  // nonNameWords exclusion list inside redactText().
-  const FIRST_NAMES = [
-    "Alice", "Bob", "Carlos", "Diana", "Elena", "Frank", "Grace",
-    "Hector", "Irene", "James", "Karen", "Leo", "Mia", "Nathan",
-    "Olivia", "Pedro", "Quinn", "Rosa", "Tom", "Vera",
-  ];
 
-  const LAST_NAMES = [
-    "Smith", "Garcia", "Chen", "Patel", "Kim", "Lopez", "Brown",
-    "Wilson", "Taylor", "Anderson", "Thomas", "Jackson", "White",
-    "Harris", "Martin", "Thompson", "Moore", "Clark", "Lewis", "Walker",
-  ];
-
-  // Non-name entities from the exclusion list that should NOT be redacted.
-  // These are words present in the nonNameWords set inside redactText().
-  const NON_NAME_ENTITIES = [
-    "Toastmasters", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday",
-    "Saturday", "Sunday", "January", "February", "March", "April",
-    "June", "July", "August", "September", "October", "November", "December",
-    "University", "College", "Church", "Hospital", "Company",
-    "American", "English", "Spanish", "French", "German",
-    "Chinese", "Japanese", "African", "European", "Asian",
-    "Christian", "However", "Finally", "Additionally", "Furthermore",
-    "Overall", "Meanwhile",
-  ];
-
-  // Filler sentence fragments that don't contain capitalized words mid-sentence
-  const SENTENCE_PREFIXES = [
-    "The speaker talked about",
-    "It was clear that",
-    "During the speech we heard",
-    "At that point the speaker said",
-    "In the middle of the talk",
-    "The audience noticed that",
-    "We could hear that",
-    "Throughout the presentation",
-    "At the beginning the speaker mentioned",
-    "Later in the speech",
-  ];
-
-  const SENTENCE_SUFFIXES = [
-    "which was very effective.",
-    "and it resonated with the audience.",
-    "during the second point.",
-    "as part of the opening remarks.",
-    "in a compelling way.",
-    "with great enthusiasm.",
-    "to illustrate the main idea.",
-    "and the audience responded well.",
-    "which added depth to the message.",
-    "as a powerful example.",
-  ];
-
-  // ── Generators ──────────────────────────────────────────────────────────────
-
-  /** Generate a first name from the pool. */
-  function arbitraryFirstName(): fc.Arbitrary<string> {
-    return fc.constantFrom(...FIRST_NAMES);
-  }
-
-  /** Generate a last name from the pool. */
-  function arbitraryLastName(): fc.Arbitrary<string> {
-    return fc.constantFrom(...LAST_NAMES);
-  }
-
-  /**
-   * Generate a person name: either a first name alone or "First Last".
-   * Both forms match the [A-Z][a-z]+(\s+[A-Z][a-z]+)* regex pattern.
-   */
-  function arbitraryPersonName(): fc.Arbitrary<string> {
-    return fc.oneof(
-      arbitraryFirstName(),
-      fc.tuple(arbitraryFirstName(), arbitraryLastName()).map(
-        ([first, last]) => `${first} ${last}`,
-      ),
-    );
-  }
-
-  /** Generate a non-name entity from the exclusion list. */
-  function arbitraryNonNameEntity(): fc.Arbitrary<string> {
-    return fc.constantFrom(...NON_NAME_ENTITIES);
-  }
-
-  /**
-   * Build a sentence that places a name mid-sentence (after whitespace),
-   * where the redactText() heuristic can detect it via the lookbehind (?<=\s).
-   */
-  function buildMidSentenceNameSentence(name: string): string {
-    const prefix =
-      SENTENCE_PREFIXES[Math.floor(Math.random() * SENTENCE_PREFIXES.length)];
-    const suffix =
-      SENTENCE_SUFFIXES[Math.floor(Math.random() * SENTENCE_SUFFIXES.length)];
-    return `${prefix} ${name} ${suffix}`;
-  }
-
-  /**
-   * Build a sentence that places a non-name entity mid-sentence.
-   */
-  function buildNonNameEntitySentence(entity: string): string {
-    return `The event at ${entity} was well attended and very productive.`;
-  }
-
-  /**
-   * Build a sentence that places the speaker's name mid-sentence.
-   */
-  function buildSpeakerNameSentence(speakerName: string): string {
-    return `The audience appreciated ${speakerName} for the insightful presentation.`;
-  }
-
-  /**
-   * Generate a RedactionInput with controlled content:
-   * - A script containing the speaker's name, third-party names, and non-name entities mid-sentence
-   * - A minimal evaluation with items referencing the same names
-   * - A consent record with the speaker's name
-   */
-  function arbitraryRedactionInput(): fc.Arbitrary<{
-    input: RedactionInput;
-    speakerName: string;
-    thirdPartyNames: string[];
-    nonNameEntities: string[];
-  }> {
-    return fc
-      .tuple(
-        arbitraryPersonName(), // speaker name
-        fc.array(arbitraryPersonName(), { minLength: 1, maxLength: 3 }), // third-party names
-        fc.array(arbitraryNonNameEntity(), { minLength: 1, maxLength: 3 }), // non-name entities
-        fc.constantFrom(...SENTENCE_PREFIXES),
-        fc.constantFrom(...SENTENCE_SUFFIXES),
-      )
-      .filter(([speakerName, thirdPartyNames]) => {
-        // Ensure speaker name tokens don't overlap with any third-party name tokens
-        const speakerTokens = new Set(
-          speakerName.toLowerCase().split(/\s+/),
-        );
-        return thirdPartyNames.every((tpName) => {
-          const tpTokens = tpName.toLowerCase().split(/\s+/);
-          return !tpTokens.some((t) => speakerTokens.has(t));
-        });
-      })
-      .map(([speakerName, thirdPartyNames, nonNameEntities, prefix, suffix]) => {
-        // Build script sentences with names placed mid-sentence
-        const scriptSentences: string[] = [];
-
-        // Opening sentence with speaker name mid-sentence
-        scriptSentences.push(buildSpeakerNameSentence(speakerName));
-
-        // Sentences with third-party names mid-sentence
-        for (const tpName of thirdPartyNames) {
-          scriptSentences.push(`${prefix} ${tpName} ${suffix}`);
-        }
-
-        // Sentences with non-name entities mid-sentence
-        for (const entity of nonNameEntities) {
-          scriptSentences.push(buildNonNameEntitySentence(entity));
-        }
-
-        // A plain sentence with no names
-        scriptSentences.push(
-          "The speech was well structured and delivered with confidence.",
-        );
-
-        const script = scriptSentences.join(" ");
-
-        // Build a minimal evaluation with items that reference third-party names
-        const items: EvaluationItem[] = [
-          {
-            type: "commendation",
-            summary: "Strong delivery",
-            evidence_quote: `the speaker mentioned ${thirdPartyNames[0]} during the talk`,
-            evidence_timestamp: 10,
-            explanation: `Referencing ${thirdPartyNames[0]} added credibility.`,
-          },
-          {
-            type: "commendation",
-            summary: "Good structure",
-            evidence_quote: "the speech was well structured and delivered",
-            evidence_timestamp: 20,
-            explanation: "Clear organization throughout.",
-          },
-          {
-            type: "recommendation",
-            summary: "Pacing improvement",
-            evidence_quote: `appreciated ${speakerName} for the insightful presentation`,
-            evidence_timestamp: 5,
-            explanation: "Consider varying the pace more.",
-          },
-        ];
-
-        const evaluation: StructuredEvaluation = {
-          opening: `Thank you for that wonderful speech. We heard ${speakerName} deliver a compelling message.`,
-          items,
-          closing: "Keep up the great work and continue to grow as a speaker.",
-          structure_commentary: {
-            opening_comment: null,
-            body_comment: null,
-            closing_comment: null,
-          },
-        };
-
-        const consent: ConsentRecord = {
-          speakerName,
-          consentConfirmed: true,
-          consentTimestamp: new Date(),
-        };
-
-        const input: RedactionInput = { script, evaluation, consent };
-
-        return { input, speakerName, thirdPartyNames, nonNameEntities };
-      });
-  }
-
-  // ── Helper: create a generator instance ─────────────────────────────────────
-
+describe("Property 15: Redaction Pass-Through", () => {
   function createRedactionGenerator(): EvaluationGenerator {
     const mockClient: OpenAIClient = {
       chat: {
@@ -2186,124 +1968,65 @@ describe("Property 15: Redaction Correctness", () => {
     return new EvaluationGenerator(mockClient);
   }
 
-  // ── Helper: tokenize text into words for comparison ─────────────────────────
-
-  function tokenize(text: string): string[] {
-    return text.split(/\s+/).filter(Boolean);
-  }
-
-  // ── Property Test ───────────────────────────────────────────────────────────
-
-  it("(a) third-party names are replaced with 'a fellow member', (b) speaker name preserved, (c) non-name entities unredacted, (d) no new words introduced", () => {
+  it("(a) script passes through unchanged, (b) evaluationPublic matches evaluation content, (c) item count and order preserved", () => {
     const generator = createRedactionGenerator();
 
     fc.assert(
       fc.property(
-        arbitraryRedactionInput(),
-        ({ input, speakerName, thirdPartyNames, nonNameEntities }) => {
+        fc.record({
+          speakerName: fc.constantFrom("Alice", "Bob", "Carlos", "Diana"),
+          script: fc.string({ minLength: 10, maxLength: 200 }),
+          opening: fc.string({ minLength: 5, maxLength: 100 }),
+          closing: fc.string({ minLength: 5, maxLength: 100 }),
+        }),
+        ({ speakerName, script, opening, closing }) => {
+          const evaluation: StructuredEvaluation = {
+            opening,
+            items: [
+              { type: "commendation", summary: "Good delivery", evidence_quote: "the speaker said something great", evidence_timestamp: 10, explanation: "Well done." },
+              { type: "recommendation", summary: "Pacing", evidence_quote: "and then moved on quickly", evidence_timestamp: 30, explanation: "Slow down." },
+            ],
+            closing,
+            structure_commentary: { opening_comment: null, body_comment: null, closing_comment: null },
+          };
+          const input: RedactionInput = { script, evaluation, consent: { speakerName, consentConfirmed: true, consentTimestamp: new Date() } };
           const result = generator.redact(input);
-
-          // ── Sub-property (a): Third-party names replaced ──────────────
-          // Each third-party name that was placed mid-sentence should be
-          // replaced with "a fellow member" in the redacted script.
-          for (const tpName of thirdPartyNames) {
-            // The name tokens should not appear as capitalized mid-sentence
-            // words in the redacted output
-            const nameTokens = tpName.split(/\s+/);
-            for (const token of nameTokens) {
-              // Check that the capitalized token doesn't appear in the
-              // redacted script in its original capitalized form mid-sentence.
-              // We search for the token preceded by a space (mid-sentence position).
-              const midSentencePattern = new RegExp(`(?<=\\s)${token}(?=\\s|[.!?,;:]|$)`);
-              expect(
-                midSentencePattern.test(result.scriptRedacted),
-              ).toBe(false);
-            }
+          expect(result.scriptRedacted).toBe(script);
+          expect(result.evaluationPublic.opening).toBe(opening);
+          expect(result.evaluationPublic.closing).toBe(closing);
+          expect(result.evaluationPublic.items).toHaveLength(evaluation.items.length);
+          for (let i = 0; i < evaluation.items.length; i++) {
+            expect(result.evaluationPublic.items[i].type).toBe(evaluation.items[i].type);
+            expect(result.evaluationPublic.items[i].summary).toBe(evaluation.items[i].summary);
+            expect(result.evaluationPublic.items[i].evidence_quote).toBe(evaluation.items[i].evidence_quote);
+            expect(result.evaluationPublic.items[i].explanation).toBe(evaluation.items[i].explanation);
+            expect(result.evaluationPublic.items[i].evidence_timestamp).toBe(evaluation.items[i].evidence_timestamp);
           }
-
-          // The replacement phrase must appear in the redacted script
-          expect(result.scriptRedacted).toContain("a fellow member");
-
-          // ── Sub-property (b): Speaker's own name preserved ────────────
-          // The speaker's name tokens should still appear in the redacted script
-          expect(result.scriptRedacted).toContain(speakerName);
-
-          // Also check the evaluationPublic: speaker name should be preserved
-          // in the recommendation evidence quote that references the speaker
-          const recItem = result.evaluationPublic.items.find(
-            (i) => i.type === "recommendation",
-          );
-          if (recItem) {
-            const speakerTokens = speakerName.split(/\s+/);
-            for (const token of speakerTokens) {
-              expect(recItem.evidence_quote).toContain(token);
-            }
-          }
-
-          // ── Sub-property (c): Non-name entities not redacted ──────────
-          // Entities from the exclusion list should survive redaction
-          for (const entity of nonNameEntities) {
-            expect(result.scriptRedacted).toContain(entity);
-          }
-
-          // ── Sub-property (d): No new words introduced ─────────────────
-          // Every word in the redacted output must either:
-          //   1. Exist in the original input text, OR
-          //   2. Be part of the replacement phrase "a fellow member"
-          const replacementTokens = new Set(["a", "fellow", "member"]);
-          const originalTokens = new Set(tokenize(input.script));
-
-          const redactedTokens = tokenize(result.scriptRedacted);
-          for (const token of redactedTokens) {
-            const inOriginal = originalTokens.has(token);
-            const inReplacement = replacementTokens.has(token);
-            expect(inOriginal || inReplacement).toBe(true);
-          }
-
-          // ── Also verify evaluationPublic consistency ───────────────────
-          // The replacement phrase in the script and evidence quotes must be
-          // identical: "a fellow member" (no brackets)
-          expect(result.scriptRedacted).not.toContain("[a fellow member]");
-          for (const item of result.evaluationPublic.items) {
-            expect(item.evidence_quote).not.toContain("[a fellow member]");
-          }
-
-          // Item count and order preserved
-          expect(result.evaluationPublic.items).toHaveLength(
-            input.evaluation.items.length,
-          );
-          for (let i = 0; i < input.evaluation.items.length; i++) {
-            expect(result.evaluationPublic.items[i].type).toBe(
-              input.evaluation.items[i].type,
-            );
-          }
+          expect(result.scriptRedacted).not.toContain("a fellow member");
         },
       ),
       { numRuns: 200 },
     );
   });
 
-  it("redaction in evaluationPublic opening and closing replaces third-party names and preserves speaker name", () => {
+  it("structure_commentary passes through unchanged", () => {
     const generator = createRedactionGenerator();
-
     fc.assert(
       fc.property(
-        arbitraryRedactionInput(),
-        ({ input, speakerName, thirdPartyNames }) => {
+        fc.record({
+          openingComment: fc.option(fc.string({ minLength: 1, maxLength: 50 }), { nil: null }),
+          bodyComment: fc.option(fc.string({ minLength: 1, maxLength: 50 }), { nil: null }),
+          closingComment: fc.option(fc.string({ minLength: 1, maxLength: 50 }), { nil: null }),
+        }),
+        ({ openingComment, bodyComment, closingComment }) => {
+          const commentary = { opening_comment: openingComment, body_comment: bodyComment, closing_comment: closingComment };
+          const input: RedactionInput = {
+            script: "Test script.",
+            evaluation: { opening: "Hello.", items: [{ type: "commendation" as const, summary: "Good", evidence_quote: "test quote here for validation", evidence_timestamp: 0, explanation: "Nice." }], closing: "Bye.", structure_commentary: commentary },
+            consent: { speakerName: "Test", consentConfirmed: true, consentTimestamp: new Date() },
+          };
           const result = generator.redact(input);
-
-          // Speaker name should be preserved in opening and closing
-          // (the opening contains the speaker name mid-sentence)
-          expect(result.evaluationPublic.opening).toContain(speakerName);
-
-          // Third-party names in evidence quotes should be redacted
-          const firstItem = result.evaluationPublic.items[0];
-          const firstTpName = thirdPartyNames[0];
-          const nameTokens = firstTpName.split(/\s+/);
-          for (const token of nameTokens) {
-            const midSentencePattern = new RegExp(`(?<=\\s)${token}(?=\\s|[.!?,;:]|$)`);
-            expect(midSentencePattern.test(firstItem.evidence_quote)).toBe(false);
-          }
+          expect(result.evaluationPublic.structure_commentary).toEqual(commentary);
         },
       ),
       { numRuns: 200 },
@@ -2312,379 +2035,47 @@ describe("Property 15: Redaction Correctness", () => {
 });
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// Property 21: Public Output Redaction Completeness
-// Feature: phase-2-stability-credibility, Property 21: Public Output Redaction Completeness
-// **Validates: Requirements 8.1, 8.4, 8.5**
-//
-// For any StructuredEvaluationPublic or script string sent to the Web UI
-// (via evaluation_ready message) or saved to disk (via "Save Outputs"),
-// the content SHALL NOT contain any third-party private individual names.
-// The speaker's own name (from ConsentRecord) MAY appear.
-// Non-name entities (places, organizations, brands) MAY appear.
-//
-// Key difference from Property 15:
-// - Property 15 tests the redaction *mechanism* (replacement, preservation, no new words)
-// - Property 21 tests the *completeness* of the public output — verifying that
-//   NO third-party names survive in ANY field of the public output
+// Property 21: Public Output Shape Completeness (redaction disabled)
 // ═══════════════════════════════════════════════════════════════════════════════
 
-describe("Property 21: Public Output Redaction Completeness", () => {
-  // ── Name pools ──────────────────────────────────────────────────────────────
-  // First names that match the heuristic pattern [A-Z][a-z]+ and are NOT in the
-  // nonNameWords exclusion list inside redactText().
-  const FIRST_NAMES = [
-    "Alice", "Bob", "Carlos", "Diana", "Elena", "Frank", "Grace",
-    "Hector", "Irene", "James", "Karen", "Leo", "Mia", "Nathan",
-    "Olivia", "Pedro", "Quinn", "Rosa", "Tom", "Vera",
-  ];
-
-  const LAST_NAMES = [
-    "Smith", "Garcia", "Chen", "Patel", "Kim", "Lopez", "Brown",
-    "Wilson", "Taylor", "Anderson", "Thomas", "Jackson", "White",
-    "Harris", "Martin", "Thompson", "Moore", "Clark", "Lewis", "Walker",
-  ];
-
-  // Non-name entities from the exclusion list that should NOT be redacted.
-  const NON_NAME_ENTITIES = [
-    "Toastmasters", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday",
-    "Saturday", "Sunday", "January", "February", "March", "April",
-    "June", "July", "August", "September", "October", "November", "December",
-    "University", "College", "Church", "Hospital", "Company",
-    "American", "English", "Spanish", "French", "German",
-    "Chinese", "Japanese", "African", "European", "Asian",
-    "Christian", "However", "Finally", "Additionally", "Furthermore",
-    "Overall", "Meanwhile",
-  ];
-
-  // Sentence fragments for building mid-sentence name placements
-  const SENTENCE_PREFIXES = [
-    "The speaker talked about",
-    "It was clear that",
-    "During the speech we heard",
-    "At that point the speaker said",
-    "In the middle of the talk",
-    "The audience noticed that",
-    "We could hear that",
-    "Throughout the presentation",
-    "At the beginning the speaker mentioned",
-    "Later in the speech",
-  ];
-
-  const SENTENCE_SUFFIXES = [
-    "which was very effective.",
-    "and it resonated with the audience.",
-    "during the second point.",
-    "as part of the opening remarks.",
-    "in a compelling way.",
-    "with great enthusiasm.",
-    "to illustrate the main idea.",
-    "and the audience responded well.",
-    "which added depth to the message.",
-    "as a powerful example.",
-  ];
-
-  // ── Generators ──────────────────────────────────────────────────────────────
-
-  function arbitraryFirstName(): fc.Arbitrary<string> {
-    return fc.constantFrom(...FIRST_NAMES);
-  }
-
-  function arbitraryLastName(): fc.Arbitrary<string> {
-    return fc.constantFrom(...LAST_NAMES);
-  }
-
-  function arbitraryPersonName(): fc.Arbitrary<string> {
-    return fc.oneof(
-      arbitraryFirstName(),
-      fc.tuple(arbitraryFirstName(), arbitraryLastName()).map(
-        ([first, last]) => `${first} ${last}`,
-      ),
-    );
-  }
-
-  function arbitraryNonNameEntity(): fc.Arbitrary<string> {
-    return fc.constantFrom(...NON_NAME_ENTITIES);
-  }
-
-  /**
-   * Build a sentence that places a name mid-sentence (after whitespace),
-   * where the redactText() heuristic can detect it via the lookbehind (?<=\s).
-   */
-  function buildMidSentenceNameSentence(name: string, prefixIdx: number, suffixIdx: number): string {
-    const prefix = SENTENCE_PREFIXES[prefixIdx % SENTENCE_PREFIXES.length];
-    const suffix = SENTENCE_SUFFIXES[suffixIdx % SENTENCE_SUFFIXES.length];
-    return `${prefix} ${name} ${suffix}`;
-  }
-
-  /**
-   * Generate a comprehensive RedactionInput that injects third-party names
-   * into ALL text fields of the public output:
-   * - script (multiple sentences with names mid-sentence)
-   * - evaluation.opening (name mid-sentence)
-   * - evaluation.closing (name mid-sentence)
-   * - evaluation.items[*].evidence_quote (name mid-sentence)
-   * - evaluation.items[*].explanation (name mid-sentence)
-   * - evaluation.items[*].summary (name mid-sentence)
-   *
-   * This ensures completeness testing across every field that appears in
-   * the public output.
-   */
-  function arbitraryComprehensiveRedactionInput(): fc.Arbitrary<{
-    input: RedactionInput;
-    speakerName: string;
-    thirdPartyNames: string[];
-    nonNameEntities: string[];
-  }> {
-    return fc
-      .tuple(
-        arbitraryPersonName(), // speaker name
-        fc.array(arbitraryPersonName(), { minLength: 1, maxLength: 4 }), // third-party names
-        fc.array(arbitraryNonNameEntity(), { minLength: 0, maxLength: 3 }), // non-name entities
-        fc.nat({ max: 9 }), // prefix index
-        fc.nat({ max: 9 }), // suffix index
-      )
-      .filter(([speakerName, thirdPartyNames]) => {
-        // Ensure speaker name tokens don't overlap with any third-party name tokens
-        const speakerTokens = new Set(
-          speakerName.toLowerCase().split(/\s+/),
-        );
-        return thirdPartyNames.every((tpName) => {
-          const tpTokens = tpName.toLowerCase().split(/\s+/);
-          return !tpTokens.some((t) => speakerTokens.has(t));
-        });
-      })
-      .map(([speakerName, thirdPartyNames, nonNameEntities, prefixIdx, suffixIdx]) => {
-        // Pick a primary third-party name to inject everywhere
-        const primaryTpName = thirdPartyNames[0];
-
-        // ── Build script with names in various positions ──────────────
-        const scriptSentences: string[] = [];
-
-        // Speaker name mid-sentence (should be preserved)
-        scriptSentences.push(
-          `The audience appreciated ${speakerName} for the insightful presentation.`,
-        );
-
-        // Third-party names mid-sentence (should be redacted)
-        for (const tpName of thirdPartyNames) {
-          scriptSentences.push(
-            buildMidSentenceNameSentence(tpName, prefixIdx, suffixIdx),
-          );
-        }
-
-        // Non-name entities mid-sentence (should be preserved)
-        for (const entity of nonNameEntities) {
-          scriptSentences.push(
-            `The event at ${entity} was well attended and very productive.`,
-          );
-        }
-
-        // Plain sentence
-        scriptSentences.push(
-          "The speech was well structured and delivered with confidence.",
-        );
-
-        const script = scriptSentences.join(" ");
-
-        // ── Build evaluation with names injected into ALL fields ──────
-        // opening: third-party name mid-sentence
-        const opening = `Thank you for that wonderful speech. We heard from ${primaryTpName} and ${speakerName} during the talk.`;
-
-        // closing: third-party name mid-sentence
-        const closing = `Keep up the great work. The feedback from ${primaryTpName} was also noteworthy.`;
-
-        // items: inject third-party names into summary, explanation, and evidence_quote
-        const items: EvaluationItem[] = [
-          {
-            type: "commendation",
-            summary: `Strong delivery alongside ${primaryTpName} in the group`,
-            evidence_quote: `the speaker mentioned ${primaryTpName} during the talk`,
-            evidence_timestamp: 10,
-            explanation: `Referencing ${primaryTpName} added credibility to the argument.`,
-          },
-          {
-            type: "commendation",
-            summary: "Good structure throughout the speech",
-            evidence_quote: "the speech was well structured and delivered",
-            evidence_timestamp: 20,
-            explanation: "Clear organization throughout the presentation.",
-          },
-          {
-            type: "recommendation",
-            summary: `Consider the approach used by ${speakerName} more often`,
-            evidence_quote: `appreciated ${speakerName} for the insightful presentation`,
-            evidence_timestamp: 5,
-            explanation: "Consider varying the pace for greater impact.",
-          },
-        ];
-
-        // If we have more third-party names, add items referencing them
-        if (thirdPartyNames.length > 1) {
-          items.push({
-            type: "recommendation",
-            summary: `Pacing near ${thirdPartyNames[1]} reference could improve`,
-            evidence_quote: `the speaker said ${thirdPartyNames[1]} which was very effective`,
-            evidence_timestamp: 30,
-            explanation: `The mention of ${thirdPartyNames[1]} was good but could be expanded.`,
-          });
-        }
-
-        const evaluation: StructuredEvaluation = {
-          opening,
-          items,
-          closing,
-          structure_commentary: {
-            opening_comment: null,
-            body_comment: null,
-            closing_comment: null,
-          },
-        };
-
-        const consent: ConsentRecord = {
-          speakerName,
-          consentConfirmed: true,
-          consentTimestamp: new Date(),
-        };
-
-        const input: RedactionInput = { script, evaluation, consent };
-
-        return { input, speakerName, thirdPartyNames, nonNameEntities };
-      });
-  }
-
-  // ── Helper: create a generator instance ─────────────────────────────────────
-
+describe("Property 21: Public Output Shape Completeness", () => {
   function createRedactionGenerator(): EvaluationGenerator {
     const mockClient: OpenAIClient = {
-      chat: {
-        completions: {
-          create: vi.fn().mockResolvedValue({
-            choices: [{ message: { content: "{}" } }],
-          }),
-        },
-      },
+      chat: { completions: { create: vi.fn().mockResolvedValue({ choices: [{ message: { content: "{}" } }] }) } },
     } as unknown as OpenAIClient;
     return new EvaluationGenerator(mockClient);
   }
 
-  /**
-   * Check that a text field does NOT contain any third-party name token
-   * in a mid-sentence position (preceded by whitespace, in its original
-   * capitalized form). This is the detectable scope of the redaction heuristic.
-   */
-  function assertNoThirdPartyNames(
-    text: string,
-    thirdPartyNames: string[],
-    fieldLabel: string,
-  ): void {
-    for (const tpName of thirdPartyNames) {
-      const nameTokens = tpName.split(/\s+/);
-      for (const token of nameTokens) {
-        // The redaction heuristic detects capitalized words mid-sentence
-        // (preceded by whitespace). Check that no such token survives.
-        const midSentencePattern = new RegExp(
-          `(?<=\\s)${token}(?=\\s|[.!?,;:]|$)`,
-        );
-        expect(
-          midSentencePattern.test(text),
-          `Third-party name token "${token}" (from "${tpName}") found in ${fieldLabel}: "${text}"`,
-        ).toBe(false);
-      }
-    }
-  }
-
-  // ── Property Test ───────────────────────────────────────────────────────────
-
-  it("no third-party name tokens survive in any field of the public output (scriptRedacted, opening, closing, items[*].summary, items[*].explanation, items[*].evidence_quote)", () => {
+  it("evaluationPublic has correct shape with all required fields", () => {
     const generator = createRedactionGenerator();
-
     fc.assert(
-      fc.property(
-        arbitraryComprehensiveRedactionInput(),
-        ({ input, speakerName, thirdPartyNames, nonNameEntities }) => {
-          const result = generator.redact(input);
-
-          // ── Check scriptRedacted ──────────────────────────────────────
-          assertNoThirdPartyNames(
-            result.scriptRedacted,
-            thirdPartyNames,
-            "scriptRedacted",
-          );
-
-          // ── Check evaluationPublic.opening ────────────────────────────
-          assertNoThirdPartyNames(
-            result.evaluationPublic.opening,
-            thirdPartyNames,
-            "evaluationPublic.opening",
-          );
-
-          // ── Check evaluationPublic.closing ────────────────────────────
-          assertNoThirdPartyNames(
-            result.evaluationPublic.closing,
-            thirdPartyNames,
-            "evaluationPublic.closing",
-          );
-
-          // ── Check ALL items fields ────────────────────────────────────
-          for (let i = 0; i < result.evaluationPublic.items.length; i++) {
-            const item = result.evaluationPublic.items[i];
-
-            assertNoThirdPartyNames(
-              item.evidence_quote,
-              thirdPartyNames,
-              `evaluationPublic.items[${i}].evidence_quote`,
-            );
-
-            assertNoThirdPartyNames(
-              item.explanation,
-              thirdPartyNames,
-              `evaluationPublic.items[${i}].explanation`,
-            );
-
-            assertNoThirdPartyNames(
-              item.summary,
-              thirdPartyNames,
-              `evaluationPublic.items[${i}].summary`,
-            );
-          }
-
-          // ── Speaker's own name MAY appear (positive check) ────────────
-          // The speaker name was placed mid-sentence in the script and
-          // in the recommendation evidence_quote — it should survive.
-          expect(result.scriptRedacted).toContain(speakerName);
-
-          // ── Non-name entities MAY appear (positive check) ─────────────
-          for (const entity of nonNameEntities) {
-            expect(result.scriptRedacted).toContain(entity);
-          }
-
-          // ── Replacement phrase present where names were ───────────────
-          // Since we injected third-party names, "a fellow member" must
-          // appear in the redacted output.
-          expect(result.scriptRedacted).toContain("a fellow member");
-        },
-      ),
-      { numRuns: 200 },
-    );
-  });
-
-  it("structure_commentary fields pass through unchanged (no name injection in commentary)", () => {
-    const generator = createRedactionGenerator();
-
-    fc.assert(
-      fc.property(
-        arbitraryComprehensiveRedactionInput(),
-        ({ input }) => {
-          const result = generator.redact(input);
-
-          // structure_commentary is passed through as-is (not redacted)
-          // since it comes from the LLM and doesn't contain user names.
-          // Verify it matches the input exactly.
-          expect(result.evaluationPublic.structure_commentary).toEqual(
-            input.evaluation.structure_commentary,
-          );
-        },
-      ),
+      fc.property(fc.nat({ max: 4 }), (itemCount) => {
+        const items: EvaluationItem[] = Array.from({ length: Math.max(1, itemCount) }, (_, i) => ({
+          type: (i % 2 === 0 ? "commendation" : "recommendation") as "commendation" | "recommendation",
+          summary: `Summary ${i}`, evidence_quote: `evidence quote number ${i} from the speech`, evidence_timestamp: i * 10, explanation: `Explanation ${i}`,
+        }));
+        const input: RedactionInput = {
+          script: "Test script content.",
+          evaluation: { opening: "Hello speaker.", items, closing: "Great job.", structure_commentary: { opening_comment: "Good start.", body_comment: null, closing_comment: null } },
+          consent: { speakerName: "Speaker", consentConfirmed: true, consentTimestamp: new Date() },
+        };
+        const result = generator.redact(input);
+        expect(typeof result.scriptRedacted).toBe("string");
+        expect(typeof result.evaluationPublic.opening).toBe("string");
+        expect(typeof result.evaluationPublic.closing).toBe("string");
+        expect(Array.isArray(result.evaluationPublic.items)).toBe(true);
+        expect(result.evaluationPublic.structure_commentary).toBeDefined();
+        for (const item of result.evaluationPublic.items) {
+          expect(item.type).toMatch(/^(commendation|recommendation)$/);
+          expect(typeof item.summary).toBe("string");
+          expect(typeof item.explanation).toBe("string");
+          expect(typeof item.evidence_quote).toBe("string");
+          expect(typeof item.evidence_timestamp).toBe("number");
+        }
+        expect(result.scriptRedacted).toBe(input.script);
+        expect(result.evaluationPublic.opening).toBe(input.evaluation.opening);
+        expect(result.evaluationPublic.closing).toBe(input.evaluation.closing);
+      }),
       { numRuns: 200 },
     );
   });

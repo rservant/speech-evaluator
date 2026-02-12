@@ -504,8 +504,7 @@ export class EvaluationGenerator {
    *  - Each commendation/recommendation (2-3 sentences with evidence woven in)
    *  - Closing (1-2 sentences)
    *
-   * Third-party name redaction is applied: names other than the speaker's
-   * own name are replaced with "[a fellow member]".
+   * Renders the evaluation into a plain-text script suitable for TTS delivery.
    */
   /**
      * Render a validated StructuredEvaluation into a natural spoken script
@@ -589,8 +588,7 @@ export class EvaluationGenerator {
 
       const script = parts.join("\n\n");
 
-      // Apply third-party name redaction for TTS delivery
-      return this.redactThirdPartyNames(script, speakerName);
+      return script;
     }
 
   // ── Prompt construction ─────────────────────────────────────────────────────
@@ -1336,145 +1334,37 @@ Please provide a corrected version of this ${item.type} with a valid evidence qu
   }
 
   /**
-   * Redact third-party names from the rendered script for TTS delivery.
+   * Public redaction method (Pipeline Stage 7).
    *
-   * Per privacy steering rules:
-   *  - Third-party names should be replaced with "[a fellow member]"
-   *  - The speaker's own name (if provided) is NOT redacted
+   * Redaction disabled: the heuristic-based name detection was too aggressive,
+   * replacing company names, common words, and evaluation phrases with
+   * "a fellow member". The LLM prompt already instructs against including
+   * third-party names, which is a sufficient safeguard.
    *
-   * This is a best-effort heuristic: we look for capitalized words that
-   * appear to be proper names (2+ consecutive capitalized words, or single
-   * capitalized words not at sentence start) and replace them.
-   *
-   * Note: In a production system this would use NER. For MVP, we apply
-   * a conservative approach — the LLM is instructed not to include names,
-   * and this serves as a safety net.
+   * This method now passes through the script and evaluation unchanged,
+   * while still producing the StructuredEvaluationPublic shape required
+   * by downstream consumers.
    */
-  /**
-     * Internal helper: redact third-party names in a text string.
-     * Uses a best-effort heuristic: capitalized words mid-sentence that look like
-     * proper person names are replaced with "a fellow member".
-     *
-     * Conservative: does not redact uncertain entities (places, orgs, brands).
-     * Preserves the speaker's own name.
-     */
-    private redactThirdPartyNames(script: string, speakerName?: string): string {
-      if (!speakerName) {
-        // Without a speaker name, we can't distinguish speaker from third-party.
-        // Return as-is; the LLM prompt already instructs against including names.
-        return script;
-      }
+  redact(input: RedactionInput): RedactionOutput {
+    const { script, evaluation } = input;
 
-      return this.redactText(script, speakerName);
-    }
+    const publicItems: EvaluationItemPublic[] = evaluation.items.map((item) => ({
+      type: item.type,
+      summary: item.summary,
+      explanation: item.explanation,
+      evidence_quote: item.evidence_quote,
+      evidence_timestamp: item.evidence_timestamp,
+    }));
 
-    /**
-     * Core redaction logic: replaces third-party private individual names with
-     * "a fellow member" in the given text. Speaker's own name is preserved.
-     *
-     * Conservative heuristic:
-     * - Only redacts capitalized words that appear mid-sentence (not sentence-start)
-     * - Skips common non-name capitalized words (places, orgs, brands, common English words)
-     * - Skips words that match any token in the speaker's name
-     * - Does NOT redact uncertain entities
-     */
-    private redactText(text: string, speakerName: string): string {
-      // Build a set of speaker name tokens to preserve (case-insensitive)
-      const speakerTokens = new Set(
-        speakerName.toLowerCase().split(/\s+/).filter(Boolean),
-      );
+    const evaluationPublic: StructuredEvaluationPublic = {
+      opening: evaluation.opening,
+      items: publicItems,
+      closing: evaluation.closing,
+      structure_commentary: evaluation.structure_commentary,
+    };
 
-      // Common capitalized words that are NOT person names — conservative exclusion list
-      const nonNameWords = new Set([
-        // Common English words that may appear capitalized
-        "i", "the", "a", "an", "this", "that", "these", "those",
-        "my", "your", "his", "her", "its", "our", "their",
-        // Days, months
-        "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday",
-        "january", "february", "march", "april", "may", "june", "july",
-        "august", "september", "october", "november", "december",
-        // Common place/org indicators — if the word is one of these, skip
-        "toastmasters", "club", "university", "college", "school", "church",
-        "hospital", "company", "corporation", "inc", "llc", "ltd",
-        "street", "avenue", "road", "boulevard", "park", "city", "town",
-        "state", "country", "america", "american", "english", "spanish",
-        "french", "german", "chinese", "japanese", "african", "european",
-        "asian", "christian", "muslim", "jewish", "buddhist",
-        // Common words that start sentences or appear after quotes
-        "one", "next", "first", "second", "third", "also", "however",
-        "overall", "finally", "additionally", "furthermore", "meanwhile",
-        "something", "when", "where", "what", "who", "how", "why",
-        "thank", "thanks", "great", "good", "well", "keep",
-      ]);
-
-      const sentences = text.split(/(?<=[.!?])\s+/);
-      const redacted = sentences.map((sentence) => {
-        // Replace potential third-party names (capitalized words mid-sentence)
-        return sentence.replace(
-          /(?<=\s)([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)/g,
-          (match) => {
-            const matchTokens = match.toLowerCase().split(/\s+/);
-
-            // If any token matches the speaker name, preserve it
-            if (matchTokens.some((t) => speakerTokens.has(t))) {
-              return match;
-            }
-
-            // If all tokens are in the non-name exclusion list, preserve (conservative)
-            if (matchTokens.every((t) => nonNameWords.has(t))) {
-              return match;
-            }
-
-            return "a fellow member";
-          },
-        );
-      });
-
-      return redacted.join(" ");
-    }
-
-    /**
-     * Public redaction method (Pipeline Stage 8).
-     *
-     * Redacts third-party private individual names from both the script and
-     * the structured evaluation, producing:
-     * - `scriptRedacted`: the script with names replaced by "a fellow member"
-     * - `evaluationPublic`: a StructuredEvaluationPublic with redacted evidence quotes
-     *
-     * The replacement phrase "a fellow member" is identical across scriptRedacted
-     * and evaluationPublic.items[*].evidence_quote.
-     *
-     * Conservative: does not redact uncertain entities (places, orgs, brands).
-     * Preserves the speaker's own name (from consent.speakerName).
-     *
-     * Requirements: 8.1, 8.2, 8.3, 8.4, 8.5
-     */
-    redact(input: RedactionInput): RedactionOutput {
-      const { script, evaluation, consent } = input;
-      const speakerName = consent.speakerName;
-
-      // Redact the script
-      const scriptRedacted = this.redactText(script, speakerName);
-
-      // Redact the evaluation to produce the public version
-      // All user-visible text fields must be redacted (Req 8.4)
-      const publicItems: EvaluationItemPublic[] = evaluation.items.map((item) => ({
-        type: item.type,
-        summary: this.redactText(item.summary, speakerName),
-        explanation: this.redactText(item.explanation, speakerName),
-        evidence_quote: this.redactText(item.evidence_quote, speakerName),
-        evidence_timestamp: item.evidence_timestamp,
-      }));
-
-      const evaluationPublic: StructuredEvaluationPublic = {
-        opening: this.redactText(evaluation.opening, speakerName),
-        items: publicItems,
-        closing: this.redactText(evaluation.closing, speakerName),
-        structure_commentary: evaluation.structure_commentary,
-      };
-
-      return { scriptRedacted, evaluationPublic };
-    }
+    return { scriptRedacted: script, evaluationPublic };
+  }
 
     // ── Consistency Monitoring Telemetry (Req 7.1, 7.3, 7.4, 7.5) ────────────
 

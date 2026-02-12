@@ -266,7 +266,7 @@ describe("EvaluationGenerator", () => {
       expect(script).toContain("area to consider for growth");
     });
 
-    it("should redact third-party names when speakerName is provided", () => {
+    it("should not redact third-party names (redaction disabled)", () => {
       const evaluation = makeEvaluation({
         opening: "Thank you Sarah for that wonderful speech about John and Mary.",
       });
@@ -274,12 +274,11 @@ describe("EvaluationGenerator", () => {
 
       const script = generator.renderScript(evaluation, "Sarah");
 
-      // Sarah should be preserved (speaker's name)
+      // Redaction is disabled — all names pass through
       expect(script).toContain("Sarah");
-      // John and Mary should be redacted
-      expect(script).toContain("a fellow member");
-      expect(script).not.toContain("John");
-      expect(script).not.toContain("Mary");
+      expect(script).toContain("John");
+      expect(script).toContain("Mary");
+      expect(script).not.toContain("a fellow member");
     });
 
     it("should not redact when no speakerName is provided", () => {
@@ -1395,15 +1394,17 @@ describe("EvaluationGenerator", () => {
       };
     }
 
-    it("should replace third-party names with 'a fellow member' in the script", () => {
+    it("should pass through script unchanged (redaction disabled)", () => {
       const generator = new EvaluationGenerator(makeMockClient([]));
       const input = makeRedactionInput();
 
       const result = generator.redact(input);
 
-      expect(result.scriptRedacted).not.toContain("John");
-      expect(result.scriptRedacted).not.toContain("Mary");
-      expect(result.scriptRedacted).toContain("a fellow member");
+      // Script passes through unchanged — no redaction
+      expect(result.scriptRedacted).toBe(input.script);
+      expect(result.scriptRedacted).toContain("John");
+      expect(result.scriptRedacted).toContain("Mary");
+      expect(result.scriptRedacted).not.toContain("a fellow member");
     });
 
     it("should preserve the speaker's own name in the script", () => {
@@ -1415,19 +1416,16 @@ describe("EvaluationGenerator", () => {
       expect(result.scriptRedacted).toContain("Sarah");
     });
 
-    it("should replace third-party names in evidence quotes of evaluationPublic", () => {
+    it("should pass through evidence quotes unchanged in evaluationPublic", () => {
       const generator = new EvaluationGenerator(makeMockClient([]));
       const input = makeRedactionInput();
 
       const result = generator.redact(input);
 
-      // Item 0 mentions "John" — should be redacted
-      expect(result.evaluationPublic.items[0].evidence_quote).not.toContain("John");
-      expect(result.evaluationPublic.items[0].evidence_quote).toContain("a fellow member");
-
-      // Item 1 mentions "Mary" — should be redacted
-      expect(result.evaluationPublic.items[1].evidence_quote).not.toContain("Mary");
-      expect(result.evaluationPublic.items[1].evidence_quote).toContain("a fellow member");
+      // All names pass through unchanged
+      expect(result.evaluationPublic.items[0].evidence_quote).toContain("John");
+      expect(result.evaluationPublic.items[1].evidence_quote).toContain("Mary");
+      expect(result.evaluationPublic.items[0].evidence_quote).not.toContain("a fellow member");
     });
 
     it("should preserve speaker's name in evidence quotes of evaluationPublic", () => {
@@ -1436,23 +1434,17 @@ describe("EvaluationGenerator", () => {
 
       const result = generator.redact(input);
 
-      // Item 0 mentions "Sarah" — should be preserved
       expect(result.evaluationPublic.items[0].evidence_quote).toContain("Sarah");
     });
 
-    it("should use identical replacement phrase in script and evidence quotes", () => {
+    it("should produce scriptRedacted identical to input script (no redaction)", () => {
       const generator = new EvaluationGenerator(makeMockClient([]));
       const input = makeRedactionInput();
 
       const result = generator.redact(input);
 
-      // The replacement phrase "a fellow member" should appear in both
-      expect(result.scriptRedacted).toContain("a fellow member");
-      expect(result.evaluationPublic.items[0].evidence_quote).toContain("a fellow member");
-
-      // No brackets around the phrase
-      expect(result.scriptRedacted).not.toContain("[a fellow member]");
-      expect(result.evaluationPublic.items[0].evidence_quote).not.toContain("[a fellow member]");
+      expect(result.scriptRedacted).toBe(input.script);
+      expect(result.scriptRedacted).not.toContain("a fellow member");
     });
 
     it("should produce evaluationPublic with correct StructuredEvaluationPublic shape", () => {
@@ -1493,7 +1485,7 @@ describe("EvaluationGenerator", () => {
       }
     });
 
-    it("should not redact when there are no third-party names", () => {
+    it("should pass through text unchanged when no third-party names present", () => {
       const generator = new EvaluationGenerator(makeMockClient([]));
       const input = makeRedactionInput({
         script: "Thank you for that wonderful speech about leadership.",
@@ -1534,11 +1526,9 @@ describe("EvaluationGenerator", () => {
       expect(result.scriptRedacted).toBe(input.script);
     });
 
-    it("should handle speaker name at various positions in text", () => {
+    it("should pass through all names unchanged (redaction disabled)", () => {
       const generator = new EvaluationGenerator(makeMockClient([]));
 
-      // Third-party name mid-sentence is redacted; sentence-start names are not
-      // (conservative heuristic: sentence-start capitalized words are ambiguous)
       const input = makeRedactionInput({
         script: "Sarah delivered a great speech. She mentioned John as an inspiration.",
         speakerName: "Sarah",
@@ -1546,14 +1536,13 @@ describe("EvaluationGenerator", () => {
 
       const result = generator.redact(input);
 
-      // Sarah preserved (speaker's name)
+      // All names pass through — no redaction
       expect(result.scriptRedacted).toContain("Sarah");
-      // John mid-sentence should be redacted
-      expect(result.scriptRedacted).not.toContain("John");
-      expect(result.scriptRedacted).toContain("a fellow member");
+      expect(result.scriptRedacted).toContain("John");
+      expect(result.scriptRedacted).not.toContain("a fellow member");
     });
 
-    it("should handle multiple third-party names in the same text", () => {
+    it("should pass through multiple names unchanged (redaction disabled)", () => {
       const generator = new EvaluationGenerator(makeMockClient([]));
       const input = makeRedactionInput({
         script: "The speech mentioned John and Mary and also referenced Bob during the story.",
@@ -1562,13 +1551,10 @@ describe("EvaluationGenerator", () => {
 
       const result = generator.redact(input);
 
-      expect(result.scriptRedacted).not.toContain("John");
-      expect(result.scriptRedacted).not.toContain("Mary");
-      expect(result.scriptRedacted).not.toContain("Bob");
-      // Each name replaced with "a fellow member"
-      const matches = result.scriptRedacted.match(/a fellow member/g);
-      expect(matches).not.toBeNull();
-      expect(matches!.length).toBeGreaterThanOrEqual(3);
+      expect(result.scriptRedacted).toContain("John");
+      expect(result.scriptRedacted).toContain("Mary");
+      expect(result.scriptRedacted).toContain("Bob");
+      expect(result.scriptRedacted).not.toContain("a fellow member");
     });
 
     it("should NOT redact places, organizations, or brands (conservative)", () => {
@@ -1587,7 +1573,7 @@ describe("EvaluationGenerator", () => {
       expect(result.scriptRedacted).not.toContain("a fellow member");
     });
 
-    it("should redact names in opening and closing of evaluationPublic", () => {
+    it("should pass through names in opening and closing of evaluationPublic (redaction disabled)", () => {
       const generator = new EvaluationGenerator(makeMockClient([]));
       const input = makeRedactionInput({
         evaluation: makeEvaluation({
@@ -1599,13 +1585,13 @@ describe("EvaluationGenerator", () => {
 
       const result = generator.redact(input);
 
-      // Opening: Sarah preserved, John redacted
+      // All names pass through unchanged
       expect(result.evaluationPublic.opening).toContain("Sarah");
-      expect(result.evaluationPublic.opening).not.toContain("John");
-
-      // Closing: Sarah preserved, Mary redacted
+      expect(result.evaluationPublic.opening).toContain("John");
       expect(result.evaluationPublic.closing).toContain("Sarah");
-      expect(result.evaluationPublic.closing).not.toContain("Mary");
+      expect(result.evaluationPublic.closing).toContain("Mary");
+      expect(result.evaluationPublic.opening).not.toContain("a fellow member");
+      expect(result.evaluationPublic.closing).not.toContain("a fellow member");
     });
 
     it("should preserve structure_commentary unchanged in evaluationPublic", () => {
@@ -1625,7 +1611,7 @@ describe("EvaluationGenerator", () => {
       expect(result.evaluationPublic.structure_commentary).toEqual(commentary);
     });
 
-    it("should handle full name speaker preservation", () => {
+    it("should pass through full names unchanged (redaction disabled)", () => {
       const generator = new EvaluationGenerator(makeMockClient([]));
       const input = makeRedactionInput({
         script: "Thank you Sarah Johnson for that speech. She talked about Robert Smith during the story.",
@@ -1634,16 +1620,15 @@ describe("EvaluationGenerator", () => {
 
       const result = generator.redact(input);
 
-      // "Sarah Johnson" should be preserved (matches speaker name tokens)
+      // All names pass through unchanged
       expect(result.scriptRedacted).toContain("Sarah");
       expect(result.scriptRedacted).toContain("Johnson");
-      // "Robert Smith" should be redacted (mid-sentence third-party name)
-      expect(result.scriptRedacted).not.toContain("Robert");
-      expect(result.scriptRedacted).not.toContain("Smith");
-      expect(result.scriptRedacted).toContain("a fellow member");
+      expect(result.scriptRedacted).toContain("Robert");
+      expect(result.scriptRedacted).toContain("Smith");
+      expect(result.scriptRedacted).not.toContain("a fellow member");
     });
 
-    it("should not introduce new words other than the generic replacement phrase", () => {
+    it("should return script unchanged — no new words introduced (redaction disabled)", () => {
       const generator = new EvaluationGenerator(makeMockClient([]));
       const input = makeRedactionInput({
         script: "The speech mentioned John during the opening.",
@@ -1652,11 +1637,7 @@ describe("EvaluationGenerator", () => {
 
       const result = generator.redact(input);
 
-      // The only new content should be "a fellow member"
-      const withoutReplacement = result.scriptRedacted.replace(/a fellow member/g, "");
-      const originalWithoutName = input.script.replace(/John/g, "");
-      // After removing the replacement and the name, the remaining text should be equivalent
-      expect(withoutReplacement.trim()).toBe(originalWithoutName.trim());
+      expect(result.scriptRedacted).toBe(input.script);
     });
 
     it("should return scriptRedacted as a string and evaluationPublic as an object", () => {
