@@ -768,28 +768,33 @@ export class SessionManager {
 
             // Attach visualMetrics to DeliveryMetrics (Req 9.2)
             if (session.metrics) {
+              const hasFace = observations.capabilities?.face ?? false;
               session.metrics.visualMetrics = {
-                gazeBreakdown: observations.gazeBreakdown,
-                faceNotDetectedCount: observations.faceNotDetectedCount,
+                gazeBreakdown: hasFace ? observations.gazeBreakdown : { audienceFacing: 0, notesFacing: 0, other: 100 },
+                faceNotDetectedCount: hasFace ? observations.faceNotDetectedCount : 0,
                 totalGestureCount: observations.totalGestureCount,
                 gestureFrequency: observations.gestureFrequency,
                 gesturePerSentenceRatio: observations.gesturePerSentenceRatio,
                 meanBodyStabilityScore: observations.meanBodyStabilityScore,
                 stageCrossingCount: observations.stageCrossingCount,
                 movementClassification: observations.movementClassification,
-                meanFacialEnergyScore: observations.meanFacialEnergyScore,
-                facialEnergyVariation: observations.facialEnergyVariation,
-                facialEnergyLowSignal: observations.facialEnergyLowSignal,
+                meanFacialEnergyScore: hasFace ? observations.meanFacialEnergyScore : 0,
+                facialEnergyVariation: hasFace ? observations.facialEnergyVariation : 0,
+                facialEnergyLowSignal: hasFace ? observations.facialEnergyLowSignal : false,
                 framesAnalyzed: observations.framesAnalyzed,
                 videoQualityGrade: observations.videoQualityGrade,
                 videoQualityWarning: observations.videoQualityGrade !== "good",
-                gazeReliable: observations.gazeReliable,
+                gazeReliable: hasFace ? observations.gazeReliable : false,
                 gestureReliable: observations.gestureReliable,
                 stabilityReliable: observations.stabilityReliable,
-                facialEnergyReliable: observations.facialEnergyReliable,
+                facialEnergyReliable: hasFace ? observations.facialEnergyReliable : false,
                 framesDroppedByFinalizationBudget: observations.framesDroppedByFinalizationBudget,
                 resolutionChangeCount: observations.resolutionChangeCount,
                 videoProcessingVersion: observations.videoProcessingVersion,
+                capabilities: {
+                  face: observations.capabilities?.face ?? false,
+                  pose: observations.capabilities?.pose ?? false,
+                },
                 // Optional high-value improvements (Req 21)
                 confidenceScores: observations.confidenceScores,
                 detectionCoverage: observations.detectionCoverage,

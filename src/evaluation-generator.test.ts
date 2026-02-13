@@ -2229,6 +2229,7 @@ function makeVisualObservations(overrides?: Partial<VisualObservations>): Visual
     gestureReliable: true,
     stabilityReliable: true,
     facialEnergyReliable: true,
+    capabilities: { face: true, pose: true },
     ...overrides,
   };
 }

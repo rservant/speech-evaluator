@@ -1986,6 +1986,7 @@ describe("Video Lifecycle Methods", () => {
         videoQualityGrade: "good" as const, videoQualityWarning: false, finalizationLatencyMs: 500,
         videoProcessingVersion: { tfjsVersion: "4.0.0", tfjsBackend: "cpu", modelVersions: { blazeface: "1.0", movenet: "1.0" }, configHash: "abc123" },
         gazeReliable: true, gestureReliable: true, stabilityReliable: true, facialEnergyReliable: true,
+        capabilities: { face: true, pose: true },
       };
     }
 
@@ -2091,6 +2092,7 @@ describe("Video Lifecycle Methods", () => {
         videoQualityGrade: "good" as const, videoQualityWarning: false, finalizationLatencyMs: 500,
         videoProcessingVersion: { tfjsVersion: "4.0.0", tfjsBackend: "cpu", modelVersions: { blazeface: "1.0", movenet: "1.0" }, configHash: "abc123" },
         gazeReliable: true, gestureReliable: true, stabilityReliable: true, facialEnergyReliable: true,
+        capabilities: { face: true, pose: true },
         ...overrides,
       };
     }
@@ -2229,6 +2231,7 @@ describe("Video Lifecycle Methods", () => {
         videoQualityGrade: "good", videoQualityWarning: false, finalizationLatencyMs: 0,
         videoProcessingVersion: { tfjsVersion: "4.0.0", tfjsBackend: "cpu", modelVersions: { blazeface: "1.0", movenet: "1.0" }, configHash: "abc" },
         gazeReliable: true, gestureReliable: true, stabilityReliable: true, facialEnergyReliable: true,
+        capabilities: { face: true, pose: true },
       };
 
       mgr.revokeConsent(session.id);
@@ -2256,6 +2259,7 @@ describe("Video Lifecycle Methods", () => {
         videoQualityGrade: "good" as const, videoQualityWarning: false, finalizationLatencyMs: 500,
         videoProcessingVersion: { tfjsVersion: "4.0.0", tfjsBackend: "cpu", modelVersions: { blazeface: "1.0", movenet: "1.0" }, configHash: "abc123" },
         gazeReliable: true, gestureReliable: true, stabilityReliable: true, facialEnergyReliable: true,
+        capabilities: { face: true, pose: true },
         ...overrides,
       };
     }
@@ -2341,6 +2345,103 @@ describe("Video Lifecycle Methods", () => {
       await mgr.generateEvaluation(session.id);
 
       expect(capturedCalls.length).toBe(1);
+      expect(capturedCalls[0][3]).toBeNull();
+    });
+
+    it("passes non-null visualObservations when grade is 'good' without face detector (pose-only mode)", async () => {
+      const capturedCalls: any[] = [];
+      const mockEvalGen = createMockEvalGenerator(capturedCalls);
+      const mockToneChecker = {
+        check: vi.fn().mockReturnValue({ passed: true, violations: [] }),
+        stripViolations: vi.fn().mockImplementation((s: string) => s),
+        stripMarkers: vi.fn().mockImplementation((s: string) => s),
+        appendScopeAcknowledgment: vi.fn().mockImplementation((s: string) => s),
+      };
+      const mgr = new SessionManager({
+        evaluationGenerator: mockEvalGen,
+        toneChecker: mockToneChecker,
+      } as unknown as SessionManagerDeps);
+      const session = mgr.createSession();
+      mgr.startRecording(session.id);
+      await mgr.stopRecording(session.id);
+
+      session.transcript = makeBasicTranscript();
+      session.metrics = makeBasicMetrics();
+      session.visualObservations = makeMockObservationsForEval({
+        videoQualityGrade: "good",
+        capabilities: { face: false, pose: true },
+      });
+
+      await mgr.generateEvaluation(session.id);
+
+      expect(capturedCalls.length).toBe(1);
+      expect(capturedCalls[0][3]).not.toBeNull();
+      expect(capturedCalls[0][3]).toBe(session.visualObservations);
+      expect(capturedCalls[0][3].capabilities.face).toBe(false);
+      expect(capturedCalls[0][3].capabilities.pose).toBe(true);
+    });
+
+    it("passes non-null visualObservations when grade is 'degraded' without face detector (pose-only mode)", async () => {
+      const capturedCalls: any[] = [];
+      const mockEvalGen = createMockEvalGenerator(capturedCalls);
+      const mockToneChecker = {
+        check: vi.fn().mockReturnValue({ passed: true, violations: [] }),
+        stripViolations: vi.fn().mockImplementation((s: string) => s),
+        stripMarkers: vi.fn().mockImplementation((s: string) => s),
+        appendScopeAcknowledgment: vi.fn().mockImplementation((s: string) => s),
+      };
+      const mgr = new SessionManager({
+        evaluationGenerator: mockEvalGen,
+        toneChecker: mockToneChecker,
+      } as unknown as SessionManagerDeps);
+      const session = mgr.createSession();
+      mgr.startRecording(session.id);
+      await mgr.stopRecording(session.id);
+
+      session.transcript = makeBasicTranscript();
+      session.metrics = makeBasicMetrics();
+      session.visualObservations = makeMockObservationsForEval({
+        videoQualityGrade: "degraded",
+        capabilities: { face: false, pose: true },
+      });
+
+      await mgr.generateEvaluation(session.id);
+
+      expect(capturedCalls.length).toBe(1);
+      expect(capturedCalls[0][3]).not.toBeNull();
+      expect(capturedCalls[0][3]).toBe(session.visualObservations);
+      expect(capturedCalls[0][3].capabilities.face).toBe(false);
+      expect(capturedCalls[0][3].capabilities.pose).toBe(true);
+    });
+
+    it("suppresses visualObservations when grade is 'poor' in pose-only mode (no face detector)", async () => {
+      const capturedCalls: any[] = [];
+      const mockEvalGen = createMockEvalGenerator(capturedCalls);
+      const mockToneChecker = {
+        check: vi.fn().mockReturnValue({ passed: true, violations: [] }),
+        stripViolations: vi.fn().mockImplementation((s: string) => s),
+        stripMarkers: vi.fn().mockImplementation((s: string) => s),
+        appendScopeAcknowledgment: vi.fn().mockImplementation((s: string) => s),
+      };
+      const mgr = new SessionManager({
+        evaluationGenerator: mockEvalGen,
+        toneChecker: mockToneChecker,
+      } as unknown as SessionManagerDeps);
+      const session = mgr.createSession();
+      mgr.startRecording(session.id);
+      await mgr.stopRecording(session.id);
+
+      session.transcript = makeBasicTranscript();
+      session.metrics = makeBasicMetrics();
+      session.visualObservations = makeMockObservationsForEval({
+        videoQualityGrade: "poor",
+        capabilities: { face: false, pose: true },
+      });
+
+      await mgr.generateEvaluation(session.id);
+
+      expect(capturedCalls.length).toBe(1);
+      // Requirement 6.2: poor grade in pose-only mode suppresses visual observations
       expect(capturedCalls[0][3]).toBeNull();
     });
 

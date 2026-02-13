@@ -311,6 +311,10 @@ export interface VisualMetrics {
     modelVersions: { blazeface: string; movenet: string };
     configHash: string;
   };
+  capabilities: {
+    face: boolean;  // true iff deps.faceDetector was defined
+    pose: boolean;  // true iff deps.poseDetector was defined
+  };
   // Optional high-value improvements (Req 21)
   confidenceScores?: MetricConfidenceScores;
   detectionCoverage?: DetectionCoverage;
@@ -444,6 +448,10 @@ export interface VisualObservations {
   gestureReliable: boolean;
   stabilityReliable: boolean;
   facialEnergyReliable: boolean;
+  capabilities: {
+    face: boolean;  // true iff deps.faceDetector was defined
+    pose: boolean;  // true iff deps.poseDetector was defined
+  };
   // Optional high-value improvements (Req 21)
   confidenceScores?: MetricConfidenceScores;
   detectionCoverage?: DetectionCoverage;

@@ -208,6 +208,7 @@ export class VideoProcessor {
   private processingLatencies: number[];
   private lastSeq: number;
   private lastProcessedTimestamp: number;
+  private lastReceivedTimestamp: number;
   private framesDroppedByTimestamp: number;
   private framesDroppedByFinalizationBudget: number;
   private resolutionChangeCount: number;
@@ -278,6 +279,7 @@ export class VideoProcessor {
     this.processingLatencies = [];
     this.lastSeq = -1;
     this.lastProcessedTimestamp = -1;
+    this.lastReceivedTimestamp = 0;
     this.framesDroppedByTimestamp = 0;
     this.framesDroppedByFinalizationBudget = 0;
     this.resolutionChangeCount = 0;
@@ -373,6 +375,9 @@ export class VideoProcessor {
     // Update tracking for next frame validation
     this.lastSeq = header.seq;
     this.lastProcessedTimestamp = header.timestamp;
+
+    // Track max received timestamp for video-time duration (Req 8.1)
+    this.lastReceivedTimestamp = Math.max(this.lastReceivedTimestamp, header.timestamp);
 
     // Resolution change detection
     if (this.lastWidth > 0 && this.lastHeight > 0) {
@@ -575,7 +580,7 @@ export class VideoProcessor {
       );
       this.gazeClassifications.push(gazeClass);
 
-      if (!faceValid) {
+      if (!faceValid && this.deps.faceDetector) {
         this.faceNotDetectedCount++;
       }
 
@@ -993,8 +998,10 @@ export class VideoProcessor {
     const { meanEnergy, energyVariation, lowSignal } =
       this.computeFacialEnergyAggregates();
 
-    // Video quality grade
-    const expectedSampleCount = durationSeconds * this.getEffectiveRate();
+    // Video quality grade — use video-time (max frame header timestamp) for expectedSampleCount
+    // so camera warmup delay between startRecording() and first frame does not inflate it (Req 8.1, 8.2, 8.5)
+    const videoDurationSeconds = this.lastReceivedTimestamp;
+    const expectedSampleCount = videoDurationSeconds * this.getEffectiveRate();
     const videoQualityGrade = this.computeVideoQualityGrade(
       expectedSampleCount,
     );
@@ -1050,6 +1057,10 @@ export class VideoProcessor {
       gestureReliable,
       stabilityReliable,
       facialEnergyReliable,
+      capabilities: {
+        face: !!this.deps.faceDetector,
+        pose: !!this.deps.poseDetector,
+      },
       // Optional high-value improvements (Req 21)
       confidenceScores: this.computeConfidenceScores(),
       detectionCoverage: this.computeDetectionCoverage(),
@@ -1350,41 +1361,59 @@ export class VideoProcessor {
    * "poor": <50% OR face <30%
    */
   private computeVideoQualityGrade(
-    expectedSampleCount: number,
-  ): "good" | "degraded" | "poor" {
-    if (expectedSampleCount <= 0) return "poor";
+      expectedSampleCount: number,
+    ): "good" | "degraded" | "poor" {
+      if (expectedSampleCount <= 0) return "poor";
 
-    const analysisRate = this.framesAnalyzed / expectedSampleCount;
-    const faceDetectedFrames =
-      this.gazeClassifications.length - this.faceNotDetectedCount;
-    const faceDetectionRate =
-      this.framesAnalyzed > 0
-        ? faceDetectedFrames / this.framesAnalyzed
-        : 0;
+      // No detectors guard — no meaningful analysis possible
+      if (!this.deps.faceDetector && !this.deps.poseDetector) return "poor";
 
-    // Camera drop detection
-    const cameraDropDetected =
-      this.lastFrameWallTime > 0 &&
-      Date.now() - this.lastFrameWallTime >
-        this.config.cameraDropTimeoutSeconds * 1000;
+      const analysisRate = Math.min(1, this.framesAnalyzed / expectedSampleCount);
 
-    // Poor conditions
-    if (analysisRate < 0.5 || faceDetectionRate < 0.3) {
-      return "poor";
+      // Camera drop detection
+      const cameraDropDetected =
+        this.lastFrameWallTime > 0 &&
+        Date.now() - this.lastFrameWallTime >
+          this.config.cameraDropTimeoutSeconds * 1000;
+
+      if (this.deps.faceDetector) {
+        // With face detector: preserve existing dual-metric logic
+        const faceDetectedFrames =
+          this.gazeClassifications.length - this.faceNotDetectedCount;
+        const faceDetectionRate =
+          this.framesAnalyzed > 0
+            ? faceDetectedFrames / this.framesAnalyzed
+            : 0;
+
+        // Poor conditions
+        if (analysisRate < 0.5 || faceDetectionRate < 0.3) {
+          return "poor";
+        }
+
+        // Good conditions
+        if (
+          analysisRate >= 0.8 &&
+          faceDetectionRate >= 0.6 &&
+          !cameraDropDetected
+        ) {
+          return "good";
+        }
+
+        // Everything else is degraded
+        return "degraded";
+      }
+
+      // Without face detector (pose-only mode): grade on analysisRate + cameraDrop only
+      if (analysisRate < 0.5) {
+        return "poor";
+      }
+
+      if (analysisRate >= 0.8 && !cameraDropDetected) {
+        return "good";
+      }
+
+      return "degraded";
     }
-
-    // Good conditions
-    if (
-      analysisRate >= 0.8 &&
-      faceDetectionRate >= 0.6 &&
-      !cameraDropDetected
-    ) {
-      return "good";
-    }
-
-    // Everything else is degraded
-    return "degraded";
-  }
 
   // ─── Video Processing Version ───────────────────────────────────────────────
 

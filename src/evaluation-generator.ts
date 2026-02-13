@@ -756,7 +756,12 @@ ${highConfText}`;
       // Build filtered observations excluding unreliable metrics
       const filteredObs: Record<string, unknown> = {};
 
-      if (visualObservations.gazeReliable) {
+      // capabilities.face is the sole gate for face-dependent metrics (Req 5.4, 6.3).
+      // When capabilities.face === false, exclude gaze and facial energy metrics entirely —
+      // do NOT check gazeReliable or facialEnergyReliable.
+      const faceAvailable = visualObservations.capabilities?.face !== false;
+
+      if (faceAvailable && visualObservations.gazeReliable) {
         filteredObs.gazeBreakdown = visualObservations.gazeBreakdown;
         filteredObs.faceNotDetectedCount = visualObservations.faceNotDetectedCount;
       }
@@ -774,7 +779,7 @@ ${highConfText}`;
         filteredObs.stageCrossingCount = visualObservations.stageCrossingCount;
         filteredObs.movementClassification = visualObservations.movementClassification;
       }
-      if (visualObservations.facialEnergyReliable) {
+      if (faceAvailable && visualObservations.facialEnergyReliable) {
         filteredObs.meanFacialEnergyScore = visualObservations.meanFacialEnergyScore;
         filteredObs.facialEnergyVariation = visualObservations.facialEnergyVariation;
       }
