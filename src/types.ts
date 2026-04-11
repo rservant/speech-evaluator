@@ -690,6 +690,7 @@ export type ClientMessage =
   | { type: "set_evaluation_style"; style: string }
   | { type: "set_session_mode"; mode: string }
   | { type: "set_notes"; notes: string } // #164 — operator notes
+  | { type: "set_meeting_context"; meetingId: string; slotId: string; clubName?: string } // #174 — meeting mode
   | { type: "vision_frame"; data: string; seq: number };
 
 // Server → Client messages

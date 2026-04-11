@@ -97,6 +97,10 @@ interface ConnectionState {
   coachingCueInterval: ReturnType<typeof setInterval> | null;
   /** Coaching cue cooldown state (#155) */
   coachingCueState: CueState;
+  /** Meeting context for grouped evaluations (#174) */
+  meetingId: string | null;
+  meetingSlotId: string | null;
+  meetingClubName: string | null;
 }
 
 // ─── Logging ────────────────────────────────────────────────────────────────────
@@ -689,6 +693,9 @@ function handleConnection(
     sessionMode: "live",
     coachingCueInterval: null,
     coachingCueState: createCueState(),
+    meetingId: null,
+    meetingSlotId: null,
+    meetingClubName: null,
   };
 
   logger.info(`New WebSocket connection, session ${session.id}`);
@@ -972,6 +979,13 @@ function handleClientMessage(
           recoverable: true,
         });
       }
+      break;
+    }
+    case "set_meeting_context": {
+      // Store meeting context for grouped evaluation persistence (#174)
+      connState.meetingId = message.meetingId;
+      connState.meetingSlotId = message.slotId;
+      connState.meetingClubName = message.clubName ?? null;
       break;
     }
     case "vision_frame": {

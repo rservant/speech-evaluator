@@ -32,6 +32,7 @@ import { onFileSelected, onFormFileSelected } from "./upload.js";
 import { loadHistory, resetHistory, isHistoryLoaded } from "./history.js";
 import { updateTierCostLabels } from "./tier-costs.js";
 import { initSetupWizard } from "./setup-wizard.js";
+import { initMeetingPanel, completeActiveSlot } from "./meeting.js";
 import {
   connectWebSocket, connectWebSocketAndWait, manualReconnect,
   wsSend, sendAudioFormatHandshake, forceStopTtsAndCancelDeferral,
@@ -482,6 +483,9 @@ restoreFormState();
 
 // Re-evaluate UI after form restore — consent state may enable Start Speech (#165)
 updateUI(SessionState.IDLE);
+
+// Initialize meeting mode panel (#174)
+initMeetingPanel();
 
 // Show setup wizard for first-time users (#156)
 initSetupWizard();

@@ -13,6 +13,7 @@ import {
   resetVadEnergyState, showCoachingCue,
 } from "./ui.js";
 import { clearFormState, hideVideoConsentError, resetProjectContextForm, handleVADSpeechEnd } from "./consent.js";
+import { completeActiveSlot } from "./meeting.js";
 import { updateTranscript, showEvaluation, displayRoleResults, renderTranscript, clearEvidenceHighlight } from "./transcript.js";
 import { stopAudioCapture, hardStopMic, startCooldown, clearCooldown } from "./audio.js";
 import { stopVideoCapture, stopVisionCapture, releaseCamera, handleVideoStatus } from "./video.js";
@@ -279,6 +280,16 @@ function resyncSessionState() {
   const notesTextarea = document.getElementById("operator-notes");
   if (notesTextarea && notesTextarea.value.trim().length > 0) {
     wsSend({ type: "set_notes", notes: notesTextarea.value });
+  }
+
+  // 10. Meeting context (#174)
+  if (S.meetingMode && S.meetingAgenda && S.meetingActiveSlotId) {
+    wsSend({
+      type: "set_meeting_context",
+      meetingId: S.meetingAgenda.meetingId,
+      slotId: S.meetingActiveSlotId,
+      clubName: S.meetingAgenda.clubName || undefined,
+    });
   }
 
   console.log("[WS] Session state resynced after reconnect (#165)");
@@ -680,6 +691,10 @@ export function transitionToIdle() {
   // If IDLE but no cooldown (recovery path), we still need to start cooldown.
   if (S.currentState === SessionState.IDLE && S.cooldownTimer !== null) return;
   S.pendingIdleFromServer = null; // Clear latch — we're applying IDLE now
+  // Mark meeting slot as completed when returning to IDLE (#174)
+  if (S.meetingMode && S.meetingActiveSlotId) {
+    completeActiveSlot();
+  }
   updateUI(SessionState.IDLE);
   startCooldown();
 }

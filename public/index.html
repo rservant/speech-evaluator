@@ -84,6 +84,47 @@
       </div>
     </div>
 
+    <!-- Meeting Mode Panel (#174, #175) -->
+    <div id="meeting-panel" class="meeting-panel" style="display:none;">
+      <div class="meeting-panel-header">
+        <label class="meeting-toggle-label">
+          <input type="checkbox" id="meeting-mode-toggle">
+          <span>Meeting Mode</span>
+        </label>
+      </div>
+      <div class="meeting-panel-body">
+        <div class="meeting-meta">
+          <div class="form-group" style="flex:1;">
+            <label for="meeting-club-name">Club</label>
+            <input type="text" id="meeting-club-name" placeholder="Club name" autocomplete="off">
+          </div>
+          <div class="form-group" style="width:150px;">
+            <label for="meeting-date">Date</label>
+            <input type="date" id="meeting-date">
+          </div>
+        </div>
+        <div class="checkbox-group meeting-consent-row">
+          <input type="checkbox" id="meeting-consent-checkbox">
+          <label for="meeting-consent-checkbox">All speakers have given verbal consent for AI evaluation</label>
+        </div>
+        <div class="meeting-toolbar">
+          <button id="btn-import-agenda" class="btn btn--sm">📋 Import Agenda</button>
+          <button id="btn-add-speech" class="btn btn--sm">+ Speech</button>
+          <button id="btn-add-tt" class="btn btn--sm">+ Table Topic</button>
+        </div>
+        <div id="meeting-slot-list" class="meeting-slot-list"></div>
+        <button id="btn-end-meeting" class="btn btn--danger btn--sm" style="margin-top:0.5rem;width:100%;">End Meeting</button>
+      </div>
+    </div>
+
+    <!-- Meeting Mode Toggle (shown when meeting mode is off) -->
+    <div id="meeting-mode-entry" class="meeting-mode-entry">
+      <label class="meeting-toggle-label">
+        <input type="checkbox" id="meeting-mode-toggle-entry">
+        <span>Meeting Mode</span>
+      </label>
+    </div>
+
     <!-- Consent Form (visible in IDLE state) -->
     <div id="consent-form" class="consent-form" role="form" aria-label="Speaker consent">
       <div class="consent-form-title">Speaker Consent</div>

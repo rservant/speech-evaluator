@@ -97,6 +97,12 @@ export const S = {
   // ─── WebSocket ───────────────────────────────────────────────
   liveSessionActive: false,
 
+  // ─── Meeting Mode (#174) ─────────────────────────────────────
+  meetingMode: false,
+  meetingAgenda: null,
+  meetingActiveSlotId: null,
+  meetingConsented: false,
+
   // ─── Video Capture ───────────────────────────────────────────
   videoStream: null,
   videoCaptureInterval: null,
