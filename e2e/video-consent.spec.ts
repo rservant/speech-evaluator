@@ -44,6 +44,8 @@ test.describe("Video Consent", () => {
     });
     await page.reload();
     await page.waitForLoadState("networkidle");
+    // Wait for JS module init — consent form starts display:none, becomes visible via updateUI(IDLE)
+    await expect(page.locator("#consent-form")).toHaveClass(/visible/, { timeout: 5000 });
   });
 
   test("video consent checkbox exists on page", async ({ page }) => {
