@@ -497,7 +497,7 @@ export function createAppServer(options: CreateServerOptions = {}): AppServer {
     logger.info("Export endpoint mounted at /api/export/:speaker/{*path} (#164)");
 
     // POST /api/share — create shareable link (#164)
-    app.post("/api/share", async (req, res) => {
+    app.post("/api/share", express.json(), async (req, res) => {
       try {
         const { evalPrefix } = req.body;
         if (!evalPrefix || typeof evalPrefix !== "string") {
