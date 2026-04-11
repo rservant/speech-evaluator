@@ -559,16 +559,25 @@ export function createAppServer(options: CreateServerOptions = {}): AppServer {
         const indexData = JSON.parse(await gcsHistoryService.client.readFile(indexPath));
         const { evalPrefix } = indexData;
 
-        // Read evaluation data
+        // Read evaluation data — handle missing files gracefully (#178)
+        const safeRead = async (path: string) => {
+          try { return await gcsHistoryService.client.readFile(path); }
+          catch { return null; }
+        };
         const [metadataRaw, evaluationRaw, metricsRaw] = await Promise.all([
-          gcsHistoryService.client.readFile(`${evalPrefix}metadata.json`),
-          gcsHistoryService.client.readFile(`${evalPrefix}evaluation.json`),
-          gcsHistoryService.client.readFile(`${evalPrefix}metrics.json`),
+          safeRead(`${evalPrefix}metadata.json`),
+          safeRead(`${evalPrefix}evaluation.json`),
+          safeRead(`${evalPrefix}metrics.json`),
         ]);
 
+        if (!metadataRaw) {
+          res.status(404).send("Evaluation data not found");
+          return;
+        }
+
         const metadata = JSON.parse(metadataRaw);
-        const evalData = JSON.parse(evaluationRaw);
-        const metrics = JSON.parse(metricsRaw);
+        const evalData = evaluationRaw ? JSON.parse(evaluationRaw) : {};
+        const metrics = metricsRaw ? JSON.parse(metricsRaw) : {};
 
         // Serve a self-contained HTML page
         const html = buildSharePage(metadata, evalData.evaluation, metrics);
@@ -2297,8 +2306,9 @@ function cleanupConnection(connState: ConnectionState): void {
 
 // ─── Share Page Builder (#164) ───────────────────────────────────────────────────
 
-function escapeHtmlServer(str: string): string {
-  if (!str) return "";
+function escapeHtmlServer(value: unknown): string {
+  if (value == null) return "";
+  const str = String(value);
   return str
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
@@ -2397,10 +2407,10 @@ function buildSharePage(metadata: any, evaluation: any, metrics: any): string {
     </div>
 
     <div class="metrics">
-      <div class="metric-card"><div class="metric-value">${Math.round(metrics.wordsPerMinute || metadata.wordsPerMinute)}</div><div class="metric-label">Words/Min</div></div>
-      <div class="metric-card"><div class="metric-value">${escapeHtmlServer(metrics.durationFormatted || formatDurationStr(metadata.durationSeconds))}</div><div class="metric-label">Duration</div></div>
+      <div class="metric-card"><div class="metric-value">${Math.round(metrics?.wordsPerMinute || metadata.wordsPerMinute || 0)}</div><div class="metric-label">Words/Min</div></div>
+      <div class="metric-card"><div class="metric-value">${escapeHtmlServer(metrics?.durationFormatted || formatDurationStr(metadata.durationSeconds || 0))}</div><div class="metric-label">Duration</div></div>
       <div class="metric-card"><div class="metric-value">${Math.round((metadata.passRate || 0) * 100)}%</div><div class="metric-label">Pass Rate</div></div>
-      <div class="metric-card"><div class="metric-value">${metrics.fillerWordCount ?? "—"}</div><div class="metric-label">Fillers</div></div>
+      <div class="metric-card"><div class="metric-value">${metrics?.fillerWordCount ?? "—"}</div><div class="metric-label">Fillers</div></div>
     </div>
 
     ${evaluation?.opening ? `<div class="opening">${escapeHtmlServer(evaluation.opening)}</div>` : ""}
