@@ -2406,6 +2406,7 @@ function buildSharePage(metadata: any, evaluation: any, metrics: any, audioUrl?:
   <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&display=swap" rel="stylesheet">
   <style>
     :root{--bg:#0C0A0F;--bg2:#14111A;--card:#1A1722;--card-hover:#221E2D;--red:#C13B3B;--red-glow:rgba(232,82,66,0.15);--green:#34D399;--amber:#F5C36A;--text:#F0ECF5;--text2:#9B95A5;--text3:#6B6575;--border:rgba(255,255,255,0.06);--border-accent:rgba(193,59,59,0.3)}
+    @media(prefers-color-scheme:light){:root{--bg:#F8F6F3;--bg2:#FFFFFF;--card:#FFFFFF;--card-hover:#F0EDE8;--red:#C13B3B;--red-glow:rgba(193,59,59,0.08);--green:#059669;--amber:#D97706;--text:#1A1722;--text2:#555;--text3:#888;--border:rgba(0,0,0,0.08);--border-accent:rgba(193,59,59,0.2)}}
     *{box-sizing:border-box;margin:0;padding:0}
     body{background:var(--bg);color:var(--text);font-family:'Outfit',-apple-system,BlinkMacSystemFont,sans-serif;line-height:1.65;-webkit-font-smoothing:antialiased}
     .page{max-width:640px;margin:0 auto;padding:24px 20px 48px}

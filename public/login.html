@@ -93,6 +93,12 @@
       font-size: 0.75rem;
     }
   </style>
+  <script>
+    // Match OS theme preference (#185)
+    const t = (localStorage.getItem("speech-evaluator-theme")) ||
+      (window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
+    document.documentElement.setAttribute("data-theme", t);
+  </script>
 </head>
 
 <body>
