@@ -665,7 +665,18 @@ export function createAppServer(options: CreateServerOptions = {}): AppServer {
 
           const metadata = JSON.parse(metadataRaw) as import("./gcs-history.js").EvaluationMetadata;
           const transcript = JSON.parse(transcriptRaw) as import("./types.js").TranscriptSegment[];
-          const metrics = JSON.parse(metricsRaw) as import("./types.js").DeliveryMetrics;
+          const fullMetrics = JSON.parse(metricsRaw) as import("./types.js").DeliveryMetrics;
+
+          // Strip large arrays from metrics to avoid exceeding LLM token limits (#193)
+          // The evaluation generator sends full metrics JSON in the prompt.
+          // Energy windows, classified pauses/fillers, and word-level data can be 400KB+.
+          const metrics = {
+            ...fullMetrics,
+            energyProfile: { ...fullMetrics.energyProfile, windows: [] },
+            classifiedPauses: [],
+            classifiedFillers: [],
+            fillerWords: fullMetrics.fillerWords?.slice(0, 20) ?? [],
+          } as import("./types.js").DeliveryMetrics;
 
           // Run evaluation pipeline with new style
           const { runEvaluationStages } = await import("./evaluation-pipeline.js");

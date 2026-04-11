@@ -742,7 +742,21 @@ async function toggleHistoryDetail(div, item) {
     if (urls.metrics) html += `<a href="${escapeHtml(urls.metrics)}" target="_blank" class="history-link">📊 Metrics</a>`;
     html += `<button class="history-export-btn" title="Export as Markdown">📄 Export</button>`;
     html += `<button class="history-share-btn" title="Create shareable link">🔗 Share</button>`;
-    html += `<button class="history-reeval-btn" title="Re-evaluate with different style">🔄 Re-evaluate</button>`;
+    html += `<div class="history-reeval-group">
+      <select class="history-reeval-select">
+        <option value="">Re-evaluate as...</option>
+        <option value="classic">Classic</option>
+        <option value="sbi">SBI</option>
+        <option value="feedforward">Feedforward</option>
+        <option value="coin">COIN</option>
+        <option value="holistic">Holistic</option>
+        <option value="eec">EEC</option>
+        <option value="radical_candour">Radical Candour</option>
+        <option value="socratic">Socratic</option>
+        <option value="comparative">Comparative</option>
+        <option value="micro_focus">Micro-Focus</option>
+      </select>
+    </div>`;
     html += `<button class="history-delete-btn" title="Delete this evaluation">🗑️ Delete</button>`;
     html += "</div>";
 
@@ -861,35 +875,36 @@ async function toggleHistoryDetail(div, item) {
       });
     }
 
-    // Wire re-evaluate button (#187)
-    const reevalBtn = detail.querySelector(".history-reeval-btn");
-    if (reevalBtn) {
-      reevalBtn.addEventListener("click", async (e) => {
-        e.stopPropagation();
-        const style = prompt("Enter evaluation style:\nclassic, sbi, feedforward, coin, holistic, eec, radical_candour, socratic, comparative, micro_focus");
-        if (!style || !style.trim()) return;
-        reevalBtn.disabled = true;
-        reevalBtn.textContent = "Re-evaluating...";
+    // Wire re-evaluate dropdown (#187, #193)
+    const reevalSelect = detail.querySelector(".history-reeval-select");
+    if (reevalSelect) {
+      reevalSelect.addEventListener("change", async () => {
+        const style = reevalSelect.value;
+        if (!style) return;
+        reevalSelect.disabled = true;
+        const origText = reevalSelect.options[0].text;
+        reevalSelect.options[0].text = "Re-evaluating...";
+        reevalSelect.selectedIndex = 0;
         try {
           const res = await fetch("/api/re-evaluate", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ evalPrefix: item.metadata.prefix, evaluationStyle: style.trim() }),
+            body: JSON.stringify({ evalPrefix: item.metadata.prefix, evaluationStyle: style }),
           });
           if (!res.ok) {
             const err = await res.json().catch(() => ({ error: "Unknown error" }));
             throw new Error(err.error || `HTTP ${res.status}`);
           }
-          reevalBtn.textContent = "✅ Done!";
-          // Reload history to show new evaluation
+          reevalSelect.options[0].text = "Done! Reloading...";
           setTimeout(() => {
             resetHistory();
             loadHistory();
           }, 1000);
         } catch (err) {
           console.error("[History] Re-evaluate failed:", err);
-          reevalBtn.textContent = "🔄 Re-evaluate";
-          reevalBtn.disabled = false;
+          reevalSelect.options[0].text = origText;
+          reevalSelect.disabled = false;
+          reevalSelect.selectedIndex = 0;
           alert("Re-evaluation failed: " + err.message);
         }
       });
