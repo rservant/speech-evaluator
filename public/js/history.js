@@ -742,6 +742,7 @@ async function toggleHistoryDetail(div, item) {
     if (urls.metrics) html += `<a href="${escapeHtml(urls.metrics)}" target="_blank" class="history-link">📊 Metrics</a>`;
     html += `<button class="history-export-btn" title="Export as Markdown">📄 Export</button>`;
     html += `<button class="history-share-btn" title="Create shareable link">🔗 Share</button>`;
+    html += `<button class="history-reeval-btn" title="Re-evaluate with different style">🔄 Re-evaluate</button>`;
     html += `<button class="history-delete-btn" title="Delete this evaluation">🗑️ Delete</button>`;
     html += "</div>";
 
@@ -856,6 +857,40 @@ async function toggleHistoryDetail(div, item) {
           shareBtn.textContent = "🔗 Share";
           shareBtn.disabled = false;
           alert("Failed to create share link: " + err.message);
+        }
+      });
+    }
+
+    // Wire re-evaluate button (#187)
+    const reevalBtn = detail.querySelector(".history-reeval-btn");
+    if (reevalBtn) {
+      reevalBtn.addEventListener("click", async (e) => {
+        e.stopPropagation();
+        const style = prompt("Enter evaluation style:\nclassic, sbi, feedforward, coin, holistic, eec, radical_candour, socratic, comparative, micro_focus");
+        if (!style || !style.trim()) return;
+        reevalBtn.disabled = true;
+        reevalBtn.textContent = "Re-evaluating...";
+        try {
+          const res = await fetch("/api/re-evaluate", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ evalPrefix: item.metadata.prefix, evaluationStyle: style.trim() }),
+          });
+          if (!res.ok) {
+            const err = await res.json().catch(() => ({ error: "Unknown error" }));
+            throw new Error(err.error || `HTTP ${res.status}`);
+          }
+          reevalBtn.textContent = "✅ Done!";
+          // Reload history to show new evaluation
+          setTimeout(() => {
+            resetHistory();
+            loadHistory();
+          }, 1000);
+        } catch (err) {
+          console.error("[History] Re-evaluate failed:", err);
+          reevalBtn.textContent = "🔄 Re-evaluate";
+          reevalBtn.disabled = false;
+          alert("Re-evaluation failed: " + err.message);
         }
       });
     }

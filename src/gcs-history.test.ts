@@ -176,6 +176,28 @@ describe("GcsHistoryService - saveEvaluationResults", () => {
     expect(savedPaths.some((p: string) => p.endsWith("evaluation_audio.mp3"))).toBe(true);
   });
 
+  it("saves 6 files when speech audio is provided (#187)", async () => {
+    const input = makeSaveInput({ speechAudio: Buffer.from([1, 2, 3, 4]) });
+    await service.saveEvaluationResults(input);
+
+    expect(client.saveFile).toHaveBeenCalledTimes(6);
+    const savedPaths = client.saveFile.mock.calls.map((c: any[]) => c[0]);
+    expect(savedPaths.some((p: string) => p.endsWith("speech_audio.wav"))).toBe(true);
+  });
+
+  it("speech audio is saved as WAV with header (#187)", async () => {
+    const pcm = Buffer.from([0, 0, 1, 0]); // minimal PCM data
+    const input = makeSaveInput({ speechAudio: pcm });
+    await service.saveEvaluationResults(input);
+
+    const wavCall = client.saveFile.mock.calls.find((c: any[]) => c[0].endsWith("speech_audio.wav"));
+    expect(wavCall).toBeDefined();
+    const wavBuffer = wavCall![1] as Buffer;
+    // WAV header starts with "RIFF"
+    expect(wavBuffer.toString("ascii", 0, 4)).toBe("RIFF");
+    expect(wavCall![2]).toBe("audio/wav");
+  });
+
   it("saves 4 files when no TTS audio", async () => {
     const input = makeSaveInput({ ttsAudio: undefined });
     await service.saveEvaluationResults(input);
@@ -188,6 +210,15 @@ describe("GcsHistoryService - saveEvaluationResults", () => {
     await service.saveEvaluationResults(input);
 
     expect(client.saveFile).toHaveBeenCalledTimes(4);
+  });
+
+  it("includes reEvaluatedFrom in metadata when provided (#187)", async () => {
+    const input = makeSaveInput({ reEvaluatedFrom: "results/alice/2026-04-01-original/" });
+    await service.saveEvaluationResults(input);
+
+    const metadataCall = client.saveFile.mock.calls.find((c: any[]) => c[0].endsWith("metadata.json"));
+    const parsed = JSON.parse(metadataCall![1] as string);
+    expect(parsed.reEvaluatedFrom).toBe("results/alice/2026-04-01-original/");
   });
 
   it("metadata.json contains correct fields", async () => {

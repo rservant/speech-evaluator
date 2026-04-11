@@ -614,6 +614,88 @@ export function createAppServer(options: CreateServerOptions = {}): AppServer {
     });
     logger.info("Share endpoints mounted (#164)");
 
+    // POST /api/re-evaluate — re-run evaluation with different style (#187)
+    if (options.openaiClient) {
+      app.post("/api/re-evaluate", express.json(), async (req, res) => {
+        try {
+          const { evalPrefix, evaluationStyle } = req.body as { evalPrefix?: string; evaluationStyle?: string };
+          if (!evalPrefix || typeof evalPrefix !== "string" || !evaluationStyle || typeof evaluationStyle !== "string") {
+            res.status(400).json({ error: "Missing evalPrefix or evaluationStyle" });
+            return;
+          }
+
+          // Read original evaluation data from GCS
+          const safeRead = async (path: string) => { try { return await gcsHistoryService.client.readFile(path); } catch { return null; } };
+          const [metadataRaw, transcriptRaw, metricsRaw] = await Promise.all([
+            safeRead(`${evalPrefix}metadata.json`),
+            safeRead(`${evalPrefix}transcript.json`),
+            safeRead(`${evalPrefix}metrics.json`),
+          ]);
+
+          if (!metadataRaw || !transcriptRaw || !metricsRaw) {
+            res.status(404).json({ error: "Original evaluation data not found" });
+            return;
+          }
+
+          const metadata = JSON.parse(metadataRaw) as import("./gcs-history.js").EvaluationMetadata;
+          const transcript = JSON.parse(transcriptRaw) as import("./types.js").TranscriptSegment[];
+          const metrics = JSON.parse(metricsRaw) as import("./types.js").DeliveryMetrics;
+
+          // Run evaluation pipeline with new style
+          const { runEvaluationStages } = await import("./evaluation-pipeline.js");
+          const { EvaluationGenerator } = await import("./evaluation-generator.js");
+          const { TTSEngine } = await import("./tts-engine.js");
+
+          const evalGen = new EvaluationGenerator(options.openaiClient as any);
+          const ttsEngine = new TTSEngine(options.openaiClient as any);
+
+          const result = await runEvaluationStages({
+            transcript,
+            metrics,
+            evalConfig: {
+              evaluationStyle: evaluationStyle as any,
+              speechTitle: metadata.speechTitle,
+              projectType: metadata.projectType,
+            },
+            timeLimitSeconds: 180,
+          }, {
+            evaluationGenerator: evalGen,
+            ttsEngine,
+          });
+
+          if (!result) {
+            res.status(500).json({ error: "Evaluation pipeline returned no result" });
+            return;
+          }
+
+          // Save as new evaluation with reference to original
+          const newPrefix = await gcsHistoryService.saveEvaluationResults({
+            speakerName: metadata.speakerName,
+            speechTitle: metadata.speechTitle,
+            mode: metadata.mode,
+            durationSeconds: metadata.durationSeconds,
+            wordsPerMinute: metadata.wordsPerMinute,
+            passRate: result.passRate,
+            projectType: metadata.projectType,
+            transcript,
+            metrics,
+            evaluation: result.evaluation,
+            evaluationScript: result.script,
+            ttsAudio: result.ttsAudio,
+            analysisTier: metadata.analysisTier,
+            reEvaluatedFrom: evalPrefix,
+          });
+
+          res.json({ status: "ok", newPrefix, evaluation: result.evaluationPublic ?? result.evaluation });
+        } catch (err) {
+          const errMsg = err instanceof Error ? err.message : String(err);
+          logger.error(`Re-evaluate API error: ${errMsg}`);
+          res.status(500).json({ error: "Failed to re-evaluate" });
+        }
+      });
+      logger.info("Re-evaluate endpoint mounted at /api/re-evaluate (#187)");
+    }
+
     // GET /api/improvement-plan/:speaker — personalized practice plan (#145)
     if (options.openaiClient) {
       const openaiClient = options.openaiClient;
