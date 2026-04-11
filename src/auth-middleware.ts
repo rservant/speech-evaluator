@@ -28,6 +28,7 @@ const PUBLIC_PATHS = [
   "/api/config",
   "/api/version",
   "/audio-worklet.js",
+  "/analytics.js",
 ];
 
 /** Prefixes that bypass authentication (fonts, JS modules, etc.) */

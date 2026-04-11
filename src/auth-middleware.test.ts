@@ -68,7 +68,7 @@ describe("Auth Middleware (Clerk)", () => {
   // ── Public Paths ──────────────────────────────────────────────────────────────
 
   describe("public paths bypass auth", () => {
-    const publicPaths = ["/health", "/login.html", "/login.js", "/style.css", "/favicon.ico"];
+    const publicPaths = ["/health", "/login.html", "/login.js", "/style.css", "/favicon.ico", "/analytics.js"];
 
     for (const path of publicPaths) {
       it(`allows ${path} without auth`, async () => {
