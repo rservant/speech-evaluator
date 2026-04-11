@@ -444,6 +444,51 @@ export class GcsHistoryService {
     return entries;
   }
 
+  // ─── All Evaluations (#184) ─────────────────────────────────────────────────
+
+  /**
+   * List all evaluations across all speakers, sorted newest-first.
+   * Used for user-scoped history (show everything the operator has created).
+   */
+  async listAllEvaluations(limit: number = 50, cursor?: string): Promise<ListEvaluationsResult> {
+    // List all speaker prefixes
+    const speakerPrefixes = await this._client.listPrefixes(RESULTS_PREFIX, "/");
+
+    // Collect all evaluation prefixes across speakers
+    const allPrefixes: string[] = [];
+    for (const sp of speakerPrefixes) {
+      const evalPrefixes = await this._client.listPrefixes(sp, "/");
+      allPrefixes.push(...evalPrefixes);
+    }
+
+    // Sort newest-first (prefixes contain timestamps)
+    allPrefixes.sort().reverse();
+
+    // Apply pagination
+    const startIndex = cursor ? parseInt(Buffer.from(cursor, "base64").toString("utf-8"), 10) : 0;
+    const page = allPrefixes.slice(startIndex, startIndex + limit);
+    const hasMore = startIndex + limit < allPrefixes.length;
+
+    const results: EvaluationListItem[] = [];
+    for (const evalPrefix of page) {
+      try {
+        const metadataContent = await this._client.readFile(`${evalPrefix}metadata.json`);
+        const metadata = JSON.parse(metadataContent) as EvaluationMetadata;
+        const urls = await this.signFilesForPrefix(evalPrefix);
+        results.push({ metadata, urls });
+      } catch {
+        // Skip corrupted/incomplete evaluations
+      }
+    }
+
+    const nextCursor = hasMore
+      ? Buffer.from(String(startIndex + limit)).toString("base64")
+      : undefined;
+
+    log.info("Listed all evaluations", { total: allPrefixes.length, returned: results.length });
+    return { results, nextCursor };
+  }
+
   // ─── Meeting Methods (#176) ───────────────────────────────────────────────────
 
   /**

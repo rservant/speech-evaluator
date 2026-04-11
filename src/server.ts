@@ -278,6 +278,20 @@ export function createAppServer(options: CreateServerOptions = {}): AppServer {
   // History endpoint (#123) — lists past evaluations from GCS
   const gcsHistoryService = options.gcsHistoryService ?? null;
   if (gcsHistoryService) {
+    // GET /api/history — list ALL evaluations for the authenticated user (#184)
+    app.get("/api/history", async (_req, res) => {
+      try {
+        const limit = Math.min(Math.max(parseInt(String(_req.query.limit ?? "50"), 10) || 50, 1), 100);
+        const cursor = typeof _req.query.cursor === "string" ? _req.query.cursor : undefined;
+        const result = await gcsHistoryService.listAllEvaluations(limit, cursor);
+        res.json(result);
+      } catch (err) {
+        const errMsg = err instanceof Error ? err.message : String(err);
+        logger.error(`History all API error: ${errMsg}`);
+        res.status(500).json({ error: "Failed to load evaluation history" });
+      }
+    });
+
     app.get("/api/history/:speaker", async (req, res) => {
       try {
         const speaker = decodeURIComponent(req.params.speaker);

@@ -394,10 +394,9 @@ function switchMode(mode) {
     if (evaluationPanel) evaluationPanel.style.display = "none";
     if (practiceLabel) practiceLabel.style.display = "none";
 
-    // Auto-load history for current speaker if not already loaded
-    const speaker = S.consentSpeakerName || "";
-    if (speaker && !isHistoryLoaded()) {
-      loadHistory(speaker);
+    // Auto-load all evaluations history (#184)
+    if (!isHistoryLoaded()) {
+      loadHistory();
     }
     // Load meeting history (#176)
     loadMeetingHistory();

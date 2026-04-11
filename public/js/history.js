@@ -35,11 +35,14 @@ function getHistorySpinner() {
 // ─── API ────────────────────────────────────────────────────────────
 
 async function fetchHistory(speaker, cursor) {
-  const params = new URLSearchParams({ limit: "20" });
+  const params = new URLSearchParams({ limit: "50" });
   if (cursor) params.set("cursor", cursor);
 
-  const encoded = encodeURIComponent(speaker);
-  const res = await fetch(`/api/history/${encoded}?${params}`);
+  // Use all-evaluations endpoint (#184) — shows everything for the authenticated user
+  const url = speaker
+    ? `/api/history/${encodeURIComponent(speaker)}?${params}`
+    : `/api/history?${params}`;
+  const res = await fetch(url);
   if (!res.ok) throw new Error(`History API error: ${res.status}`);
   return res.json();
 }
@@ -922,12 +925,14 @@ function escapeHtml(str) {
 // ─── Load History ───────────────────────────────────────────────────
 
 export async function loadHistory(speaker) {
-  if (!speaker || speaker.trim().length === 0) return;
   if (historyLoading) return;
 
+  // Use all-evaluations mode when no speaker specified (#184)
+  const effectiveSpeaker = speaker?.trim() || "";
+
   // If speaker changed, reset
-  if (speaker !== historySpeaker) {
-    historySpeaker = speaker;
+  if (effectiveSpeaker !== historySpeaker) {
+    historySpeaker = effectiveSpeaker;
     historyResults = [];
     historyNextCursor = null;
     historyLoaded = false;
@@ -944,26 +949,26 @@ export async function loadHistory(speaker) {
   if (loadMoreBtn) loadMoreBtn.style.display = "none";
 
   try {
-    const data = await fetchHistory(speaker, historyNextCursor);
+    const data = await fetchHistory(effectiveSpeaker || null, historyNextCursor);
     historyNextCursor = data.nextCursor || null;
     historyLoaded = true;
 
-    // Fetch progress data on first load (#140)
-    if (!historyNextCursor || historyResults.length === 0) {
+    // Fetch per-speaker analytics on first load (requires speaker name)
+    if (effectiveSpeaker && (!historyNextCursor || historyResults.length === 0)) {
       try {
-        const progress = await fetchProgress(speaker);
+        const progress = await fetchProgress(effectiveSpeaker);
         renderProgressPanel(progress);
       } catch (progressErr) {
         console.warn("[History] Progress chart unavailable:", progressErr);
       }
 
       // Improvement plan (#145) — fire-and-forget
-      fetchImprovementPlan(speaker)
+      fetchImprovementPlan(effectiveSpeaker)
         .then(renderImprovementPlan)
         .catch((e) => console.warn("[History] Improvement plan unavailable:", e));
 
       // Habit report (#147) — fire-and-forget
-      fetchHabits(speaker)
+      fetchHabits(effectiveSpeaker)
         .then(renderHabitReport)
         .catch((e) => console.warn("[History] Habit report unavailable:", e));
 
