@@ -64,7 +64,7 @@ export function updateUI(state) {
     // Hide duration estimate in IDLE
     hide(dom.durationEstimate);
 
-    // Start Speech gated on consent
+    // Start Speech gated on consent — primary action in IDLE (#183)
     show(dom.btnStart);
     if (S.consentConfirmed && S.consentSpeakerName.trim().length > 0 && !S.inCooldown) {
       enable(dom.btnStart);
@@ -74,7 +74,7 @@ export function updateUI(state) {
 
     hide(dom.btnStop);
     hide(dom.btnDeliver);
-    // Show Save Outputs only if evaluation data exists, not already saved, and not purged
+    // Post-delivery secondary actions: show in sticky bar but compact (#183)
     if (S.hasEvaluationData && !S.outputsSaved && !S.dataPurged) {
       show(dom.btnSave);
       show(dom.btnPdf);
@@ -82,21 +82,20 @@ export function updateUI(state) {
       hide(dom.btnSave);
       hide(dom.btnPdf);
     }
-    // Show Replay button if TTS audio was received and evaluation data exists and not purged
     if (S.hasTTSAudio && S.hasEvaluationData && !S.dataPurged) {
       show(dom.btnReplay);
     } else {
       hide(dom.btnReplay);
     }
-    // Disable replay during cooldown
     if (S.inCooldown) {
       disable(dom.btnReplay);
     } else {
       enable(dom.btnReplay);
     }
-    enable(dom.btnPanic);
+    // Hide panic in IDLE — only needed during active session (#183)
+    hide(dom.btnPanic);
 
-    // Show Revoke Consent button when consent is confirmed (allows opt-out)
+    // Revoke consent — show as subtle action when consent confirmed
     if (S.consentConfirmed) {
       show(dom.btnRevoke);
     } else {

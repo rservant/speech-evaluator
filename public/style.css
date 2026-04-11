@@ -3547,6 +3547,52 @@ body::before {
   }
 }
 
+/* ─── Mobile Sticky Bar Polish (#183) ─────────────────────────────────── */
+
+@media (max-width: 480px) {
+  .controls-sticky {
+    flex-direction: column;
+    gap: 0.4rem;
+  }
+
+  .controls-sticky .btn {
+    width: 100%;
+    min-width: unset;
+    flex: unset;
+  }
+
+  .controls-sticky .btn-save,
+  .controls-sticky .btn-revoke {
+    font-size: 0.8rem;
+    padding: 0.4rem 0.8rem;
+    min-height: 36px;
+  }
+}
+
+/* Start button hero size */
+#btn-start {
+  font-size: 1.05rem;
+  min-height: 48px;
+}
+
+@media (max-width: 480px) {
+  #btn-start {
+    font-size: 1.1rem;
+    min-height: 52px;
+  }
+}
+
+/* Mode tabs horizontal scroll instead of wrap */
+.mode-tabs {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: none;
+}
+
+.mode-tabs::-webkit-scrollbar {
+  display: none;
+}
+
 /* ─── Meeting History (#176) ─────────────────────────────────────────── */
 
 .history-section-title {
