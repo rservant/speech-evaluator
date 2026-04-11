@@ -87,7 +87,7 @@ export interface Session {
   outputsSaved: boolean; // opt-in persistence flag
   runId: number; // monotonic integer, incremented on each start/panic; async stages check before committing
   consent: ConsentRecord | null; // Phase 2 (Req 2.2) — replaces speakerName usage
-  timeLimitSeconds: number; // Phase 2 (Req 6.1) — default: 120
+  timeLimitSeconds: number; // Phase 2 (Req 6.1) — default: 180
   evaluationPassRate: number | null; // Phase 2 (Req 1.6) — telemetry
   speakerName?: string; // DEPRECATED — getter from consent (Req 8.4 backward compat)
   /** @deprecated Use `projectContext.objectives` instead. Superseded by Phase 3 project awareness (Req 8.2). */

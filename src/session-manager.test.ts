@@ -847,9 +847,9 @@ describe("createSession() Phase 2 fields", () => {
     expect(session.consent).toBeNull();
   });
 
-  it("initializes timeLimitSeconds to 120", () => {
+  it("initializes timeLimitSeconds to 180", () => {
     const session = manager.createSession();
-    expect(session.timeLimitSeconds).toBe(120);
+    expect(session.timeLimitSeconds).toBe(180);
   });
 
   it("initializes evaluationPassRate as null", () => {

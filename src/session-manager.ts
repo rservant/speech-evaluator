@@ -138,7 +138,7 @@ export class SessionManager {
         outputsSaved: false,
         runId: 0,
         consent: null,
-        timeLimitSeconds: 120,
+        timeLimitSeconds: 180,
         evaluationPassRate: null,
         eagerStatus: "idle",
         eagerRunId: null,

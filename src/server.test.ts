@@ -1135,7 +1135,7 @@ describe("purgeSessionData", () => {
       outputsSaved: true,
       runId: 1,
       consent: { speakerName: "Test Speaker", consentConfirmed: true, consentTimestamp: new Date() },
-      timeLimitSeconds: 120,
+      timeLimitSeconds: 180,
       evaluationPassRate: 0.85,
       eagerStatus: "idle",
       eagerRunId: null,

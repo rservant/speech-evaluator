@@ -24,7 +24,7 @@ export const S = {
   consentSpeakerName: "",
   dataPurged: false,
   estimatedDuration: null,
-  configuredTimeLimit: 120,
+  configuredTimeLimit: 180,
 
   // ─── Eager Pipeline ──────────────────────────────────────────
   pipelineStage: "idle",

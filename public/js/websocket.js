@@ -243,7 +243,7 @@ function resyncSessionState() {
   }
 
   // 4. Time limit (if not default)
-  if (S.configuredTimeLimit && S.configuredTimeLimit !== 120) {
+  if (S.configuredTimeLimit && S.configuredTimeLimit !== 180) {
     wsSend({ type: "set_time_limit", seconds: S.configuredTimeLimit });
   }
 

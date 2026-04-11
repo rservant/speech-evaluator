@@ -710,7 +710,7 @@ function arbitrarySessionWithConsent(): fc.Arbitrary<Session> {
       outputsSaved: false,
       runId: 1,
       consent,
-      timeLimitSeconds: 120,
+      timeLimitSeconds: 180,
       evaluationPassRate: null,
     }));
 }

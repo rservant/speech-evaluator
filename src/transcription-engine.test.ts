@@ -527,7 +527,7 @@ describe("TranscriptionEngine", () => {
       expect(result).toEqual([]);
     });
 
-    it("should call OpenAI API with correct parameters for gpt-4o-transcribe", async () => {
+    it("should call OpenAI API with correct parameters for whisper-1 default (#186)", async () => {
       const { client, createSpy } = createMockOpenAIClient({
         text: "Hello everyone, today I want to talk about leadership.",
       });
@@ -538,13 +538,12 @@ describe("TranscriptionEngine", () => {
 
       expect(createSpy).toHaveBeenCalledTimes(1);
       const callArgs = createSpy.mock.calls[0][0];
-      expect(callArgs.model).toBe("gpt-4o-transcribe");
+      expect(callArgs.model).toBe("whisper-1");
       expect(callArgs.language).toBe("en");
-      expect(callArgs.response_format).toBe("json");
+      expect(callArgs.response_format).toBe("verbose_json");
       expect(callArgs.file).toBeInstanceOf(File);
       expect(callArgs.file.name).toBe("speech.wav");
-      // gpt-4o-transcribe should NOT request timestamp_granularities
-      expect(callArgs.timestamp_granularities).toBeUndefined();
+      expect(callArgs.timestamp_granularities).toEqual(["word", "segment"]);
     });
 
     it("should call OpenAI API with verbose_json for whisper-1 model", async () => {
@@ -847,7 +846,7 @@ describe("TranscriptionEngine", () => {
       expect(result[1].words.length).toBeGreaterThan(0);
     });
 
-    it("should use the default model when no override is provided", async () => {
+    it("should use the default model (whisper-1) when no override is provided (#186)", async () => {
       const { client, createSpy } = createMockOpenAIClient({
         text: "Hello everyone.",
       });
@@ -856,8 +855,8 @@ describe("TranscriptionEngine", () => {
       await engineWithOpenAI.finalize(Buffer.alloc(3200));
 
       const callArgs = createSpy.mock.calls[0][0];
-      expect(callArgs.model).toBe("gpt-4o-transcribe");
-      expect(callArgs.response_format).toBe("json");
+      expect(callArgs.model).toBe("whisper-1");
+      expect(callArgs.response_format).toBe("verbose_json");
     });
 
     it("should split large audio into chunks and merge results with adjusted timestamps", async () => {

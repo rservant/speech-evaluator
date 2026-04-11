@@ -129,7 +129,7 @@ export class TranscriptionEngine {
     this.deepgramClient = deepgramClient;
     this.openaiClient = openaiClient ?? null;
     this.liveConfig = { ...DEFAULT_LIVE_CONFIG, ...config };
-    this.openaiModel = openaiModel ?? "gpt-4o-transcribe";
+    this.openaiModel = openaiModel ?? "whisper-1";
   }
 
   /**

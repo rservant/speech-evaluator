@@ -45,7 +45,7 @@ function makeSession(overrides: Partial<Session> = {}): Session {
     outputsSaved: false,
     runId: 1,
     consent: null,
-    timeLimitSeconds: 120,
+    timeLimitSeconds: 180,
     evaluationPassRate: null,
     projectContext: null,
     vadConfig: { silenceThresholdSeconds: 5, enabled: true },
