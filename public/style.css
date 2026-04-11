@@ -3285,6 +3285,22 @@ body::before {
   }
 }
 
+/* ─── SVG Icon System (#182) ──────────────────────────────────────────────── */
+
+.btn svg,
+.mode-tab svg {
+  width: 1.1em;
+  height: 1.1em;
+  vertical-align: -0.15em;
+  margin-right: 0.3em;
+  flex-shrink: 0;
+}
+
+.mode-tab svg {
+  width: 1em;
+  height: 1em;
+}
+
 /* ─── Advanced Settings (#180) ────────────────────────────────────────────── */
 
 .advanced-settings {
