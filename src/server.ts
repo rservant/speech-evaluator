@@ -579,8 +579,17 @@ export function createAppServer(options: CreateServerOptions = {}): AppServer {
         const evalData = evaluationRaw ? JSON.parse(evaluationRaw) : {};
         const metrics = metricsRaw ? JSON.parse(metricsRaw) : {};
 
+        // Check for TTS audio and generate signed URL (#179)
+        let audioUrl: string | null = null;
+        try {
+          const audioPath = `${evalPrefix}evaluation_audio.mp3`;
+          if (await gcsHistoryService.client.fileExists(audioPath)) {
+            audioUrl = await gcsHistoryService.client.getSignedReadUrl(audioPath, 60);
+          }
+        } catch { /* audio is optional */ }
+
         // Serve a self-contained HTML page
-        const html = buildSharePage(metadata, evalData.evaluation, metrics);
+        const html = buildSharePage(metadata, evalData.evaluation, metrics, audioUrl);
         res.setHeader("Content-Type", "text/html; charset=utf-8");
         res.send(html);
       } catch (err) {
@@ -2317,7 +2326,7 @@ function escapeHtmlServer(value: unknown): string {
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-function buildSharePage(metadata: any, evaluation: any, metrics: any): string {
+function buildSharePage(metadata: any, evaluation: any, metrics: any, audioUrl?: string | null): string {
   const date = new Date(metadata.date).toLocaleDateString("en-US", {
     weekday: "long", year: "numeric", month: "long", day: "numeric",
   });
@@ -2325,10 +2334,12 @@ function buildSharePage(metadata: any, evaluation: any, metrics: any): string {
   let itemsHtml = "";
   if (evaluation?.items) {
     for (const item of evaluation.items) {
-      const icon = item.type === "commendation" ? "✅" : "💡";
+      const typeLabel = item.type === "commendation" ? "Strength" : "Opportunity";
+      const typeClass = item.type === "commendation" ? "strength" : "opportunity";
       itemsHtml += `
-        <div class="eval-item ${item.type}">
-          <div class="eval-item-header">${icon} <strong>${escapeHtmlServer(item.summary)}</strong></div>
+        <div class="eval-item ${typeClass}">
+          <div class="eval-item-type">${escapeHtmlServer(typeLabel)}</div>
+          <div class="eval-item-summary">${escapeHtmlServer(item.summary)}</div>
           <div class="eval-item-body">${escapeHtmlServer(item.explanation)}</div>
           ${item.evidence_quote ? `<div class="eval-evidence">"${escapeHtmlServer(item.evidence_quote)}"</div>` : ""}
         </div>`;
@@ -2337,7 +2348,7 @@ function buildSharePage(metadata: any, evaluation: any, metrics: any): string {
 
   let scoresHtml = "";
   if (evaluation?.category_scores?.length > 0) {
-    scoresHtml = `<div class="scores-section"><h3>Category Scores</h3><div class="scores-grid">`;
+    scoresHtml = `<div class="scores"><h2>Category Scores</h2>`;
     for (const cs of evaluation.category_scores) {
       const pct = Math.round((cs.score / 10) * 100);
       const cls = cs.score >= 7 ? "good" : cs.score >= 4 ? "fair" : "poor";
@@ -2346,11 +2357,23 @@ function buildSharePage(metadata: any, evaluation: any, metrics: any): string {
         <div class="score-row">
           <span class="score-label">${escapeHtmlServer(label)}</span>
           <div class="score-track"><div class="score-fill ${cls}" style="width:${pct}%"></div></div>
-          <span class="score-value">${cs.score}/10</span>
+          <span class="score-num">${cs.score}/10</span>
         </div>`;
     }
-    scoresHtml += `</div></div>`;
+    scoresHtml += `</div>`;
   }
+
+  const audioHtml = audioUrl ? `
+    <div class="audio-section">
+      <div class="audio-label">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/></svg>
+        Listen to AI Evaluation
+      </div>
+      <audio controls preload="none" src="${escapeHtmlServer(audioUrl)}" style="width:100%;border-radius:8px;"></audio>
+    </div>` : "";
+
+  const speakerName = escapeHtmlServer(metadata.speakerName || "Speaker");
+  const speechTitle = escapeHtmlServer(metadata.speechTitle || "Speech Evaluation");
 
   return `<!DOCTYPE html>
 <html lang="en">
@@ -2358,71 +2381,107 @@ function buildSharePage(metadata: any, evaluation: any, metrics: any): string {
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta name="robots" content="noindex, nofollow">
-  <title>${escapeHtmlServer(metadata.speechTitle || "Evaluation")} — Speech Evaluator</title>
+  <meta property="og:title" content="${speakerName} — ${speechTitle}">
+  <meta property="og:description" content="AI-powered speech evaluation with delivery metrics, evidence-based feedback, and category scores.">
+  <meta property="og:type" content="article">
+  <meta name="twitter:card" content="summary">
+  <meta name="twitter:title" content="${speakerName} — ${speechTitle}">
+  <meta name="twitter:description" content="AI-powered speech evaluation with delivery metrics and actionable feedback.">
+  <title>${speechTitle} — AI Speech Evaluator</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&display=swap" rel="stylesheet">
   <style>
-    :root { --bg: #0f0f1a; --bg-card: #1a1a2e; --text: #e6e6e6; --text-sec: #888; --red: #e63946; --border: #333; }
-    * { box-sizing: border-box; margin: 0; padding: 0; }
-    body { background: var(--bg); color: var(--text); font-family: 'Inter', -apple-system, sans-serif; line-height: 1.6; padding: 20px; }
-    .container { max-width: 720px; margin: 0 auto; }
-    .header { text-align: center; margin-bottom: 32px; padding-bottom: 24px; border-bottom: 1px solid var(--border); }
-    .header h1 { font-size: 1.5rem; margin-bottom: 8px; }
-    .meta { color: var(--text-sec); font-size: 0.85rem; }
-    .meta span { margin: 0 8px; }
-    .metrics { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 12px; margin: 24px 0; }
-    .metric-card { background: var(--bg-card); border: 1px solid var(--border); border-radius: 8px; padding: 12px 16px; text-align: center; }
-    .metric-value { font-size: 1.3rem; font-weight: 700; color: var(--red); }
-    .metric-label { font-size: 0.75rem; color: var(--text-sec); text-transform: uppercase; }
-    .opening, .closing { font-style: italic; padding: 16px 20px; margin: 16px 0; border-left: 3px solid var(--red); background: var(--bg-card); border-radius: 4px; }
-    .eval-item { background: var(--bg-card); border: 1px solid var(--border); border-radius: 8px; padding: 16px; margin: 12px 0; }
-    .eval-item.commendation { border-left: 3px solid #2ecc71; }
-    .eval-item.recommendation { border-left: 3px solid #f39c12; }
-    .eval-item-header { font-size: 0.95rem; margin-bottom: 8px; }
-    .eval-item-body { color: var(--text-sec); font-size: 0.85rem; }
-    .eval-evidence { font-style: italic; color: var(--text-sec); font-size: 0.8rem; margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--border); }
-    .scores-section { margin: 24px 0; }
-    .scores-section h3 { font-size: 1rem; margin-bottom: 12px; }
-    .score-row { display: flex; align-items: center; gap: 8px; margin: 6px 0; }
-    .score-label { width: 100px; font-size: 0.85rem; }
-    .score-track { flex: 1; height: 8px; background: var(--border); border-radius: 4px; overflow: hidden; }
-    .score-fill { height: 100%; border-radius: 4px; transition: width 0.3s; }
-    .score-fill.good { background: #2ecc71; }
-    .score-fill.fair { background: #f39c12; }
-    .score-fill.poor { background: var(--red); }
-    .score-value { font-size: 0.8rem; color: var(--text-sec); width: 45px; text-align: right; }
-    .footer { text-align: center; margin-top: 32px; padding-top: 16px; border-top: 1px solid var(--border); }
-    .footer a { color: var(--red); text-decoration: none; font-size: 0.85rem; }
-    .badge { display: inline-block; background: var(--bg-card); border: 1px solid var(--border); border-radius: 12px; padding: 2px 10px; font-size: 0.75rem; color: var(--text-sec); }
+    :root{--bg:#0C0A0F;--bg2:#14111A;--card:#1A1722;--card-hover:#221E2D;--red:#C13B3B;--red-glow:rgba(232,82,66,0.15);--green:#34D399;--amber:#F5C36A;--text:#F0ECF5;--text2:#9B95A5;--text3:#6B6575;--border:rgba(255,255,255,0.06);--border-accent:rgba(193,59,59,0.3)}
+    *{box-sizing:border-box;margin:0;padding:0}
+    body{background:var(--bg);color:var(--text);font-family:'Outfit',-apple-system,BlinkMacSystemFont,sans-serif;line-height:1.65;-webkit-font-smoothing:antialiased}
+    .page{max-width:640px;margin:0 auto;padding:24px 20px 48px}
+    .brand{text-align:center;padding:20px 0 24px;opacity:0.5;font-size:0.75rem;color:var(--text3);letter-spacing:0.05em;text-transform:uppercase}
+    .hero{text-align:center;padding:32px 0 28px;border-bottom:1px solid var(--border)}
+    .hero h1{font-size:1.6rem;font-weight:600;line-height:1.3;margin-bottom:10px}
+    .hero-meta{color:var(--text2);font-size:0.9rem;display:flex;align-items:center;justify-content:center;gap:8px;flex-wrap:wrap}
+    .hero-meta .sep{color:var(--text3)}
+    .badge{background:var(--card);border:1px solid var(--border);border-radius:20px;padding:2px 12px;font-size:0.8rem;color:var(--text2)}
+    .metrics{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin:24px 0}
+    @media(max-width:480px){.metrics{grid-template-columns:repeat(2,1fr)}}
+    .metric{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:14px 10px;text-align:center}
+    .metric-val{font-size:1.5rem;font-weight:700;color:var(--red)}
+    .metric-lbl{font-size:0.7rem;color:var(--text3);text-transform:uppercase;letter-spacing:0.06em;margin-top:2px}
+    .audio-section{background:var(--card);border:1px solid var(--border-accent);border-radius:12px;padding:16px;margin:20px 0}
+    .audio-label{display:flex;align-items:center;gap:8px;font-size:0.9rem;font-weight:500;margin-bottom:10px;color:var(--text)}
+    .audio-label svg{color:var(--red)}
+    audio{height:40px}
+    .opening,.closing{padding:16px 20px;margin:20px 0;border-left:3px solid var(--red);background:var(--card);border-radius:0 8px 8px 0;font-style:italic;color:var(--text2);font-size:0.95rem}
+    .scores{margin:24px 0}
+    .scores h2{font-size:1rem;font-weight:600;margin-bottom:14px}
+    .score-row{display:flex;align-items:center;gap:10px;margin:8px 0}
+    .score-label{width:110px;font-size:0.85rem;color:var(--text2)}
+    .score-track{flex:1;height:6px;background:var(--bg2);border-radius:3px;overflow:hidden}
+    .score-fill{height:100%;border-radius:3px}
+    .score-fill.good{background:var(--green)}
+    .score-fill.fair{background:var(--amber)}
+    .score-fill.poor{background:var(--red)}
+    .score-num{font-size:0.8rem;color:var(--text3);width:40px;text-align:right;font-variant-numeric:tabular-nums}
+    .feedback{margin:24px 0}
+    .feedback h2{font-size:1rem;font-weight:600;margin-bottom:14px}
+    .eval-item{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:16px 18px;margin:10px 0;transition:border-color 0.15s}
+    .eval-item:hover{border-color:var(--border-accent)}
+    .eval-item.strength{border-left:3px solid var(--green)}
+    .eval-item.opportunity{border-left:3px solid var(--amber)}
+    .eval-item-type{font-size:0.7rem;text-transform:uppercase;letter-spacing:0.08em;font-weight:600;margin-bottom:6px}
+    .strength .eval-item-type{color:var(--green)}
+    .opportunity .eval-item-type{color:var(--amber)}
+    .eval-item-summary{font-size:1rem;font-weight:600;margin-bottom:6px}
+    .eval-item-body{color:var(--text2);font-size:0.9rem;line-height:1.6}
+    .eval-evidence{font-style:italic;color:var(--text3);font-size:0.8rem;margin-top:10px;padding-top:10px;border-top:1px solid var(--border)}
+    .cta{text-align:center;background:linear-gradient(135deg,var(--card) 0%,rgba(193,59,59,0.08) 100%);border:1px solid var(--border-accent);border-radius:16px;padding:32px 24px;margin:32px 0}
+    .cta h3{font-size:1.15rem;font-weight:600;margin-bottom:8px}
+    .cta p{color:var(--text2);font-size:0.9rem;margin-bottom:18px;max-width:400px;margin-left:auto;margin-right:auto}
+    .cta-btn{display:inline-block;background:var(--red);color:#fff;padding:12px 32px;border-radius:10px;text-decoration:none;font-weight:600;font-size:0.95rem;transition:opacity 0.15s,transform 0.15s}
+    .cta-btn:hover{opacity:0.9;transform:translateY(-1px)}
+    .foot{text-align:center;padding:24px 0;color:var(--text3);font-size:0.75rem}
+    .foot a{color:var(--text3);text-decoration:none}
+    .foot a:hover{color:var(--text2)}
   </style>
 </head>
 <body>
-  <div class="container">
-    <div class="header">
-      <h1>${escapeHtmlServer(metadata.speechTitle || "Untitled Speech")}</h1>
-      <div class="meta">
-        <span>${escapeHtmlServer(metadata.speakerName)}</span>
-        <span>·</span>
+  <div class="page">
+    <div class="brand">AI Speech Evaluator</div>
+
+    <div class="hero">
+      <h1>${speechTitle}</h1>
+      <div class="hero-meta">
+        <span>${speakerName}</span>
+        <span class="sep">&middot;</span>
         <span>${escapeHtmlServer(date)}</span>
-        ${metadata.projectType ? `<span>·</span><span class="badge">${escapeHtmlServer(metadata.projectType)}</span>` : ""}
+        ${metadata.projectType ? `<span class="sep">&middot;</span><span class="badge">${escapeHtmlServer(metadata.projectType)}</span>` : ""}
       </div>
     </div>
 
     <div class="metrics">
-      <div class="metric-card"><div class="metric-value">${Math.round(metrics?.wordsPerMinute || metadata.wordsPerMinute || 0)}</div><div class="metric-label">Words/Min</div></div>
-      <div class="metric-card"><div class="metric-value">${escapeHtmlServer(metrics?.durationFormatted || formatDurationStr(metadata.durationSeconds || 0))}</div><div class="metric-label">Duration</div></div>
-      <div class="metric-card"><div class="metric-value">${Math.round((metadata.passRate || 0) * 100)}%</div><div class="metric-label">Pass Rate</div></div>
-      <div class="metric-card"><div class="metric-value">${metrics?.fillerWordCount ?? "—"}</div><div class="metric-label">Fillers</div></div>
+      <div class="metric"><div class="metric-val">${Math.round(metrics?.wordsPerMinute || metadata.wordsPerMinute || 0)}</div><div class="metric-lbl">Words/Min</div></div>
+      <div class="metric"><div class="metric-val">${escapeHtmlServer(metrics?.durationFormatted || formatDurationStr(metadata.durationSeconds || 0))}</div><div class="metric-lbl">Duration</div></div>
+      <div class="metric"><div class="metric-val">${Math.round((metadata.passRate || 0) * 100)}%</div><div class="metric-lbl">Pass Rate</div></div>
+      <div class="metric"><div class="metric-val">${metrics?.fillerWordCount ?? "\u2014"}</div><div class="metric-lbl">Fillers</div></div>
     </div>
+
+    ${audioHtml}
 
     ${evaluation?.opening ? `<div class="opening">${escapeHtmlServer(evaluation.opening)}</div>` : ""}
 
     ${scoresHtml}
 
-    ${itemsHtml}
+    ${itemsHtml ? `<div class="feedback"><h2>Feedback</h2>${itemsHtml}</div>` : ""}
 
     ${evaluation?.closing ? `<div class="closing">${escapeHtmlServer(evaluation.closing)}</div>` : ""}
 
-    <div class="footer">
-      <a href="/">Powered by Speech Evaluator</a>
+    <div class="cta">
+      <h3>Get AI feedback for your Toastmasters club</h3>
+      <p>Real-time speech evaluation with instant delivery metrics, evidence-based feedback, and progress tracking.</p>
+      <a href="/" class="cta-btn">Try Speech Evaluator</a>
+    </div>
+
+    <div class="foot">
+      <a href="https://taverns.red">A Red Taverns Production</a>
     </div>
   </div>
 </body>
