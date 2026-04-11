@@ -627,3 +627,205 @@ describe("GcsHistoryService - getProgressData", () => {
     expect(client.listPrefixes).toHaveBeenCalledWith("results/jane-obrien/", "/");
   });
 });
+
+// ─── Meeting Methods (#176) ────────────────────────────────────────────────
+
+describe("saveMeetingRecord", () => {
+  let client: ReturnType<typeof createMockClient>;
+  let service: GcsHistoryService;
+
+  beforeEach(() => {
+    client = createMockClient();
+    service = new GcsHistoryService(client);
+  });
+
+  it("saves meeting.json under meetings/{meetingId}/", async () => {
+    const record = {
+      meetingId: "abc-123",
+      clubName: "Test Club",
+      meetingDate: "2026-04-10",
+      slots: [{ slotId: "s1", type: "speech" as const, speakerName: "Alice", status: "completed" as const }],
+      createdAt: "2026-04-10T19:00:00Z",
+    };
+
+    await service.saveMeetingRecord(record);
+
+    expect(client.saveFile).toHaveBeenCalledTimes(1);
+    expect(client.saveFile).toHaveBeenCalledWith(
+      "meetings/abc-123/meeting.json",
+      expect.any(String),
+      "application/json",
+    );
+    const saved = JSON.parse(client.saveFile.mock.calls[0][1] as string);
+    expect(saved.meetingId).toBe("abc-123");
+    expect(saved.clubName).toBe("Test Club");
+  });
+
+  it("handles save errors gracefully", async () => {
+    client.saveFile.mockRejectedValue(new Error("GCS error"));
+
+    // Should not throw
+    await service.saveMeetingRecord({
+      meetingId: "fail",
+      meetingDate: "2026-04-10",
+      slots: [],
+      createdAt: "2026-04-10T19:00:00Z",
+    });
+  });
+});
+
+describe("saveMeetingSlotEvaluation", () => {
+  let client: ReturnType<typeof createMockClient>;
+  let service: GcsHistoryService;
+
+  beforeEach(() => {
+    client = createMockClient();
+    service = new GcsHistoryService(client);
+  });
+
+  it("saves evaluation files under meetings/{meetingId}/slots/{slotId}/", async () => {
+    const input = makeSaveInput();
+
+    const prefix = await service.saveMeetingSlotEvaluation("mtg-1", "slot-1", input);
+
+    expect(prefix).toBe("meetings/mtg-1/slots/slot-1/");
+    expect(client.saveFile).toHaveBeenCalledTimes(5); // metadata, transcript, metrics, evaluation, audio
+    expect(client.saveFile.mock.calls[0][0]).toBe("meetings/mtg-1/slots/slot-1/metadata.json");
+  });
+
+  it("skips audio if not provided", async () => {
+    const input = makeSaveInput({ ttsAudio: undefined });
+
+    await service.saveMeetingSlotEvaluation("mtg-1", "slot-1", input);
+
+    expect(client.saveFile).toHaveBeenCalledTimes(4);
+  });
+
+  it("returns null on error", async () => {
+    client.saveFile.mockRejectedValue(new Error("GCS error"));
+
+    const prefix = await service.saveMeetingSlotEvaluation("mtg-1", "slot-1", makeSaveInput());
+
+    expect(prefix).toBeNull();
+  });
+});
+
+describe("listMeetings", () => {
+  let client: ReturnType<typeof createMockClient>;
+  let service: GcsHistoryService;
+
+  beforeEach(() => {
+    client = createMockClient();
+    service = new GcsHistoryService(client);
+  });
+
+  it("returns empty array when no meetings exist", async () => {
+    client.listPrefixes.mockResolvedValue([]);
+
+    const result = await service.listMeetings();
+
+    expect(result.results).toEqual([]);
+    expect(result.nextCursor).toBeUndefined();
+  });
+
+  it("reads meeting.json for each prefix and sorts by date", async () => {
+    client.listPrefixes.mockResolvedValue(["meetings/mtg-1/", "meetings/mtg-2/"]);
+    client.readFile
+      .mockResolvedValueOnce(JSON.stringify({
+        meetingId: "mtg-1", meetingDate: "2026-04-01", slots: [], createdAt: "2026-04-01T19:00:00Z",
+      }))
+      .mockResolvedValueOnce(JSON.stringify({
+        meetingId: "mtg-2", meetingDate: "2026-04-10", slots: [{ status: "completed" }], createdAt: "2026-04-10T19:00:00Z",
+      }));
+
+    const result = await service.listMeetings();
+
+    expect(result.results).toHaveLength(2);
+    expect(result.results[0].meetingId).toBe("mtg-2"); // newest first
+    expect(result.results[1].meetingId).toBe("mtg-1");
+  });
+
+  it("skips meetings with corrupt meeting.json", async () => {
+    client.listPrefixes.mockResolvedValue(["meetings/good/", "meetings/bad/"]);
+    client.readFile
+      .mockResolvedValueOnce(JSON.stringify({
+        meetingId: "good", meetingDate: "2026-04-10", slots: [], createdAt: "2026-04-10T19:00:00Z",
+      }))
+      .mockRejectedValueOnce(new Error("File not found"));
+
+    const result = await service.listMeetings();
+
+    expect(result.results).toHaveLength(1);
+    expect(result.results[0].meetingId).toBe("good");
+  });
+});
+
+describe("getMeetingRecord", () => {
+  let client: ReturnType<typeof createMockClient>;
+  let service: GcsHistoryService;
+
+  beforeEach(() => {
+    client = createMockClient();
+    service = new GcsHistoryService(client);
+  });
+
+  it("returns parsed meeting record", async () => {
+    client.readFile.mockResolvedValue(JSON.stringify({
+      meetingId: "mtg-1", meetingDate: "2026-04-10", slots: [], createdAt: "2026-04-10T19:00:00Z",
+    }));
+
+    const record = await service.getMeetingRecord("mtg-1");
+
+    expect(record).not.toBeNull();
+    expect(record!.meetingId).toBe("mtg-1");
+    expect(client.readFile).toHaveBeenCalledWith("meetings/mtg-1/meeting.json");
+  });
+
+  it("returns null when not found", async () => {
+    client.readFile.mockRejectedValue(new Error("Not found"));
+
+    const record = await service.getMeetingRecord("nonexistent");
+
+    expect(record).toBeNull();
+  });
+});
+
+describe("getMeetingEvaluations", () => {
+  let client: ReturnType<typeof createMockClient>;
+  let service: GcsHistoryService;
+
+  beforeEach(() => {
+    client = createMockClient();
+    service = new GcsHistoryService(client);
+  });
+
+  it("returns slot evaluations with signed URLs", async () => {
+    client.listPrefixes.mockResolvedValue(["meetings/mtg-1/slots/s1/"]);
+    client.readFile.mockResolvedValue(JSON.stringify({
+      date: "2026-04-10T19:00:00Z",
+      speakerName: "Alice",
+      speechTitle: "Ice Breaker",
+      durationSeconds: 120,
+      wordsPerMinute: 130,
+      passRate: 0.9,
+      mode: "live",
+      prefix: "meetings/mtg-1/slots/s1/",
+    }));
+    client.fileExists.mockResolvedValue(true);
+    client.getSignedReadUrl.mockResolvedValue("https://signed.url");
+
+    const evals = await service.getMeetingEvaluations("mtg-1");
+
+    expect(evals).toHaveLength(1);
+    expect(evals[0].metadata.speakerName).toBe("Alice");
+    expect(evals[0].urls).toBeDefined();
+  });
+
+  it("returns empty array when no slots exist", async () => {
+    client.listPrefixes.mockResolvedValue([]);
+
+    const evals = await service.getMeetingEvaluations("mtg-1");
+
+    expect(evals).toEqual([]);
+  });
+});

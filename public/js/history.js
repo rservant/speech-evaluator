@@ -1028,3 +1028,166 @@ export function resetHistory() {
 export function isHistoryLoaded() {
   return historyLoaded;
 }
+
+// ─── Meeting History (#176) ──────────────────────────────────────────────────
+
+let meetingsLoaded = false;
+
+export async function loadMeetingHistory() {
+  if (meetingsLoaded) return;
+  const meetingsPanel = document.getElementById("meetings-panel");
+  if (!meetingsPanel) return;
+
+  try {
+    const resp = await fetch("/api/meetings");
+    if (!resp.ok) return;
+    const { results } = await resp.json();
+
+    if (results.length === 0) {
+      meetingsPanel.style.display = "none";
+      return;
+    }
+
+    meetingsPanel.style.display = "";
+    meetingsPanel.innerHTML = `<h3 class="history-section-title">Meetings</h3>`;
+
+    for (const meeting of results) {
+      const card = document.createElement("div");
+      card.className = "meeting-history-card";
+      card.innerHTML = `
+        <div class="meeting-history-header" data-meeting-id="${meeting.meetingId}">
+          <span class="meeting-history-date">${meeting.meetingDate}</span>
+          ${meeting.clubName ? `<span class="meeting-history-club">${escapeHtml(meeting.clubName)}</span>` : ""}
+          <span class="meeting-history-count">${meeting.completedCount}/${meeting.slotCount} speakers</span>
+          <button class="btn-icon meeting-history-expand" data-meeting-id="${meeting.meetingId}">▼</button>
+        </div>
+        <div class="meeting-history-detail" id="meeting-detail-${meeting.meetingId}" style="display:none;"></div>
+      `;
+
+      card.querySelector(".meeting-history-expand").addEventListener("click", async (e) => {
+        const btn = e.currentTarget;
+        const detailEl = document.getElementById(`meeting-detail-${meeting.meetingId}`);
+        if (!detailEl) return;
+
+        if (detailEl.style.display !== "none") {
+          detailEl.style.display = "none";
+          btn.textContent = "▼";
+          return;
+        }
+
+        btn.textContent = "▲";
+        detailEl.style.display = "";
+        detailEl.innerHTML = "<p style='color:var(--text-secondary);font-size:0.85em;'>Loading...</p>";
+
+        try {
+          const resp = await fetch(`/api/meetings/${meeting.meetingId}`);
+          if (!resp.ok) throw new Error("Failed to load meeting");
+          const { meeting: record, evaluations } = await resp.json();
+
+          renderMeetingDetail(detailEl, record, evaluations);
+        } catch (err) {
+          detailEl.innerHTML = `<p style="color:var(--red-primary);">Failed to load meeting details</p>`;
+        }
+      });
+
+      meetingsPanel.appendChild(card);
+    }
+    meetingsLoaded = true;
+  } catch (err) {
+    console.warn("Failed to load meetings:", err);
+  }
+}
+
+function renderMeetingDetail(container, record, evaluations) {
+  container.innerHTML = "";
+
+  if (!record.slots || record.slots.length === 0) {
+    container.innerHTML = "<p style='color:var(--text-secondary);'>No speakers in this meeting.</p>";
+    return;
+  }
+
+  for (const slot of record.slots) {
+    const eval_ = evaluations.find((e) => {
+      // Match by prefix containing the slotId
+      return e.prefix.includes(`/slots/${slot.slotId}/`);
+    });
+
+    const row = document.createElement("div");
+    row.className = `meeting-eval-row meeting-eval-row--${slot.status}`;
+
+    const icon = slot.type === "speech" ? "🎤" : "💬";
+    const title = slot.projectTitle ? ` — ${escapeHtml(slot.projectTitle)}` : "";
+
+    if (slot.status === "completed" && eval_) {
+      row.innerHTML = `
+        <span>${icon} <strong>${escapeHtml(slot.speakerName)}</strong>${title}</span>
+        <span class="meeting-eval-meta">
+          ${eval_.metadata.wordsPerMinute ? `${Math.round(eval_.metadata.wordsPerMinute)} WPM` : ""}
+          ${eval_.metadata.durationSeconds ? ` · ${Math.round(eval_.metadata.durationSeconds)}s` : ""}
+        </span>
+        <div class="meeting-eval-actions">
+          ${eval_.urls.evaluation_audio ? `<button class="btn btn--sm" data-audio-url="${eval_.urls.evaluation_audio}">▶ Play</button>` : ""}
+        </div>
+      `;
+
+      const playBtn = row.querySelector("[data-audio-url]");
+      if (playBtn) {
+        playBtn.addEventListener("click", () => {
+          playMeetingAudio(playBtn.dataset.audioUrl, playBtn);
+        });
+      }
+    } else if (slot.status === "skipped") {
+      row.innerHTML = `<span>${icon} <s>${escapeHtml(slot.speakerName)}</s>${title}</span><span style="color:var(--text-secondary);font-size:0.85em;">Skipped</span>`;
+    } else {
+      row.innerHTML = `<span>${icon} ${escapeHtml(slot.speakerName)}${title}</span>`;
+    }
+
+    container.appendChild(row);
+  }
+}
+
+let meetingAudioElement = null;
+let activeMeetingPlayBtn = null;
+
+function playMeetingAudio(url, btn) {
+  // Stop any currently playing audio
+  if (meetingAudioElement) {
+    meetingAudioElement.pause();
+    meetingAudioElement = null;
+    if (activeMeetingPlayBtn) {
+      activeMeetingPlayBtn.textContent = "▶ Play";
+      activeMeetingPlayBtn = null;
+    }
+
+    // If same button clicked, just stop
+    if (btn === activeMeetingPlayBtn) return;
+  }
+
+  meetingAudioElement = new Audio(url);
+  activeMeetingPlayBtn = btn;
+  btn.textContent = "⏹ Stop";
+
+  meetingAudioElement.onended = () => {
+    btn.textContent = "▶ Play";
+    meetingAudioElement = null;
+    activeMeetingPlayBtn = null;
+  };
+
+  meetingAudioElement.onerror = () => {
+    btn.textContent = "▶ Play";
+    meetingAudioElement = null;
+    activeMeetingPlayBtn = null;
+  };
+
+  meetingAudioElement.play().catch(() => {
+    btn.textContent = "▶ Play";
+    meetingAudioElement = null;
+    activeMeetingPlayBtn = null;
+  });
+}
+
+function escapeHtml(str) {
+  const div = document.createElement("div");
+  div.textContent = str;
+  return div.innerHTML;
+}

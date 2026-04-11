@@ -322,6 +322,60 @@ export function createAppServer(options: CreateServerOptions = {}): AppServer {
     });
     logger.info("History DELETE endpoints mounted (#128)");
 
+    // ─── Meeting API (#176) ─────────────────────────────────────────────────────
+
+    // GET /api/meetings — list all meetings
+    app.get("/api/meetings", async (_req, res) => {
+      try {
+        const limit = Math.min(Math.max(parseInt(String(_req.query.limit ?? "20"), 10) || 20, 1), 50);
+        const cursor = typeof _req.query.cursor === "string" ? _req.query.cursor : undefined;
+        const result = await gcsHistoryService.listMeetings(limit, cursor);
+        res.json(result);
+      } catch (err) {
+        const errMsg = err instanceof Error ? err.message : String(err);
+        logger.error(`Meetings list API error: ${errMsg}`);
+        res.status(500).json({ error: "Failed to list meetings" });
+      }
+    });
+
+    // GET /api/meetings/:meetingId — get meeting with slot evaluations
+    app.get("/api/meetings/:meetingId", async (req, res) => {
+      try {
+        const meetingId = req.params.meetingId;
+        const record = await gcsHistoryService.getMeetingRecord(meetingId);
+        if (!record) {
+          res.status(404).json({ error: "Meeting not found" });
+          return;
+        }
+        const evaluations = await gcsHistoryService.getMeetingEvaluations(meetingId);
+        res.json({ meeting: record, evaluations });
+      } catch (err) {
+        const errMsg = err instanceof Error ? err.message : String(err);
+        logger.error(`Meeting detail API error: ${errMsg}`);
+        res.status(500).json({ error: "Failed to load meeting" });
+      }
+    });
+
+    // POST /api/meetings/:meetingId/finalize — save meeting record to GCS
+    app.post("/api/meetings/:meetingId/finalize", express.json(), async (req, res) => {
+      try {
+        const record = req.body as import("./types.js").MeetingRecord;
+        if (!record.meetingId || !Array.isArray(record.slots)) {
+          res.status(400).json({ error: "Invalid meeting record" });
+          return;
+        }
+        record.completedAt = new Date().toISOString();
+        await gcsHistoryService.saveMeetingRecord(record);
+        res.json({ status: "ok" });
+      } catch (err) {
+        const errMsg = err instanceof Error ? err.message : String(err);
+        logger.error(`Meeting finalize API error: ${errMsg}`);
+        res.status(500).json({ error: "Failed to finalize meeting" });
+      }
+    });
+
+    logger.info("Meeting API endpoints mounted (#176)");
+
     // GET /api/progress/:speaker — progress data for trend chart (#140)
     app.get("/api/progress/:speaker", async (req, res) => {
       try {
@@ -1246,6 +1300,33 @@ function persistToHistory(
   }).catch((err: unknown) => {
     logger.error(`[persistToHistory] GCS save failed for session ${connState.sessionId}: ${err instanceof Error ? err.message : String(err)}`);
   });
+
+  // Dual-write: also save under meeting prefix if in meeting mode (#176)
+  if (connState.meetingId && connState.meetingSlotId) {
+    const saveInput = {
+      speakerName: session.consent.speakerName,
+      speechTitle: session.projectContext?.speechTitle || "Untitled",
+      mode: connState.sessionMode as "live" | "upload" | "practice",
+      durationSeconds: session.metrics.durationSeconds,
+      wordsPerMinute: session.metrics.wordsPerMinute,
+      passRate: session.evaluationPassRate ?? 0,
+      projectType: session.projectContext?.projectType ?? undefined,
+      transcript: session.transcript,
+      metrics: session.metrics,
+      evaluation: session.evaluation,
+      evaluationScript: session.evaluationScript ?? undefined,
+      ttsAudio,
+      analysisTier: connState.analysisTier,
+      visionFrameCount: connState.visionFrameBuffer.length,
+    };
+    historyService.saveMeetingSlotEvaluation(
+      connState.meetingId,
+      connState.meetingSlotId,
+      saveInput,
+    ).catch((err: unknown) => {
+      logger.error(`[persistToHistory] Meeting slot save failed: ${err instanceof Error ? err.message : String(err)}`);
+    });
+  }
 }
 
 

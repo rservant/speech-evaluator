@@ -3479,3 +3479,85 @@ body::before {
     margin-top: 0.25rem;
   }
 }
+
+/* ─── Meeting History (#176) ─────────────────────────────────────────── */
+
+.history-section-title {
+  font-size: 1em;
+  font-weight: 600;
+  margin: 0 0 0.75rem;
+  color: var(--text-primary);
+}
+
+.meeting-history-card {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  margin-bottom: 0.5rem;
+  overflow: hidden;
+}
+
+.meeting-history-header {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.6rem 0.75rem;
+  cursor: pointer;
+  background: var(--bg-input, var(--bg-card));
+}
+
+.meeting-history-date {
+  font-weight: 600;
+  font-size: 0.9em;
+}
+
+.meeting-history-club {
+  color: var(--text-secondary);
+  font-size: 0.85em;
+}
+
+.meeting-history-count {
+  margin-left: auto;
+  color: var(--text-secondary);
+  font-size: 0.8em;
+}
+
+.meeting-history-expand {
+  background: none;
+  border: none;
+  cursor: pointer;
+  color: var(--text-secondary);
+  font-size: 0.8em;
+  padding: 2px 4px;
+}
+
+.meeting-history-detail {
+  padding: 0.5rem 0.75rem;
+}
+
+.meeting-eval-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.4rem 0;
+  border-bottom: 1px solid var(--border);
+  font-size: 0.9em;
+  flex-wrap: wrap;
+}
+
+.meeting-eval-row:last-child {
+  border-bottom: none;
+}
+
+.meeting-eval-row--skipped {
+  opacity: 0.5;
+}
+
+.meeting-eval-meta {
+  color: var(--text-secondary);
+  font-size: 0.8em;
+  margin-left: auto;
+}
+
+.meeting-eval-actions {
+  flex-shrink: 0;
+}

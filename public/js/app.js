@@ -29,7 +29,7 @@ import {
   startVisionCapture, stopVisionCapture,
 } from "./video.js";
 import { onFileSelected, onFormFileSelected } from "./upload.js";
-import { loadHistory, resetHistory, isHistoryLoaded } from "./history.js";
+import { loadHistory, resetHistory, isHistoryLoaded, loadMeetingHistory } from "./history.js";
 import { updateTierCostLabels } from "./tier-costs.js";
 import { initSetupWizard } from "./setup-wizard.js";
 import { initMeetingPanel, completeActiveSlot } from "./meeting.js";
@@ -399,6 +399,8 @@ function switchMode(mode) {
     if (speaker && !isHistoryLoaded()) {
       loadHistory(speaker);
     }
+    // Load meeting history (#176)
+    loadMeetingHistory();
   }
 }
 

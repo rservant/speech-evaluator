@@ -287,9 +287,37 @@ export function clearMeetingAgenda() {
 
 // ─── End Meeting ─────────────────────────────────────────────────────────────
 
-export function endMeeting() {
+export async function endMeeting() {
   if (!S.meetingAgenda) return;
   if (!confirm("End this meeting? The agenda will be cleared.")) return;
+
+  // Finalize meeting to GCS (#176)
+  try {
+    const record = {
+      meetingId: S.meetingAgenda.meetingId,
+      clubName: S.meetingAgenda.clubName || undefined,
+      meetingDate: S.meetingAgenda.meetingDate,
+      slots: S.meetingAgenda.slots
+        .filter((s) => s.status === "completed" || s.status === "skipped")
+        .map((s) => ({
+          slotId: s.id,
+          type: s.type,
+          speakerName: s.speakerName,
+          projectTitle: s.projectTitle || undefined,
+          status: s.status,
+        })),
+      createdAt: S.meetingAgenda.createdAt,
+    };
+
+    await fetch(`/api/meetings/${record.meetingId}/finalize`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(record),
+    });
+  } catch (err) {
+    console.warn("Failed to finalize meeting:", err);
+  }
+
   clearMeetingAgenda();
   toggleMeetingMode(false);
 }

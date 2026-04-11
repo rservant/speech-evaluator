@@ -14,7 +14,7 @@
 
 import { Storage, type Bucket, type File } from "@google-cloud/storage";
 import { createLogger } from "./logger.js";
-import type { TranscriptSegment, DeliveryMetrics, StructuredEvaluation } from "./types.js";
+import type { TranscriptSegment, DeliveryMetrics, StructuredEvaluation, MeetingRecord } from "./types.js";
 
 const log = createLogger("GcsHistory");
 
@@ -443,6 +443,160 @@ export class GcsHistoryService {
     log.info("Progress data fetched", { speaker: sanitized, entries: entries.length });
     return entries;
   }
+
+  // ─── Meeting Methods (#176) ───────────────────────────────────────────────────
+
+  /**
+   * Save a meeting record (agenda + slot summaries) to GCS.
+   */
+  async saveMeetingRecord(record: MeetingRecord): Promise<void> {
+    const prefix = `meetings/${record.meetingId}/`;
+    try {
+      await this._client.saveFile(
+        `${prefix}meeting.json`,
+        JSON.stringify(record, null, 2),
+        "application/json",
+      );
+      log.info("Meeting record saved", { meetingId: record.meetingId });
+    } catch (err) {
+      log.error("Failed to save meeting record", {
+        error: err instanceof Error ? err : new Error(String(err)),
+        meetingId: record.meetingId,
+      });
+    }
+  }
+
+  /**
+   * Save evaluation data for a meeting slot (dual-write alongside results/).
+   */
+  async saveMeetingSlotEvaluation(
+    meetingId: string,
+    slotId: string,
+    input: SaveEvaluationInput,
+  ): Promise<string | null> {
+    const prefix = `meetings/${meetingId}/slots/${slotId}/`;
+
+    try {
+      const metadata: EvaluationMetadata = {
+        date: new Date().toISOString(),
+        speakerName: input.speakerName,
+        speechTitle: input.speechTitle || "Untitled",
+        durationSeconds: input.durationSeconds,
+        wordsPerMinute: input.wordsPerMinute,
+        passRate: input.passRate,
+        projectType: input.projectType,
+        mode: input.mode,
+        prefix,
+        analysisTier: input.analysisTier,
+        visionFrameCount: input.visionFrameCount,
+      };
+
+      const saves: Promise<void>[] = [
+        this._client.saveFile(`${prefix}metadata.json`, JSON.stringify(metadata, null, 2), "application/json"),
+        this._client.saveFile(`${prefix}transcript.json`, JSON.stringify(input.transcript, null, 2), "application/json"),
+        this._client.saveFile(`${prefix}metrics.json`, JSON.stringify(input.metrics, null, 2), "application/json"),
+        this._client.saveFile(`${prefix}evaluation.json`, JSON.stringify({ evaluation: input.evaluation, script: input.evaluationScript }, null, 2), "application/json"),
+      ];
+
+      if (input.ttsAudio && input.ttsAudio.length > 0) {
+        saves.push(this._client.saveFile(`${prefix}evaluation_audio.mp3`, input.ttsAudio, "audio/mpeg"));
+      }
+
+      await Promise.all(saves);
+      log.info("Meeting slot evaluation saved", { meetingId, slotId, prefix });
+      return prefix;
+    } catch (err) {
+      log.error("Failed to save meeting slot evaluation", {
+        error: err instanceof Error ? err : new Error(String(err)),
+        meetingId,
+        slotId,
+      });
+      return null;
+    }
+  }
+
+  /**
+   * List all meetings, sorted newest-first.
+   */
+  async listMeetings(limit: number = 20, cursor?: string): Promise<{ results: MeetingListItem[]; nextCursor?: string }> {
+    const prefixes = await this._client.listPrefixes("meetings/", "/");
+
+    // Sort newest first (meetingId is UUID, but meeting.json has date)
+    // Load all meeting.json files to get dates for sorting
+    const items: MeetingListItem[] = [];
+    for (const prefix of prefixes) {
+      try {
+        const raw = await this._client.readFile(`${prefix}meeting.json`);
+        const record = JSON.parse(raw) as MeetingRecord;
+        items.push({
+          meetingId: record.meetingId,
+          clubName: record.clubName,
+          meetingDate: record.meetingDate,
+          slotCount: record.slots.length,
+          completedCount: record.slots.filter((s) => s.status === "completed").length,
+          createdAt: record.createdAt,
+        });
+      } catch {
+        // Skip meetings with missing/corrupt meeting.json
+      }
+    }
+
+    items.sort((a, b) => b.meetingDate.localeCompare(a.meetingDate));
+
+    const startIndex = cursor ? parseInt(Buffer.from(cursor, "base64").toString("utf-8"), 10) : 0;
+    const page = items.slice(startIndex, startIndex + limit);
+    const nextCursor = startIndex + limit < items.length
+      ? Buffer.from(String(startIndex + limit)).toString("base64")
+      : undefined;
+
+    return { results: page, nextCursor };
+  }
+
+  /**
+   * Get a meeting record by ID.
+   */
+  async getMeetingRecord(meetingId: string): Promise<MeetingRecord | null> {
+    try {
+      const raw = await this._client.readFile(`meetings/${meetingId}/meeting.json`);
+      return JSON.parse(raw) as MeetingRecord;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Get all slot evaluations for a meeting with signed URLs.
+   */
+  async getMeetingEvaluations(meetingId: string): Promise<MeetingSlotEvaluation[]> {
+    const slotPrefixes = await this._client.listPrefixes(`meetings/${meetingId}/slots/`, "/");
+    const results: MeetingSlotEvaluation[] = [];
+
+    for (const prefix of slotPrefixes) {
+      try {
+        const metaRaw = await this._client.readFile(`${prefix}metadata.json`);
+        const metadata = JSON.parse(metaRaw) as EvaluationMetadata;
+
+        const urls: Record<string, string> = {};
+        const fileNames = ["transcript.json", "metrics.json", "evaluation.json", "evaluation_audio.mp3"];
+        for (const fileName of fileNames) {
+          try {
+            if (await this._client.fileExists(`${prefix}${fileName}`)) {
+              urls[fileName.replace(".json", "").replace(".mp3", "")] =
+                await this._client.getSignedReadUrl(`${prefix}${fileName}`, 15);
+            }
+          } catch {
+            // Skip missing files
+          }
+        }
+
+        results.push({ metadata, urls, prefix });
+      } catch {
+        // Skip slots with missing metadata
+      }
+    }
+
+    return results;
+  }
 }
 
 // ─── Progress Types (#140) ──────────────────────────────────────────────────────
@@ -454,4 +608,21 @@ export interface SpeakerProgressEntry {
   passRate: number;
   durationSeconds: number;
   fillerWordFrequency?: number;
+}
+
+// ─── Meeting Types (#176) ────────────────────────────────────────────────────
+
+export interface MeetingListItem {
+  meetingId: string;
+  clubName?: string;
+  meetingDate: string;
+  slotCount: number;
+  completedCount: number;
+  createdAt: string;
+}
+
+export interface MeetingSlotEvaluation {
+  metadata: EvaluationMetadata;
+  urls: Record<string, string>;
+  prefix: string;
 }
