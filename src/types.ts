@@ -745,3 +745,48 @@ export type ServerMessage =
     }>;
   }
   | { type: "coaching_cue"; cueType: string; message: string; timestamp: number };
+
+// ─── Meeting Agenda Types (#174) ────────────────────────────────────────────
+
+export interface AgendaSlot {
+  id: string;
+  type: "speech" | "table-topics";
+  speakerName: string;
+  projectTitle?: string;
+  evaluationFormText?: string;
+  order: number;
+  status: "pending" | "active" | "completed" | "skipped";
+}
+
+export interface MeetingAgenda {
+  meetingId: string;
+  clubName?: string;
+  meetingDate: string;
+  slots: AgendaSlot[];
+  createdAt: string;
+}
+
+export interface MeetingRecord {
+  meetingId: string;
+  clubName?: string;
+  meetingDate: string;
+  slots: MeetingSlotSummary[];
+  createdAt: string;
+  completedAt?: string;
+}
+
+export interface MeetingSlotSummary {
+  slotId: string;
+  type: "speech" | "table-topics";
+  speakerName: string;
+  projectTitle?: string;
+  status: "completed" | "skipped";
+  evalPrefix?: string;
+}
+
+export interface ParsedAgendaSlot {
+  type: "speech" | "table-topics";
+  speakerName: string;
+  projectTitle?: string;
+  order: number;
+}

@@ -41,6 +41,9 @@ import { serializeOutputs } from "./file-persistence.js";
 import type { GcsHistoryService } from "./gcs-history.js";
 import { generateImprovementPlan } from "./improvement-plan.js";
 import { generateHabitReport } from "./habit-detector.js";
+import { parseAgendaFromText } from "./agenda-parser.js";
+import { extractFormText, isFormMimeType } from "./form-extractor.js";
+import multer from "multer";
 
 // ─── Constants ──────────────────────────────────────────────────────────────────
 
@@ -498,6 +501,29 @@ export function createAppServer(options: CreateServerOptions = {}): AppServer {
         }
       });
       logger.info("Improvement plan endpoint mounted at /api/improvement-plan/:speaker (#145)");
+
+      // POST /api/agenda/parse — extract speakers from meeting agenda PDF/text (#174)
+      const agendaUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 5 * 1024 * 1024 } });
+      app.post("/api/agenda/parse", agendaUpload.single("file"), async (req, res) => {
+        try {
+          if (!req.file) {
+            res.status(400).json({ error: "File upload required (PDF, DOCX, or TXT)" });
+            return;
+          }
+          if (!isFormMimeType(req.file.mimetype)) {
+            res.status(400).json({ error: `Unsupported file type: ${req.file.mimetype}. Accepted: PDF, DOCX, TXT, Markdown` });
+            return;
+          }
+          const result = await extractFormText(req.file.buffer, req.file.mimetype);
+          const slots = await parseAgendaFromText(result.text, openaiClient as any);
+          res.json({ slots });
+        } catch (err) {
+          const errMsg = err instanceof Error ? err.message : String(err);
+          logger.error(`Agenda parse API error: ${errMsg}`);
+          res.status(500).json({ error: "Failed to parse agenda" });
+        }
+      });
+      logger.info("Agenda parse endpoint mounted at /api/agenda/parse (#174)");
     }
 
     // GET /api/habits/:speaker — habit/breakthrough patterns (#147)
