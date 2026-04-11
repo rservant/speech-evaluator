@@ -669,13 +669,22 @@ export function createAppServer(options: CreateServerOptions = {}): AppServer {
 
           // Strip large arrays from metrics to avoid exceeding LLM token limits (#193)
           // The evaluation generator sends full metrics JSON in the prompt.
-          // Energy windows, classified pauses/fillers, and word-level data can be 400KB+.
+          // pitchProfile (218KB), energyProfile (39KB), classified arrays can total 400KB+.
           const metrics = {
             ...fullMetrics,
-            energyProfile: { ...fullMetrics.energyProfile, windows: [] },
+            energyProfile: fullMetrics.energyProfile
+              ? { windowDurationMs: fullMetrics.energyProfile.windowDurationMs, coefficientOfVariation: fullMetrics.energyProfile.coefficientOfVariation, silenceThreshold: fullMetrics.energyProfile.silenceThreshold, windows: [] }
+              : fullMetrics.energyProfile,
+            pitchProfile: fullMetrics.pitchProfile
+              ? { meanPitchHz: (fullMetrics.pitchProfile as any).meanPitchHz, pitchRangeHz: (fullMetrics.pitchProfile as any).pitchRangeHz, pitchVariability: (fullMetrics.pitchProfile as any).pitchVariability, samples: [] }
+              : undefined,
             classifiedPauses: [],
             classifiedFillers: [],
             fillerWords: fullMetrics.fillerWords?.slice(0, 20) ?? [],
+            paceVariation: fullMetrics.paceVariation
+              ? { overallCoefficient: (fullMetrics.paceVariation as any).overallCoefficient, segments: [] }
+              : undefined,
+            speakerMetrics: undefined,
           } as import("./types.js").DeliveryMetrics;
 
           // Run evaluation pipeline with new style
