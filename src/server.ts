@@ -593,17 +593,43 @@ export function createAppServer(options: CreateServerOptions = {}): AppServer {
         const evalData = evaluationRaw ? JSON.parse(evaluationRaw) : {};
         const metrics = metricsRaw ? JSON.parse(metricsRaw) : {};
 
-        // Check for TTS audio and generate signed URL (#179)
-        let audioUrl: string | null = null;
+        // Generate signed URLs for all available files (#179, #188)
+        const signIfExists = async (fileName: string) => {
+          try {
+            const path = `${evalPrefix}${fileName}`;
+            if (await gcsHistoryService.client.fileExists(path)) {
+              return await gcsHistoryService.client.getSignedReadUrl(path, 60);
+            }
+          } catch { /* optional */ }
+          return null;
+        };
+        const [audioUrl, speechAudioUrl, transcriptUrl, metricsUrl] = await Promise.all([
+          signIfExists("evaluation_audio.mp3"),
+          signIfExists("speech_audio.wav"),
+          signIfExists("transcript.json"),
+          signIfExists("metrics.json"),
+        ]);
+
+        // Generate Markdown export for download (#188)
+        let markdownDataUri: string | null = null;
         try {
-          const audioPath = `${evalPrefix}evaluation_audio.mp3`;
-          if (await gcsHistoryService.client.fileExists(audioPath)) {
-            audioUrl = await gcsHistoryService.client.getSignedReadUrl(audioPath, 60);
+          const transcriptRaw = await safeRead(`${evalPrefix}transcript.json`);
+          if (transcriptRaw && evalData.evaluation && metricsRaw) {
+            const { generateMarkdownReport } = await import("./markdown-export.js");
+            const markdown = generateMarkdownReport({
+              metadata,
+              evaluation: evalData.evaluation,
+              metrics,
+              transcript: JSON.parse(transcriptRaw),
+            });
+            markdownDataUri = `data:text/markdown;charset=utf-8,${encodeURIComponent(markdown)}`;
           }
-        } catch { /* audio is optional */ }
+        } catch { /* markdown export is optional */ }
+
+        const downloads = { ttsAudio: audioUrl, speechAudio: speechAudioUrl, transcript: transcriptUrl, metrics: metricsUrl, markdown: markdownDataUri };
 
         // Serve a self-contained HTML page
-        const html = buildSharePage(metadata, evalData.evaluation, metrics, audioUrl);
+        const html = buildSharePage(metadata, evalData.evaluation, metrics, audioUrl, downloads);
         res.setHeader("Content-Type", "text/html; charset=utf-8");
         res.send(html);
       } catch (err) {
@@ -2424,7 +2450,15 @@ function escapeHtmlServer(value: unknown): string {
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-function buildSharePage(metadata: any, evaluation: any, metrics: any, audioUrl?: string | null): string {
+interface ShareDownloads {
+  ttsAudio?: string | null;
+  speechAudio?: string | null;
+  transcript?: string | null;
+  metrics?: string | null;
+  markdown?: string | null;
+}
+
+function buildSharePage(metadata: any, evaluation: any, metrics: any, audioUrl?: string | null, downloads?: ShareDownloads): string {
   const date = new Date(metadata.date).toLocaleDateString("en-US", {
     weekday: "long", year: "numeric", month: "long", day: "numeric",
   });
@@ -2537,6 +2571,12 @@ function buildSharePage(metadata: any, evaluation: any, metrics: any, audioUrl?:
     .cta p{color:var(--text2);font-size:0.9rem;margin-bottom:18px;max-width:400px;margin-left:auto;margin-right:auto}
     .cta-btn{display:inline-block;background:var(--red);color:#fff;padding:12px 32px;border-radius:10px;text-decoration:none;font-weight:600;font-size:0.95rem;transition:opacity 0.15s,transform 0.15s}
     .cta-btn:hover{opacity:0.9;transform:translateY(-1px)}
+    .downloads{margin:28px 0}
+    .downloads h2{font-size:1rem;font-weight:600;margin-bottom:12px}
+    .dl-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:8px}
+    .dl-btn{display:flex;align-items:center;gap:8px;padding:10px 14px;background:var(--card);border:1px solid var(--border);border-radius:8px;color:var(--text);text-decoration:none;font-size:0.85rem;transition:border-color 0.15s}
+    .dl-btn:hover{border-color:var(--border-accent)}
+    .dl-btn svg{flex-shrink:0;color:var(--text2)}
     .foot{text-align:center;padding:24px 0;color:var(--text3);font-size:0.75rem}
     .foot a{color:var(--text3);text-decoration:none}
     .foot a:hover{color:var(--text2)}
@@ -2572,6 +2612,18 @@ function buildSharePage(metadata: any, evaluation: any, metrics: any, audioUrl?:
     ${itemsHtml ? `<div class="feedback"><h2>Feedback</h2>${itemsHtml}</div>` : ""}
 
     ${evaluation?.closing ? `<div class="closing">${escapeHtmlServer(evaluation.closing)}</div>` : ""}
+
+    ${(() => {
+      if (!downloads) return "";
+      const links: string[] = [];
+      if (downloads.markdown) links.push(`<a href="${escapeHtmlServer(downloads.markdown)}" download="evaluation-report.md" class="dl-btn"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg> Evaluation Report</a>`);
+      if (downloads.transcript) links.push(`<a href="${escapeHtmlServer(downloads.transcript)}" download="transcript.json" class="dl-btn"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg> Transcript</a>`);
+      if (downloads.metrics) links.push(`<a href="${escapeHtmlServer(downloads.metrics)}" download="metrics.json" class="dl-btn"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg> Metrics</a>`);
+      if (downloads.speechAudio) links.push(`<a href="${escapeHtmlServer(downloads.speechAudio)}" download="speech-audio.wav" class="dl-btn"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/></svg> Speech Audio</a>`);
+      if (downloads.ttsAudio) links.push(`<a href="${escapeHtmlServer(downloads.ttsAudio)}" download="evaluation-audio.mp3" class="dl-btn"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14"/></svg> AI Evaluation Audio</a>`);
+      if (links.length === 0) return "";
+      return `<div class="downloads"><h2>Downloads</h2><div class="dl-grid">${links.join("")}</div></div>`;
+    })()}
 
     <div class="cta">
       <h3>Get AI feedback for your Toastmasters club</h3>
