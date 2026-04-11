@@ -738,10 +738,10 @@ async function toggleHistoryDetail(div, item) {
 
     // Links
     html += '<div class="history-links">';
-    if (urls.transcript) html += `<a href="${escapeHtml(urls.transcript)}" target="_blank" class="history-link">📄 Transcript</a>`;
-    if (urls.metrics) html += `<a href="${escapeHtml(urls.metrics)}" target="_blank" class="history-link">📊 Metrics</a>`;
-    html += `<button class="history-export-btn" title="Export as Markdown">📄 Export</button>`;
-    html += `<button class="history-share-btn" title="Create shareable link">🔗 Share</button>`;
+    if (urls.transcript) html += `<a href="${escapeHtml(urls.transcript)}" target="_blank" class="history-link"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg> Transcript</a>`;
+    if (urls.metrics) html += `<a href="${escapeHtml(urls.metrics)}" target="_blank" class="history-link"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg> Metrics</a>`;
+    html += `<button class="history-export-btn" title="Export as Markdown"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg> Export</button>`;
+    html += `<button class="history-share-btn" title="Create shareable link"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/></svg> Share</button>`;
     html += `<div class="history-reeval-group">
       <select class="history-reeval-select">
         <option value="">Re-evaluate as...</option>
@@ -757,7 +757,7 @@ async function toggleHistoryDetail(div, item) {
         <option value="micro_focus">Micro-Focus</option>
       </select>
     </div>`;
-    html += `<button class="history-delete-btn" title="Delete this evaluation">🗑️ Delete</button>`;
+    html += `<button class="history-delete-btn" title="Delete this evaluation"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg> Delete</button>`;
     html += "</div>";
 
     html += "</div>";
@@ -801,7 +801,7 @@ async function toggleHistoryDetail(div, item) {
           }
         } catch (err) {
           console.error("[History] Failed to delete:", err);
-          deleteBtn.textContent = "🗑️ Delete";
+          deleteBtn.textContent = "Delete";
           deleteBtn.disabled = false;
           alert("Failed to delete: " + err.message);
         }
@@ -833,11 +833,11 @@ async function toggleHistoryDetail(div, item) {
           a.click();
           document.body.removeChild(a);
           URL.revokeObjectURL(url);
-          exportBtn.textContent = "📄 Export";
+          exportBtn.textContent = "Export";
           exportBtn.disabled = false;
         } catch (err) {
           console.error("[History] Failed to export:", err);
-          exportBtn.textContent = "📄 Export";
+          exportBtn.textContent = "Export";
           exportBtn.disabled = false;
           alert("Failed to export: " + err.message);
         }
@@ -863,12 +863,12 @@ async function toggleHistoryDetail(div, item) {
           await navigator.clipboard.writeText(shareUrl);
           shareBtn.textContent = "✅ Copied!";
           setTimeout(() => {
-            shareBtn.textContent = "🔗 Share";
+            shareBtn.textContent = "Share";
             shareBtn.disabled = false;
           }, 2000);
         } catch (err) {
           console.error("[History] Failed to share:", err);
-          shareBtn.textContent = "🔗 Share";
+          shareBtn.textContent = "Share";
           shareBtn.disabled = false;
           alert("Failed to create share link: " + err.message);
         }
@@ -1191,7 +1191,7 @@ function renderMeetingDetail(container, record, evaluations, meetingId) {
         </span>
         <div class="meeting-eval-actions">
           ${eval_.urls.evaluation_audio ? `<button class="btn btn--sm" data-audio-url="${eval_.urls.evaluation_audio}">▶ Play</button>` : ""}
-          <button class="btn btn--sm meeting-share-btn" data-prefix="${eval_.prefix}" data-speaker="${escapeHtml(slot.speakerName)}">🔗 Share</button>
+          <button class="btn btn--sm meeting-share-btn" data-prefix="${eval_.prefix}" data-speaker="${escapeHtml(slot.speakerName)}"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/></svg> Share</button>
         </div>
       `;
 
@@ -1217,9 +1217,9 @@ function renderMeetingDetail(container, record, evaluations, meetingId) {
             const { url } = await resp.json();
             await navigator.clipboard.writeText(url);
             shareBtn.textContent = "Copied!";
-            setTimeout(() => { shareBtn.textContent = "🔗 Share"; shareBtn.disabled = false; }, 2000);
+            setTimeout(() => { shareBtn.textContent = "Share"; shareBtn.disabled = false; }, 2000);
           } catch {
-            shareBtn.textContent = "🔗 Share";
+            shareBtn.textContent = "Share";
             shareBtn.disabled = false;
             alert("Failed to create share link");
           }
