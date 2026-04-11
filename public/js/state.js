@@ -177,6 +177,8 @@ export const dom = {
   analysisTierConfig: document.getElementById("analysis-tier-config"),
   // Evaluation Style (#133)
   evaluationStyleConfig: document.getElementById("evaluation-style-config"),
+  // Advanced Settings (#180)
+  advancedSettings: document.getElementById("advanced-settings"),
 };
 
 // ─── Video DOM References ────────────────────────────────────────

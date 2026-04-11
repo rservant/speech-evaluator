@@ -39,6 +39,8 @@ export function updateUI(state) {
   if (state === SessionState.IDLE) {
     // Show consent form only in IDLE (and not after purge — form is reset but still shown)
     show(dom.consentForm);
+    // Show advanced settings in IDLE (#180)
+    if (dom.advancedSettings) show(dom.advancedSettings);
     // Show project context form in IDLE (Req 4.1)
     show(dom.projectContextForm);
     // Show time limit control in IDLE
@@ -113,6 +115,8 @@ export function updateUI(state) {
   if (state === SessionState.RECORDING) {
     // Hide consent form during recording (consent is immutable)
     hide(dom.consentForm);
+    // Hide advanced settings during recording (#180)
+    if (dom.advancedSettings) hide(dom.advancedSettings);
     // Hide project context form during recording (Req 4.7 — immutable after recording starts)
     hide(dom.projectContextForm);
     // Hide time limit control during recording
@@ -157,6 +161,8 @@ export function updateUI(state) {
   if (state === SessionState.PROCESSING) {
     // Hide consent form during processing
     hide(dom.consentForm);
+    // Hide advanced settings during processing (#180)
+    if (dom.advancedSettings) hide(dom.advancedSettings);
     // Hide project context form during processing (Req 4.7 — immutable after recording starts)
     hide(dom.projectContextForm);
     // Show time limit control in PROCESSING (can still adjust before delivery)
@@ -214,6 +220,8 @@ export function updateUI(state) {
   if (state === SessionState.DELIVERING) {
     // Hide consent form during delivery
     hide(dom.consentForm);
+    // Hide advanced settings during delivery (#180)
+    if (dom.advancedSettings) hide(dom.advancedSettings);
     // Hide project context form during delivery (Req 4.7 — immutable after recording starts)
     hide(dom.projectContextForm);
     // Hide time limit and duration estimate during delivery

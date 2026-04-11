@@ -3285,6 +3285,57 @@ body::before {
   }
 }
 
+/* ─── Advanced Settings (#180) ────────────────────────────────────────────── */
+
+.advanced-settings {
+  margin-bottom: 1rem;
+}
+
+.advanced-settings-toggle {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.6rem 1rem;
+  font-size: 0.9rem;
+  font-weight: 500;
+  color: var(--text-secondary);
+  cursor: pointer;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: var(--bg-secondary);
+  list-style: none;
+  transition: color var(--transition-fast), border-color var(--transition-fast);
+}
+
+.advanced-settings-toggle:hover {
+  color: var(--text-primary);
+  border-color: var(--border-accent);
+}
+
+.advanced-settings-toggle::-webkit-details-marker {
+  display: none;
+}
+
+.advanced-settings-toggle svg {
+  width: 16px;
+  height: 16px;
+  opacity: 0.6;
+}
+
+.advanced-settings[open] .advanced-settings-toggle {
+  border-bottom-left-radius: 0;
+  border-bottom-right-radius: 0;
+  border-bottom-color: transparent;
+}
+
+.advanced-settings-body {
+  border: 1px solid var(--border-subtle);
+  border-top: none;
+  border-radius: 0 0 var(--radius-sm) var(--radius-sm);
+  padding: 0.75rem;
+  background: var(--bg-secondary);
+}
+
 /* ─── Meeting Mode (#174, #175) ──────────────────────────────────────────── */
 
 .meeting-mode-entry {

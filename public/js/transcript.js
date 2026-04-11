@@ -676,6 +676,11 @@ export function showEvaluation(text) {
   // Use evidence-aware rendering when evaluation data is available
   renderEvaluationWithEvidence(text, S.lastEvaluationData);
   show(dom.evaluationPanel);
+
+  // Auto-scroll to evaluation so feedback is visible (#181)
+  setTimeout(() => {
+    dom.evaluationPanel.scrollIntoView({ behavior: "smooth", block: "start" });
+  }, 100);
 }
 
 // ─── UI Update: Role Results Display ─────────────────────────────

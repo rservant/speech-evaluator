@@ -117,8 +117,8 @@
       </div>
     </div>
 
-    <!-- Meeting Mode Toggle (shown when meeting mode is off) -->
-    <div id="meeting-mode-entry" class="meeting-mode-entry">
+    <!-- Meeting Mode Toggle (hidden — moved into Settings #180) -->
+    <div id="meeting-mode-entry" class="meeting-mode-entry" style="display:none;">
       <label class="meeting-toggle-label">
         <input type="checkbox" id="meeting-mode-toggle-entry">
         <span>Meeting Mode</span>
@@ -148,6 +148,22 @@
     </div>
     <div id="practice-mode-label" class="practice-mode-label" style="display:none;">
       🏋️ <strong>Practice Mode</strong> — Record a short rehearsal (max 5 min) and get instant AI feedback. No video, no project context.
+    </div>
+
+    <!-- Advanced Settings — collapsed by default (#180) -->
+    <details id="advanced-settings" class="advanced-settings">
+      <summary class="advanced-settings-toggle">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+        Settings
+      </summary>
+      <div class="advanced-settings-body">
+
+    <!-- Meeting Mode Toggle -->
+    <div id="meeting-mode-entry-inner" class="meeting-mode-entry" style="margin-bottom:0.75rem;">
+      <label class="meeting-toggle-label">
+        <input type="checkbox" id="meeting-mode-toggle-settings">
+        <span>Meeting Mode</span>
+      </label>
     </div>
 
     <!-- Project Context Form (visible in IDLE state) -->
@@ -351,6 +367,9 @@
         </div>
       </div>
     </div>
+
+      </div><!-- /.advanced-settings-body -->
+    </details><!-- /#advanced-settings -->
 
     <!-- VAD Notification Banner (shown during RECORDING when speech-end detected) -->
     <div id="vad-notification" class="vad-notification" role="alert" aria-live="assertive">

@@ -418,10 +418,12 @@ export function initMeetingPanel() {
   // Wire toggles (panel toggle + entry toggle)
   const toggle = document.getElementById("meeting-mode-toggle");
   const entryToggle = document.getElementById("meeting-mode-toggle-entry");
+  const settingsToggle = document.getElementById("meeting-mode-toggle-settings");
 
   function syncToggles(checked) {
     if (toggle) toggle.checked = checked;
     if (entryToggle) entryToggle.checked = checked;
+    if (settingsToggle) settingsToggle.checked = checked;
     toggleMeetingMode(checked);
   }
 
@@ -432,6 +434,10 @@ export function initMeetingPanel() {
   if (entryToggle) {
     entryToggle.checked = S.meetingMode;
     entryToggle.addEventListener("change", () => syncToggles(entryToggle.checked));
+  }
+  if (settingsToggle) {
+    settingsToggle.checked = S.meetingMode;
+    settingsToggle.addEventListener("change", () => syncToggles(settingsToggle.checked));
   }
 
   // Wire add buttons
