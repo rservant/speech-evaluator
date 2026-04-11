@@ -11,6 +11,7 @@ import type {
   StructuredEvaluation,
   DeliveryMetrics,
   TranscriptSegment,
+  MeetingRecord,
 } from "./types.js";
 import type { EvaluationMetadata } from "./gcs-history.js";
 
@@ -192,6 +193,60 @@ export function generateMarkdownReport(input: MarkdownExportInput): string {
 }
 
 // ─── Helpers ────────────────────────────────────────────────────────────────────
+
+// ─── Meeting Export (#177) ────────────────────────────────────────────────────
+
+export interface MeetingMarkdownExportInput {
+  meeting: MeetingRecord;
+  evaluations: MarkdownExportInput[];
+}
+
+/**
+ * Generate a combined Markdown report for an entire meeting.
+ * Includes meeting header, table of contents, and per-speaker sections.
+ */
+export function generateMeetingMarkdownReport(input: MeetingMarkdownExportInput): string {
+  const { meeting, evaluations } = input;
+  const parts: string[] = [];
+
+  const dateStr = new Date(meeting.meetingDate).toLocaleDateString("en-US", {
+    weekday: "long",
+    year: "numeric",
+    month: "long",
+    day: "numeric",
+  });
+
+  parts.push(`# Meeting Evaluation Report`);
+  parts.push(``);
+  if (meeting.clubName) {
+    parts.push(`**Club:** ${meeting.clubName}`);
+  }
+  parts.push(`**Date:** ${dateStr}`);
+  parts.push(`**Speakers:** ${evaluations.length}`);
+  parts.push(``);
+
+  // Table of contents
+  if (evaluations.length > 0) {
+    parts.push(`## Speakers`);
+    parts.push(``);
+    for (let i = 0; i < evaluations.length; i++) {
+      const e = evaluations[i];
+      parts.push(`${i + 1}. **${e.metadata.speakerName}** — ${e.metadata.speechTitle}`);
+    }
+    parts.push(``);
+    parts.push(`---`);
+  }
+
+  // Per-speaker evaluations
+  for (const evaluation of evaluations) {
+    parts.push(``);
+    parts.push(generateMarkdownReport(evaluation));
+    parts.push(``);
+    parts.push(`---`);
+  }
+
+  return parts.join("\n");
+}
 
 function capitalize(str: string): string {
   return str.charAt(0).toUpperCase() + str.slice(1);

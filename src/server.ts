@@ -374,7 +374,53 @@ export function createAppServer(options: CreateServerOptions = {}): AppServer {
       }
     });
 
-    logger.info("Meeting API endpoints mounted (#176)");
+    // GET /api/meetings/:meetingId/export — export meeting as Markdown (#177)
+    app.get("/api/meetings/:meetingId/export", async (req, res) => {
+      try {
+        const meetingId = req.params.meetingId;
+        const record = await gcsHistoryService.getMeetingRecord(meetingId);
+        if (!record) {
+          res.status(404).json({ error: "Meeting not found" });
+          return;
+        }
+
+        const slotEvals = await gcsHistoryService.getMeetingEvaluations(meetingId);
+
+        // Build MarkdownExportInput for each completed slot
+        const evalInputs: import("./markdown-export.js").MarkdownExportInput[] = [];
+        for (const slotEval of slotEvals) {
+          try {
+            const [evalRaw, metricsRaw, transcriptRaw] = await Promise.all([
+              gcsHistoryService.client.readFile(`${slotEval.prefix}evaluation.json`),
+              gcsHistoryService.client.readFile(`${slotEval.prefix}metrics.json`),
+              gcsHistoryService.client.readFile(`${slotEval.prefix}transcript.json`),
+            ]);
+            evalInputs.push({
+              metadata: slotEval.metadata,
+              evaluation: JSON.parse(evalRaw).evaluation,
+              metrics: JSON.parse(metricsRaw),
+              transcript: JSON.parse(transcriptRaw),
+            });
+          } catch {
+            // Skip slots with missing files
+          }
+        }
+
+        const { generateMeetingMarkdownReport } = await import("./markdown-export.js");
+        const markdown = generateMeetingMarkdownReport({ meeting: record, evaluations: evalInputs });
+
+        const filename = `meeting-${record.meetingDate}${record.clubName ? `-${record.clubName.replace(/[^a-zA-Z0-9]/g, "-")}` : ""}.md`;
+        res.setHeader("Content-Type", "text/markdown; charset=utf-8");
+        res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
+        res.send(markdown);
+      } catch (err) {
+        const errMsg = err instanceof Error ? err.message : String(err);
+        logger.error(`Meeting export API error: ${errMsg}`);
+        res.status(500).json({ error: "Failed to export meeting" });
+      }
+    });
+
+    logger.info("Meeting API endpoints mounted (#176, #177)");
 
     // GET /api/progress/:speaker — progress data for trend chart (#140)
     app.get("/api/progress/:speaker", async (req, res) => {
@@ -2301,6 +2347,7 @@ function buildSharePage(metadata: any, evaluation: any, metrics: any): string {
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="robots" content="noindex, nofollow">
   <title>${escapeHtmlServer(metadata.speechTitle || "Evaluation")} — Speech Evaluator</title>
   <style>
     :root { --bg: #0f0f1a; --bg-card: #1a1a2e; --text: #e6e6e6; --text-sec: #888; --red: #e63946; --border: #333; }

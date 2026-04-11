@@ -6,7 +6,7 @@
  */
 
 import { describe, it, expect } from "vitest";
-import { generateMarkdownReport, type MarkdownExportInput } from "./markdown-export.js";
+import { generateMarkdownReport, generateMeetingMarkdownReport, type MarkdownExportInput } from "./markdown-export.js";
 import type { StructuredEvaluation, DeliveryMetrics, TranscriptSegment } from "./types.js";
 import type { EvaluationMetadata } from "./gcs-history.js";
 
@@ -308,5 +308,64 @@ describe("generateMarkdownReport()", () => {
     const report = generateMarkdownReport(input);
     // No triple+ consecutive newlines
     expect(report).not.toMatch(/\n\n\n/);
+  });
+});
+
+// ─── Meeting Markdown Export (#177) ──────────────────────────────────────────
+
+describe("generateMeetingMarkdownReport", () => {
+  it("generates a combined report with header and per-speaker sections", () => {
+    const meeting = {
+      meetingId: "mtg-1",
+      clubName: "Test Club",
+      meetingDate: "2026-04-10",
+      slots: [
+        { slotId: "s1", type: "speech" as const, speakerName: "Alice", status: "completed" as const },
+        { slotId: "s2", type: "table-topics" as const, speakerName: "Bob", status: "completed" as const },
+      ],
+      createdAt: "2026-04-10T19:00:00Z",
+    };
+
+    const evalInputs: MarkdownExportInput[] = [
+      { metadata: makeMetadata({ speakerName: "Alice", speechTitle: "Ice Breaker" }), evaluation: makeEvaluation(), metrics: makeMetrics(), transcript: makeTranscript() },
+      { metadata: makeMetadata({ speakerName: "Bob", speechTitle: "Table Topics" }), evaluation: makeEvaluation(), metrics: makeMetrics(), transcript: makeTranscript() },
+    ];
+
+    const report = generateMeetingMarkdownReport({ meeting, evaluations: evalInputs });
+
+    expect(report).toContain("# Meeting Evaluation Report");
+    expect(report).toContain("**Club:** Test Club");
+    expect(report).toContain("**Speakers:** 2");
+    expect(report).toContain("Alice");
+    expect(report).toContain("Bob");
+    expect(report).toContain("Ice Breaker");
+    expect(report).toContain("Table Topics");
+  });
+
+  it("handles empty evaluations", () => {
+    const meeting = {
+      meetingId: "mtg-2",
+      meetingDate: "2026-04-10",
+      slots: [],
+      createdAt: "2026-04-10T19:00:00Z",
+    };
+
+    const report = generateMeetingMarkdownReport({ meeting, evaluations: [] });
+
+    expect(report).toContain("# Meeting Evaluation Report");
+    expect(report).toContain("**Speakers:** 0");
+  });
+
+  it("omits club name when not provided", () => {
+    const meeting = {
+      meetingId: "mtg-3",
+      meetingDate: "2026-04-10",
+      slots: [],
+      createdAt: "2026-04-10T19:00:00Z",
+    };
+
+    const report = generateMeetingMarkdownReport({ meeting, evaluations: [] });
+
+    expect(report).not.toContain("**Club:**");
   });
 });

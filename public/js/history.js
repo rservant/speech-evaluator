@@ -1084,7 +1084,7 @@ export async function loadMeetingHistory() {
           if (!resp.ok) throw new Error("Failed to load meeting");
           const { meeting: record, evaluations } = await resp.json();
 
-          renderMeetingDetail(detailEl, record, evaluations);
+          renderMeetingDetail(detailEl, record, evaluations, meeting.meetingId);
         } catch (err) {
           detailEl.innerHTML = `<p style="color:var(--red-primary);">Failed to load meeting details</p>`;
         }
@@ -1098,11 +1098,20 @@ export async function loadMeetingHistory() {
   }
 }
 
-function renderMeetingDetail(container, record, evaluations) {
+function renderMeetingDetail(container, record, evaluations, meetingId) {
   container.innerHTML = "";
 
+  // Export button
+  const exportRow = document.createElement("div");
+  exportRow.style.cssText = "display:flex;gap:0.5rem;margin-bottom:0.5rem;";
+  exportRow.innerHTML = `<button class="btn btn--sm" id="btn-export-meeting-${meetingId}">📥 Export Markdown</button>`;
+  exportRow.querySelector("button").addEventListener("click", () => {
+    window.open(`/api/meetings/${meetingId}/export`, "_blank");
+  });
+  container.appendChild(exportRow);
+
   if (!record.slots || record.slots.length === 0) {
-    container.innerHTML = "<p style='color:var(--text-secondary);'>No speakers in this meeting.</p>";
+    container.innerHTML += "<p style='color:var(--text-secondary);'>No speakers in this meeting.</p>";
     return;
   }
 
@@ -1127,6 +1136,7 @@ function renderMeetingDetail(container, record, evaluations) {
         </span>
         <div class="meeting-eval-actions">
           ${eval_.urls.evaluation_audio ? `<button class="btn btn--sm" data-audio-url="${eval_.urls.evaluation_audio}">▶ Play</button>` : ""}
+          <button class="btn btn--sm meeting-share-btn" data-prefix="${eval_.prefix}" data-speaker="${escapeHtml(slot.speakerName)}">🔗 Share</button>
         </div>
       `;
 
@@ -1134,6 +1144,30 @@ function renderMeetingDetail(container, record, evaluations) {
       if (playBtn) {
         playBtn.addEventListener("click", () => {
           playMeetingAudio(playBtn.dataset.audioUrl, playBtn);
+        });
+      }
+
+      const shareBtn = row.querySelector(".meeting-share-btn");
+      if (shareBtn) {
+        shareBtn.addEventListener("click", async () => {
+          try {
+            shareBtn.disabled = true;
+            shareBtn.textContent = "...";
+            const resp = await fetch("/api/share", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ evalPrefix: shareBtn.dataset.prefix, speaker: shareBtn.dataset.speaker }),
+            });
+            if (!resp.ok) throw new Error("Share failed");
+            const { url } = await resp.json();
+            await navigator.clipboard.writeText(url);
+            shareBtn.textContent = "Copied!";
+            setTimeout(() => { shareBtn.textContent = "🔗 Share"; shareBtn.disabled = false; }, 2000);
+          } catch {
+            shareBtn.textContent = "🔗 Share";
+            shareBtn.disabled = false;
+            alert("Failed to create share link");
+          }
         });
       }
     } else if (slot.status === "skipped") {
