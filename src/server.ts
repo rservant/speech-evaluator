@@ -454,7 +454,9 @@ export function createAppServer(options: CreateServerOptions = {}): AppServer {
     app.get("/api/export/:speaker/{*path}", async (req, res) => {
       try {
         const speaker = decodeURIComponent(req.params.speaker);
-        const evalPrefix = req.params.path; // Everything after /speaker/
+        // Express 5 {*path} returns segments as array joined by commas — rejoin with /
+        const rawPath = req.params.path;
+        const evalPrefix = Array.isArray(rawPath) ? rawPath.join("/") : String(rawPath).replace(/,/g, "/");
 
         if (!evalPrefix) {
           res.status(400).json({ error: "Missing evaluation prefix" });
