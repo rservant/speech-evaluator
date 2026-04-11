@@ -15,6 +15,7 @@
 import { Storage, type Bucket, type File } from "@google-cloud/storage";
 import { createLogger } from "./logger.js";
 import type { TranscriptSegment, DeliveryMetrics, StructuredEvaluation, MeetingRecord } from "./types.js";
+import { createWavBuffer } from "./audio-utils.js";
 
 const log = createLogger("GcsHistory");
 
@@ -37,6 +38,8 @@ export interface EvaluationMetadata {
   analysisTier?: string;
   /** Number of Vision frames captured (#128) */
   visionFrameCount?: number;
+  /** GCS prefix of original evaluation if this is a re-evaluation (#187) */
+  reEvaluatedFrom?: string;
 }
 
 export interface EvaluationListItem {
@@ -68,8 +71,10 @@ export interface SaveEvaluationInput {
   evaluation: StructuredEvaluation;
   evaluationScript?: string;
   ttsAudio?: Buffer;
+  speechAudio?: Buffer;
   analysisTier?: string;
   visionFrameCount?: number;
+  reEvaluatedFrom?: string;
 }
 
 // ─── GCS History Client Interface (for testability) ──────────────────────────────
@@ -216,6 +221,7 @@ export class GcsHistoryService {
         prefix,
         analysisTier: input.analysisTier,
         visionFrameCount: input.visionFrameCount,
+        reEvaluatedFrom: input.reEvaluatedFrom,
       };
 
       // Save all files in parallel
@@ -251,6 +257,18 @@ export class GcsHistoryService {
             `${prefix}evaluation_audio.mp3`,
             input.ttsAudio,
             "audio/mpeg",
+          ),
+        );
+      }
+
+      // Save original speech audio as WAV (#187)
+      if (input.speechAudio && input.speechAudio.length > 0) {
+        const wavBuffer = createWavBuffer(input.speechAudio);
+        saves.push(
+          this._client.saveFile(
+            `${prefix}speech_audio.wav`,
+            wavBuffer,
+            "audio/wav",
           ),
         );
       }

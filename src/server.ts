@@ -1367,6 +1367,7 @@ function persistToHistory(
     evaluation: session.evaluation,
     evaluationScript: session.evaluationScript ?? undefined,
     ttsAudio,
+    speechAudio: session.audioChunks.length > 0 ? Buffer.concat(session.audioChunks) : undefined,
     analysisTier: connState.analysisTier,
     visionFrameCount: connState.visionFrameBuffer.length,
   }).then((prefix: string | null) => {
@@ -1394,6 +1395,7 @@ function persistToHistory(
       evaluation: session.evaluation,
       evaluationScript: session.evaluationScript ?? undefined,
       ttsAudio,
+      speechAudio: session.audioChunks.length > 0 ? Buffer.concat(session.audioChunks) : undefined,
       analysisTier: connState.analysisTier,
       visionFrameCount: connState.visionFrameBuffer.length,
     };
