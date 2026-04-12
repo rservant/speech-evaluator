@@ -482,6 +482,28 @@ updateUI(SessionState.IDLE);
 // Restore form state from localStorage (#58)
 restoreFormState();
 
+// Apply URL parameters for deep linking from Red Club (#196)
+// URL params override localStorage (user clicked a specific link)
+(function applyUrlParams() {
+  const params = new URLSearchParams(window.location.search);
+  const speaker = params.get("speaker");
+  const title = params.get("title");
+  const project = params.get("project");
+
+  if (speaker) {
+    S.consentSpeakerName = speaker;
+    if (dom.speakerNameInput) dom.speakerNameInput.value = speaker;
+  }
+  if (title) {
+    S.projectContext.speechTitle = title;
+    if (dom.speechTitleInput) dom.speechTitleInput.value = title;
+  }
+  if (project) {
+    S.projectContext.projectType = project;
+    if (dom.projectTypeSelect) dom.projectTypeSelect.value = project;
+  }
+})();
+
 // Re-evaluate UI after form restore — consent state may enable Start Speech (#165)
 updateUI(SessionState.IDLE);
 

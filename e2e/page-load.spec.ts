@@ -60,4 +60,18 @@ test.describe("Page Load", () => {
     const text = await footer.textContent();
     expect(text).toContain("v");
   });
+
+  test("URL params pre-fill consent form (#196)", async ({ page }) => {
+    await page.goto("/?speaker=DeepLink+Tester&title=My+Speech&project=Ice+Breaker");
+    await page.evaluate(() => localStorage.setItem("speechEval_setupComplete", "1"));
+    await page.reload();
+    await page.waitForLoadState("networkidle");
+    await expect(page.locator("#consent-form")).toHaveClass(/visible/, { timeout: 5000 });
+
+    const speaker = await page.locator("#speaker-name-input").inputValue();
+    expect(speaker).toBe("DeepLink Tester");
+
+    const title = await page.locator("#speech-title-input").inputValue();
+    expect(title).toBe("My Speech");
+  });
 });
