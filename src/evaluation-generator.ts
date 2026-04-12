@@ -1137,6 +1137,11 @@ Please provide a corrected version of this ${item.type} with a valid evidence qu
    *  - 1-2 recommendations
    */
   private meetsShapeInvariant(evaluation: StructuredEvaluation): boolean {
+    // Non-classic styles use style_items instead of items (#194)
+    if (evaluation.evaluation_style && evaluation.evaluation_style !== "classic") {
+      return (evaluation.style_items?.length ?? 0) >= 1;
+    }
+
     const commendations = evaluation.items.filter((i) => i.type === "commendation").length;
     const recommendations = evaluation.items.filter((i) => i.type === "recommendation").length;
 
