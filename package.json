@@ -1,6 +1,6 @@
 {
   "name": "ai-speech-evaluator",
-  "version": "0.6.24",
+  "version": "0.6.25",
   "description": "AI Speech Evaluator MVP - captures live speech, transcribes, computes metrics, generates evaluation, and delivers via TTS",
   "type": "module",
   "main": "dist/index.js",
