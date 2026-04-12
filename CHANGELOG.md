@@ -2,6 +2,56 @@
 
 All notable changes to this project will be documented in this file. See [commit-and-tag-version](https://github.com/absolute-version/commit-and-tag-version) for commit guidelines.
 
+## [0.6.25](https://github.com/taverns-red/speech-evaluator/compare/ai-speech-evaluator-v0.6.24...ai-speech-evaluator-v0.6.25) (2026-04-12)
+
+
+### Features
+
+* add Clerk user ID to GCS evaluation path ([#195](https://github.com/taverns-red/speech-evaluator/issues/195)) ([6a5098b](https://github.com/taverns-red/speech-evaluator/commit/6a5098b5ecd5f559666e2871979f0f8c99e1b2bf))
+* add GA4 analytics with unified taverns.red property ([#172](https://github.com/taverns-red/speech-evaluator/issues/172)) ([15c5bec](https://github.com/taverns-red/speech-evaluator/commit/15c5becdab25fbf0a2c37b4d6cd26e9c5474970a))
+* add meeting agenda types and PDF parser endpoint ([#174](https://github.com/taverns-red/speech-evaluator/issues/174)) ([20ff963](https://github.com/taverns-red/speech-evaluator/commit/20ff963df780909aa6a943dc0919e70a25f0d1db))
+* add meeting mode UI with agenda panel and meeting consent ([#174](https://github.com/taverns-red/speech-evaluator/issues/174), [#175](https://github.com/taverns-red/speech-evaluator/issues/175)) ([592f535](https://github.com/taverns-red/speech-evaluator/commit/592f53513533b221f02aa79d5cf1d4f2c845346c))
+* add Playwright e2e tests for frontend ([#167](https://github.com/taverns-red/speech-evaluator/issues/167)) ([0a61de2](https://github.com/taverns-red/speech-evaluator/commit/0a61de2f7601ebb28ad58995f98f26fdaf660209))
+* declutter IDLE state and auto-scroll to evaluation ([#180](https://github.com/taverns-red/speech-evaluator/issues/180), [#181](https://github.com/taverns-red/speech-evaluator/issues/181)) ([c0d7ee2](https://github.com/taverns-red/speech-evaluator/commit/c0d7ee2ea900feb4600b107e32da53b3c8029f14))
+* deep link URL parameters for Red Club integration ([#196](https://github.com/taverns-red/speech-evaluator/issues/196)) ([1c56399](https://github.com/taverns-red/speech-evaluator/commit/1c56399b4a67639b393663df9d253f30549457fb))
+* download buttons on share page — evaluation, transcript, audio ([#188](https://github.com/taverns-red/speech-evaluator/issues/188)) ([1fbb6af](https://github.com/taverns-red/speech-evaluator/commit/1fbb6afb791a7836a93fa78195bf2976f88f059a))
+* history shows all evaluations for authenticated user ([#184](https://github.com/taverns-red/speech-evaluator/issues/184)) ([d081567](https://github.com/taverns-red/speech-evaluator/commit/d0815679a30d606cc370fce44a7ecb5421d22b38))
+* meeting export, share links, and retention sweep ([#177](https://github.com/taverns-red/speech-evaluator/issues/177)) ([d5025ee](https://github.com/taverns-red/speech-evaluator/commit/d5025eefae9e18c4663afcca89b3b38aa1ff512c))
+* meeting grouping with GCS persistence and history playback ([#176](https://github.com/taverns-red/speech-evaluator/issues/176)) ([55c0bd8](https://github.com/taverns-red/speech-evaluator/commit/55c0bd891cd167935e03d45b7fabc6158cf4c503))
+* mobile-first sticky bar — contextual primary actions ([#183](https://github.com/taverns-red/speech-evaluator/issues/183)) ([2cd2752](https://github.com/taverns-red/speech-evaluator/commit/2cd27526fa19ba6cc67779dfe53d5fb0ccb61a0e))
+* re-evaluate endpoint and history UI button ([#187](https://github.com/taverns-red/speech-evaluator/issues/187)) ([c79c7eb](https://github.com/taverns-red/speech-evaluator/commit/c79c7ebc5748b9d9762b46acac713cc5aa28dd12))
+* redesign share page with audio playback, OG tags, and CTA ([#179](https://github.com/taverns-red/speech-evaluator/issues/179)) ([5a56125](https://github.com/taverns-red/speech-evaluator/commit/5a561258d32199ea420263a380eb730044351878))
+* replace emoji icons with inline SVG icon system ([#182](https://github.com/taverns-red/speech-evaluator/issues/182)) ([8c3f236](https://github.com/taverns-red/speech-evaluator/commit/8c3f236bae409aff11fde60c762e5a6dcc82d79e))
+* respect OS light/dark theme on share and login pages ([#185](https://github.com/taverns-red/speech-evaluator/issues/185)) ([e860d68](https://github.com/taverns-red/speech-evaluator/commit/e860d682bbd7847520189a840e9bdc8b0bad3750))
+* save original speech audio to GCS for re-evaluation ([#187](https://github.com/taverns-red/speech-evaluator/issues/187)) ([cb26322](https://github.com/taverns-red/speech-evaluator/commit/cb26322994f5d879b337085d9ff3674db4c9da10))
+
+
+### Bug Fixes
+
+* add /js/ and static assets to auth bypass — entire app was broken ([#165](https://github.com/taverns-red/speech-evaluator/issues/165)) ([518488f](https://github.com/taverns-red/speech-evaluator/commit/518488fa99416a3f962eb6f39efac085093b8cdd))
+* add 5-minute clockSkewInMs to Clerk JWT verification ([#165](https://github.com/taverns-red/speech-evaluator/issues/165)) ([154d8bc](https://github.com/taverns-red/speech-evaluator/commit/154d8bc0ac96e77e0c1991a2f4bb9e6f98d9ffe4))
+* add missing checkVadEnergyFallback import in audio.js ([#165](https://github.com/taverns-red/speech-evaluator/issues/165)) ([99ec10e](https://github.com/taverns-red/speech-evaluator/commit/99ec10e1ee64483377ebde344458107cc44d2ef5))
+* await WebSocket close handshake in test teardown ([#169](https://github.com/taverns-red/speech-evaluator/issues/169)) ([add144b](https://github.com/taverns-red/speech-evaluator/commit/add144b9aa21bd43badd8ae7d00c030cf866fbc3))
+* cache-bust audio-worklet.js to clear stale auth HTML cache ([#165](https://github.com/taverns-red/speech-evaluator/issues/165)) ([d662cd1](https://github.com/taverns-red/speech-evaluator/commit/d662cd1085bcad57105609f6ca09de7940b12867))
+* duplicate escapeHtml crashed JS init, breaking E2E tests ([#174](https://github.com/taverns-red/speech-evaluator/issues/174)) ([faa8bcf](https://github.com/taverns-red/speech-evaluator/commit/faa8bcfa46a9eb7b368599dd160539b339791f55))
+* export 500 from Express 5 wildcard comma-join + metrics download ([#193](https://github.com/taverns-red/speech-evaluator/issues/193)) ([446e45b](https://github.com/taverns-red/speech-evaluator/commit/446e45bf55fc444614c5bbad04e76a117966961f))
+* increase Clerk JWT clockSkew to 24h for WS auth ([#165](https://github.com/taverns-red/speech-evaluator/issues/165)) ([20c7170](https://github.com/taverns-red/speech-evaluator/commit/20c7170505037f6ee29d07ebfbce2b89624b9543))
+* load Clerk SDK on main page to keep __session fresh ([#165](https://github.com/taverns-red/speech-evaluator/issues/165)) ([6c0176a](https://github.com/taverns-red/speech-evaluator/commit/6c0176ad5234b314d1d7d1be76c81944a041af16))
+* non-classic evaluation styles fail shape invariant ([#194](https://github.com/taverns-red/speech-evaluator/issues/194)) ([2d00501](https://github.com/taverns-red/speech-evaluator/commit/2d005015b6cce03fd8a5e329fb0222661519ee15))
+* persist live session evaluations to GCS history ([#168](https://github.com/taverns-red/speech-evaluator/issues/168)) ([bf512f0](https://github.com/taverns-red/speech-evaluator/commit/bf512f070f0eefaf05f25e60689acdf9b99eea25))
+* re-evaluate fails on large metrics + replace prompt with dropdown ([#193](https://github.com/taverns-red/speech-evaluator/issues/193)) ([f1b2d91](https://github.com/taverns-red/speech-evaluator/commit/f1b2d9199f9475c2cb59e74fc7cd39c7926f1f63))
+* re-evaluate UI after restoring consent from localStorage ([#165](https://github.com/taverns-red/speech-evaluator/issues/165)) ([d2e976e](https://github.com/taverns-red/speech-evaluator/commit/d2e976ec35d4f2a4c6e09419b89d6b7a132f4dbb))
+* re-trigger consent state after reload in E2E test ([#170](https://github.com/taverns-red/speech-evaluator/issues/170)) ([c889a9e](https://github.com/taverns-red/speech-evaluator/commit/c889a9e10d2a93cef6b2f62f7e98c07f44cd2e7f))
+* replace deprecated apple-mobile-web-app-capable meta tag ([0bf76aa](https://github.com/taverns-red/speech-evaluator/commit/0bf76aa151fa0794b91cd0576f945ea35e5ff9eb))
+* replace emoji with SVG icons in history actions, fix broken textContent ([#182](https://github.com/taverns-red/speech-evaluator/issues/182)) ([434de06](https://github.com/taverns-red/speech-evaluator/commit/434de067e1ebdf73a60f3aca5736d1240aa07f00))
+* set RECORDING state before starting AudioWorklet ([#165](https://github.com/taverns-red/speech-evaluator/issues/165)) ([a0a7dff](https://github.com/taverns-red/speech-evaluator/commit/a0a7dffb5f17493a9c534bae901150857f5dc592))
+* share API missing express.json() — req.body undefined ([#178](https://github.com/taverns-red/speech-evaluator/issues/178)) ([7bb6139](https://github.com/taverns-red/speech-evaluator/commit/7bb6139caa70b818d7f833d3d4c75508d5f04669))
+* share pages crash on missing files and non-string values ([#178](https://github.com/taverns-red/speech-evaluator/issues/178)) ([0a36739](https://github.com/taverns-red/speech-evaluator/commit/0a367395ce55414abd0e686a89241b3899dd9e2d))
+* stabilize flaky E2E consent test + CI cleanup ([#170](https://github.com/taverns-red/speech-evaluator/issues/170)) ([51cda85](https://github.com/taverns-red/speech-evaluator/commit/51cda85b05e89c72892e83793b3a6015a7ade09a))
+* strip pitchProfile and paceVariation from re-evaluate metrics ([#193](https://github.com/taverns-red/speech-evaluator/issues/193)) ([632cf55](https://github.com/taverns-red/speech-evaluator/commit/632cf55d55499442daba706805433a557dea7cc0))
+* switch to whisper-1 for timestamps and change default time limit to 180s ([#186](https://github.com/taverns-red/speech-evaluator/issues/186), [#189](https://github.com/taverns-red/speech-evaluator/issues/189)) ([08e2ad9](https://github.com/taverns-red/speech-evaluator/commit/08e2ad91ac137b21b1085d07c66cd96389c7048a))
+* use Express 5 named wildcard {*path} for export route ([#165](https://github.com/taverns-red/speech-evaluator/issues/165)) ([7bfe1ab](https://github.com/taverns-red/speech-evaluator/commit/7bfe1abfaf8c9db05ab19082a7e4265b336bfe2b))
+
 ## [0.6.24](https://github.com/taverns-red/speech-evaluator/compare/ai-speech-evaluator-v0.6.23...ai-speech-evaluator-v0.6.24) (2026-03-22)
 
 
