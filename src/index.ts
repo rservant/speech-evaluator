@@ -195,13 +195,14 @@ if (allowedEmails.size > 0) {
     const token = cookies.__session;
     if (!token) {
       log.warn("WS upgrade rejected: no __session cookie");
-      return false;
+      return null;
     }
     const decoded = await verifyAndAuthorize(token, allowedEmails);
     if (!decoded) {
       log.warn("WS upgrade rejected: token invalid/expired/not in allowlist");
+      return null;
     }
-    return decoded !== null;
+    return decoded; // { userId, email } — stored on ConnectionState (#195)
   };
 } else {
   log.info("Auth disabled: ALLOWED_EMAILS not set (dev mode)");

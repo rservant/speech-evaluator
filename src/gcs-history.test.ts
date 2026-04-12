@@ -147,6 +147,24 @@ describe("buildEvaluationPrefix", () => {
     const prefix = buildEvaluationPrefix("Speaker", "Title");
     expect(prefix.endsWith("/")).toBe(true);
   });
+
+  it("includes userId in path when provided (#195)", () => {
+    const date = new Date(2026, 2, 20, 14, 30);
+    const prefix = buildEvaluationPrefix("Jane Doe", "My Speech", date, "user_abc123");
+    expect(prefix).toBe("results/user_abc123/jane-doe/2026-03-20-1430-my-speech/");
+  });
+
+  it("omits userId from path when not provided (#195)", () => {
+    const date = new Date(2026, 2, 20, 14, 30);
+    const prefix = buildEvaluationPrefix("Jane Doe", "My Speech", date);
+    expect(prefix).toBe("results/jane-doe/2026-03-20-1430-my-speech/");
+  });
+
+  it("omits userId from path when empty string (#195)", () => {
+    const date = new Date(2026, 2, 20, 14, 30);
+    const prefix = buildEvaluationPrefix("Jane Doe", "My Speech", date, "");
+    expect(prefix).toBe("results/jane-doe/2026-03-20-1430-my-speech/");
+  });
 });
 
 // ─── GcsHistoryService.saveEvaluationResults ────────────────────────────────────

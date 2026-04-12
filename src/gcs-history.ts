@@ -75,6 +75,7 @@ export interface SaveEvaluationInput {
   analysisTier?: string;
   visionFrameCount?: number;
   reEvaluatedFrom?: string;
+  userId?: string;
 }
 
 // ─── GCS History Client Interface (for testability) ──────────────────────────────
@@ -169,6 +170,7 @@ export function buildEvaluationPrefix(
   speakerName: string,
   speechTitle: string,
   date: Date = new Date(),
+  userId?: string,
 ): string {
   const sanitizedSpeaker = sanitizeForPath(speakerName);
   const sanitizedTitle = sanitizeForPath(speechTitle || "untitled");
@@ -181,7 +183,9 @@ export function buildEvaluationPrefix(
 
   const timestamp = `${year}-${month}-${day}-${hours}${minutes}`;
 
-  return `${RESULTS_PREFIX}${sanitizedSpeaker}/${timestamp}-${sanitizedTitle}/`;
+  // When userId is provided, scope under user ID for cross-app querying (#195)
+  const userSegment = userId ? `${userId}/` : "";
+  return `${RESULTS_PREFIX}${userSegment}${sanitizedSpeaker}/${timestamp}-${sanitizedTitle}/`;
 }
 
 // ─── GCS History Service ─────────────────────────────────────────────────────────
@@ -203,7 +207,7 @@ export class GcsHistoryService {
    * Fire-and-forget — errors are logged but never thrown.
    */
   async saveEvaluationResults(input: SaveEvaluationInput): Promise<string | null> {
-    const prefix = buildEvaluationPrefix(input.speakerName, input.speechTitle);
+    const prefix = buildEvaluationPrefix(input.speakerName, input.speechTitle, new Date(), input.userId);
 
     try {
       log.info("Saving evaluation results to GCS", { prefix, speaker: input.speakerName });
@@ -468,15 +472,27 @@ export class GcsHistoryService {
    * List all evaluations across all speakers, sorted newest-first.
    * Used for user-scoped history (show everything the operator has created).
    */
-  async listAllEvaluations(limit: number = 50, cursor?: string): Promise<ListEvaluationsResult> {
-    // List all speaker prefixes
-    const speakerPrefixes = await this._client.listPrefixes(RESULTS_PREFIX, "/");
+  async listAllEvaluations(limit: number = 50, cursor?: string, userId?: string): Promise<ListEvaluationsResult> {
+    // When userId is provided, scope to user prefix; otherwise list all (#195)
+    const rootPrefix = userId ? `${RESULTS_PREFIX}${userId}/` : RESULTS_PREFIX;
+    const speakerPrefixes = await this._client.listPrefixes(rootPrefix, "/");
 
     // Collect all evaluation prefixes across speakers
     const allPrefixes: string[] = [];
     for (const sp of speakerPrefixes) {
       const evalPrefixes = await this._client.listPrefixes(sp, "/");
       allPrefixes.push(...evalPrefixes);
+    }
+
+    // If user-scoped and no results, also check legacy (non-user-scoped) path
+    if (userId && allPrefixes.length === 0) {
+      const legacyPrefixes = await this._client.listPrefixes(RESULTS_PREFIX, "/");
+      for (const sp of legacyPrefixes) {
+        // Skip user-ID-like prefixes (they belong to other users)
+        if (sp.startsWith(`${RESULTS_PREFIX}user_`)) continue;
+        const evalPrefixes = await this._client.listPrefixes(sp, "/");
+        allPrefixes.push(...evalPrefixes);
+      }
     }
 
     // Sort newest-first (prefixes contain timestamps)

@@ -101,6 +101,9 @@ interface ConnectionState {
   meetingId: string | null;
   meetingSlotId: string | null;
   meetingClubName: string | null;
+  /** Clerk user identity for user-scoped GCS paths (#195) */
+  clerkUserId: string | null;
+  clerkEmail: string | null;
 }
 
 // ─── Logging ────────────────────────────────────────────────────────────────────
@@ -136,8 +139,8 @@ export interface CreateServerOptions {
   uploadRouter?: Router;
   /** Optional auth middleware (mounted before all routes). */
   authMiddleware?: RequestHandler;
-  /** Optional function to verify WebSocket upgrade requests. Returns true if allowed. */
-  wsAuthVerify?: (req: IncomingMessage) => Promise<boolean>;
+  /** Optional function to verify WebSocket upgrade requests. Returns user info or null (#195). */
+  wsAuthVerify?: (req: IncomingMessage) => Promise<{ userId: string; email: string } | boolean | null>;
   /** Clerk client config served at /api/config (no auth required). */
   clerkConfig?: Record<string, string>;
   /** RoleRegistry for meeting roles (Phase 9). */
@@ -278,12 +281,13 @@ export function createAppServer(options: CreateServerOptions = {}): AppServer {
   // History endpoint (#123) — lists past evaluations from GCS
   const gcsHistoryService = options.gcsHistoryService ?? null;
   if (gcsHistoryService) {
-    // GET /api/history — list ALL evaluations for the authenticated user (#184)
+    // GET /api/history — list ALL evaluations for the authenticated user (#184, #195)
     app.get("/api/history", async (_req, res) => {
       try {
         const limit = Math.min(Math.max(parseInt(String(_req.query.limit ?? "50"), 10) || 50, 1), 100);
         const cursor = typeof _req.query.cursor === "string" ? _req.query.cursor : undefined;
-        const result = await gcsHistoryService.listAllEvaluations(limit, cursor);
+        const userId = (_req as any).user?.uid as string | undefined;
+        const result = await gcsHistoryService.listAllEvaluations(limit, cursor, userId);
         res.json(result);
       } catch (err) {
         const errMsg = err instanceof Error ? err.message : String(err);
@@ -856,19 +860,28 @@ export function createAppServer(options: CreateServerOptions = {}): AppServer {
   // WebSocket server — noServer mode when auth is enabled for manual upgrade
   const wss = new WebSocketServer(wsAuthVerify ? { noServer: true } : { server: httpServer });
 
-  wss.on("connection", (ws: WebSocket) => {
-    handleConnection(ws, sessionManager, logger, roleRegistry, gcsHistoryService);
+  // Store auth results per-request for passing to handleConnection (#195)
+  const wsAuthResults = new WeakMap<IncomingMessage, { userId: string; email: string }>();
+
+  wss.on("connection", (ws: WebSocket, req?: IncomingMessage) => {
+    const authInfo = req ? wsAuthResults.get(req) : undefined;
+    handleConnection(ws, sessionManager, logger, roleRegistry, gcsHistoryService, authInfo);
+    if (req) wsAuthResults.delete(req);
   });
 
   // WebSocket upgrade with auth verification
   if (wsAuthVerify) {
     httpServer.on("upgrade", async (req, socket, head) => {
       try {
-        const allowed = await wsAuthVerify(req);
-        if (!allowed) {
+        const authResult = await wsAuthVerify(req);
+        if (!authResult) {
           socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n");
           socket.destroy();
           return;
+        }
+        // Store user info for handleConnection (#195)
+        if (typeof authResult === "object" && authResult !== null && "userId" in authResult) {
+          wsAuthResults.set(req, authResult as { userId: string; email: string });
         }
         wss.handleUpgrade(req, socket, head, (ws) => {
           wss.emit("connection", ws, req);
@@ -935,6 +948,7 @@ function handleConnection(
   logger: ServerLogger,
   roleRegistry: RoleRegistry | null,
   historyService: GcsHistoryService | null,
+  authInfo?: { userId: string; email: string },
 ): void {
   // Each WebSocket connection gets its own session
   const session = sessionManager.createSession();
@@ -958,6 +972,8 @@ function handleConnection(
     meetingId: null,
     meetingSlotId: null,
     meetingClubName: null,
+    clerkUserId: authInfo?.userId ?? null,
+    clerkEmail: authInfo?.email ?? null,
   };
 
   logger.info(`New WebSocket connection, session ${session.id}`);
@@ -1500,6 +1516,7 @@ function persistToHistory(
     speechAudio: session.audioChunks.length > 0 ? Buffer.concat(session.audioChunks) : undefined,
     analysisTier: connState.analysisTier,
     visionFrameCount: connState.visionFrameBuffer.length,
+    userId: connState.clerkUserId ?? undefined,
   }).then((prefix: string | null) => {
     if (prefix) {
       logger.info(`[persistToHistory] Saved to GCS: ${prefix}`);
